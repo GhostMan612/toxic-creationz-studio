@@ -1,0 +1,22 @@
+# Build output
+build/
+out/
+cmake-build-*/
+
+# JUCE generated
+JuceLibraryCode/
+*.jucer
+
+# Session / scratch
+*.tracktionedit
+default_session.tracktionedit
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
