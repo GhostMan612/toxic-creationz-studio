@@ -8,7 +8,9 @@ on:
 
 jobs:
   build-and-smoke-test:
-    runs-on: windows-latest
+    # windows-latest now resolves to the VS 2026 image, which has no VS 2022
+    # instance for the "Visual Studio 17 2022" generator. Pin to windows-2022.
+    runs-on: windows-2022
 
     steps:
     - name: Checkout repository with submodules
