@@ -67,19 +67,19 @@ void MainComponent::setupDefaultSession()
         if (auto synth = edit->getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {}))
             track1->pluginList.insertPlugin (synth, 0, nullptr);
 
-        const te::TimeRange barOne { te::TimePosition::fromSeconds (0.0),
-                                    edit->tempoSequence.toTime (te::BeatPosition::fromBeats (4.0)) };
+        const tracktion::TimeRange barOne { tracktion::TimePosition::fromSeconds (0.0),
+                                    edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (4.0)) };
 
         if (auto clip = dynamic_cast<te::MidiClip*> (
-                track1->insertNewClip (te::TrackItem::Type::midi, "Intro Riff", barOne, nullptr).get()))
+                track1->insertNewClip (te::TrackItem::Type::midi, "Intro Riff", barOne, nullptr)))
         {
             auto& seq = clip->getSequence();
             auto& um = edit->getUndoManager();
 
-            seq.addNote (60, te::BeatPosition::fromBeats (0.0), te::BeatDuration::fromBeats (1.0), 110, 0, &um);
-            seq.addNote (63, te::BeatPosition::fromBeats (1.0), te::BeatDuration::fromBeats (1.0), 105, 0, &um);
-            seq.addNote (67, te::BeatPosition::fromBeats (2.0), te::BeatDuration::fromBeats (1.0), 115, 0, &um);
-            seq.addNote (70, te::BeatPosition::fromBeats (3.0), te::BeatDuration::fromBeats (1.0), 120, 0, &um);
+            seq.addNote (60, tracktion::BeatPosition::fromBeats (0.0), tracktion::BeatDuration::fromBeats (1.0), 110, 0, &um);
+            seq.addNote (63, tracktion::BeatPosition::fromBeats (1.0), tracktion::BeatDuration::fromBeats (1.0), 105, 0, &um);
+            seq.addNote (67, tracktion::BeatPosition::fromBeats (2.0), tracktion::BeatDuration::fromBeats (1.0), 115, 0, &um);
+            seq.addNote (70, tracktion::BeatPosition::fromBeats (3.0), tracktion::BeatDuration::fromBeats (1.0), 120, 0, &um);
         }
     }
 }
