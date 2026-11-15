@@ -226,9 +226,9 @@ void handleMcpAddNote (te::Edit\& edit, const McpNoteCommand\& cmd)
 
 &#x20;       // Find or create a 4-bar MIDI clip at the target beat
 
-&#x20;       const auto startTime = edit.tempoSequence.toTime (te::BeatPosition::fromBeats (cmd.startBeat));
+&#x20;       const auto startTime = edit.tempoSequence.toTime (tracktion::BeatPosition::fromBeats (cmd.startBeat));
 
-&#x20;       const auto endTime   = edit.tempoSequence.toTime (te::BeatPosition::fromBeats (cmd.startBeat + cmd.lengthBeats));
+&#x20;       const auto endTime   = edit.tempoSequence.toTime (tracktion::BeatPosition::fromBeats (cmd.startBeat + cmd.lengthBeats));
 
 
 
@@ -262,11 +262,11 @@ void handleMcpAddNote (te::Edit\& edit, const McpNoteCommand\& cmd)
 
 &#x20;       {
 
-&#x20;           const te::TimeRange range { startTime, endTime };
+&#x20;           const tracktion::TimeRange range { startTime, endTime };
 
 &#x20;           targetClip = dynamic\_cast<te::MidiClip\*> (
 
-&#x20;               track->insertNewClip (te::TrackItem::Type::midi, "AI Pattern", range, nullptr).get());
+&#x20;               track->insertNewClip (te::TrackItem::Type::midi, "AI Pattern", range, nullptr));
 
 &#x20;       }
 
@@ -282,9 +282,9 @@ void handleMcpAddNote (te::Edit\& edit, const McpNoteCommand\& cmd)
 
 &#x20;               cmd.midiNote,
 
-&#x20;               te::BeatPosition::fromBeats (cmd.startBeat),
+&#x20;               tracktion::BeatPosition::fromBeats (cmd.startBeat),
 
-&#x20;               te::BeatDuration::fromBeats (cmd.lengthBeats),
+&#x20;               tracktion::BeatDuration::fromBeats (cmd.lengthBeats),
 
 &#x20;               cmd.velocity,
 
@@ -734,15 +734,15 @@ void MainComponent::setupDefaultSession()
 
 
 
-&#x20;       const te::TimeRange barOne { te::TimePosition::fromSeconds (0.0),
+&#x20;       const tracktion::TimeRange barOne { tracktion::TimePosition::fromSeconds (0.0),
 
-&#x20;                                    edit->tempoSequence.toTime (te::BeatPosition::fromBeats (4.0)) };
+&#x20;                                    edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (4.0)) };
 
 
 
 &#x20;       if (auto clip = dynamic\_cast<te::MidiClip\*> (
 
-&#x20;               track1->insertNewClip (te::TrackItem::Type::midi, "Intro Riff", barOne, nullptr).get()))
+&#x20;               track1->insertNewClip (te::TrackItem::Type::midi, "Intro Riff", barOne, nullptr)))
 
 &#x20;       {
 
@@ -750,13 +750,13 @@ void MainComponent::setupDefaultSession()
 
 &#x20;           auto\& um = edit->getUndoManager();
 
-&#x20;           seq.addNote (60, te::BeatPosition::fromBeats (0.0), te::BeatDuration::fromBeats (1.0), 110, 0, \&um);
+&#x20;           seq.addNote (60, tracktion::BeatPosition::fromBeats (0.0), tracktion::BeatDuration::fromBeats (1.0), 110, 0, \&um);
 
-&#x20;           seq.addNote (63, te::BeatPosition::fromBeats (1.0), te::BeatDuration::fromBeats (1.0), 105, 0, \&um);
+&#x20;           seq.addNote (63, tracktion::BeatPosition::fromBeats (1.0), tracktion::BeatDuration::fromBeats (1.0), 105, 0, \&um);
 
-&#x20;           seq.addNote (67, te::BeatPosition::fromBeats (2.0), te::BeatDuration::fromBeats (1.0), 115, 0, \&um);
+&#x20;           seq.addNote (67, tracktion::BeatPosition::fromBeats (2.0), tracktion::BeatDuration::fromBeats (1.0), 115, 0, \&um);
 
-&#x20;           seq.addNote (70, te::BeatPosition::fromBeats (3.0), te::BeatDuration::fromBeats (1.0), 120, 0, \&um);
+&#x20;           seq.addNote (70, tracktion::BeatPosition::fromBeats (3.0), tracktion::BeatDuration::fromBeats (1.0), 120, 0, \&um);
 
 &#x20;       }
 
@@ -1396,11 +1396,11 @@ private:
 
 
 
-&#x20;           const te::TimeRange clipRange {
+&#x20;           const tracktion::TimeRange clipRange {
 
-&#x20;               te::TimePosition::fromSeconds (0.0),
+&#x20;               tracktion::TimePosition::fromSeconds (0.0),
 
-&#x20;               edit.tempoSequence.toTime (te::BeatPosition::fromBeats (maxEndBeat))
+&#x20;               edit.tempoSequence.toTime (tracktion::BeatPosition::fromBeats (maxEndBeat))
 
 &#x20;           };
 
@@ -1420,7 +1420,7 @@ private:
 
 &#x20;               midiClip = dynamic\_cast<te::MidiClip\*> (
 
-&#x20;                   track->insertNewClip (te::TrackItem::Type::midi, "AI Pattern", clipRange, nullptr).get());
+&#x20;                   track->insertNewClip (te::TrackItem::Type::midi, "AI Pattern", clipRange, nullptr));
 
 
 
@@ -1446,9 +1446,9 @@ private:
 
 &#x20;                       static\_cast<int> (n.getProperty ("pitch", 60)),
 
-&#x20;                       te::BeatPosition::fromBeats (static\_cast<double> (n.getProperty ("start\_beat", 0.0))),
+&#x20;                       tracktion::BeatPosition::fromBeats (static\_cast<double> (n.getProperty ("start\_beat", 0.0))),
 
-&#x20;                       te::BeatDuration::fromBeats (static\_cast<double> (n.getProperty ("length\_beats", 0.5))),
+&#x20;                       tracktion::BeatDuration::fromBeats (static\_cast<double> (n.getProperty ("length\_beats", 0.5))),
 
 &#x20;                       static\_cast<int> (n.getProperty ("velocity", 100)),
 
