@@ -1,5 +1,7 @@
 #include "MainComponent.h"
 
+#include <juce_audio_utils/juce_audio_utils.h>
+
 //==============================================================================
 // Owned, Interruptible Background VST3 Scanner (Cooperative Cancellation)
 //==============================================================================
@@ -71,6 +73,7 @@ public:
                 knownList.recreateFromXml (*xml);
 
             safeTarget->saveCachedPlugins();
+            safeTarget->mixerComponent.rebuildStrips();
 
             safeTarget->scanPluginsButton.setEnabled (true);
             safeTarget->statusLabel.setText (
@@ -92,6 +95,7 @@ private:
 //==============================================================================
 MainComponent::MainComponent()
 {
+    engine.getDeviceManager().initialise (0, 2);
     loadCachedPlugins();
 
     // Views
@@ -120,6 +124,8 @@ MainComponent::MainComponent()
     addAndMakeVisible (playButton);
     addAndMakeVisible (stopButton);
     addAndMakeVisible (scanPluginsButton);
+    addAndMakeVisible (mixerToggleButton);
+    addAndMakeVisible (audioSettingsButton);
     addAndMakeVisible (bpmSlider);
     addAndMakeVisible (statusLabel);
 
@@ -213,6 +219,7 @@ MainComponent::MainComponent()
         }
 
         markSessionDirty();
+        mixerComponent.rebuildStrips();
     };
 
     undoButton.onClick = [this]
@@ -224,6 +231,7 @@ MainComponent::MainComponent()
         bpmSlider.setValue (edit->tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
         arrangementView.repaint();
         pianoRoll.repaint();
+        mixerComponent.rebuildStrips();
         refreshDirtyFromSavedState();
     };
 
@@ -236,6 +244,7 @@ MainComponent::MainComponent()
         bpmSlider.setValue (edit->tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
         arrangementView.repaint();
         pianoRoll.repaint();
+        mixerComponent.rebuildStrips();
         refreshDirtyFromSavedState();
     };
 
@@ -253,13 +262,40 @@ MainComponent::MainComponent()
 
     scanPluginsButton.onClick = [this] { startVst3Scan(); };
 
+    mixerToggleButton.setClickingTogglesState (true);
+    mixerToggleButton.setToggleState (true, juce::dontSendNotification);
+    mixerToggleButton.onClick = [this]
+    {
+        mixerComponent.setVisible (mixerToggleButton.getToggleState());
+        resized();
+    };
+
+    mixerComponent.onMixerChanged = [this] { arrangementView.repaint(); };
+
+    audioSettingsButton.onClick = [this]
+    {
+        auto selector = std::make_unique<juce::AudioDeviceSelectorComponent> (
+            engine.getDeviceManager().deviceManager,
+            0, 2, 0, 2, true, false, true, false);
+        selector->setSize (520, 420);
+
+        juce::DialogWindow::LaunchOptions opts;
+        opts.content.setOwned (selector.release());
+        opts.dialogTitle = "Audio & MIDI Device Settings";
+        opts.dialogBackgroundColour = juce::Colour (0xff1e2128);
+        opts.escapeKeyTriggersCloseButton = true;
+        opts.useNativeTitleBar = true;
+        opts.resizable = true;
+        opts.launchAsync();
+    };
+
     bpmSlider.onValueChange = [this]
     {
         if (edit != nullptr)
             edit->tempoSequence.getTempo (0)->setBpm (bpmSlider.getValue());
     };
 
-    setSize (1180, 760);
+    setSize (1240, 820);
     startTimerHz (30);
     updateWindowTitle();
 }
@@ -520,6 +556,7 @@ void MainComponent::attachEdit (te::Edit& editToAttach)
 {
     arrangementView.setEdit (&editToAttach);
     pianoRoll.setTarget (&editToAttach, arrangementView.getSelectedClipID());
+    mixerComponent.setEdit (&editToAttach);
     bpmSlider.setValue (editToAttach.tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
 }
 
@@ -866,13 +903,33 @@ void MainComponent::resized()
 
     topBar.removeFromLeft (8);
 
+    addToolbarItem (mixerToggleButton, 60);
+    addToolbarItem (audioSettingsButton, 110);
+
+    topBar.removeFromLeft (8);
+
     bpmSlider.setBounds (topBar.removeFromLeft (150));
     topBar.removeFromLeft (10);
 
     statusLabel.setBounds (topBar);
 
-    const int arrangementHeight = juce::roundToInt (area.getHeight() * 0.44f);
-    arrangementView.setBounds (area.removeFromTop (arrangementHeight));
-    area.removeFromTop (4);
-    pianoRoll.setBounds (area);
+    if (mixerComponent.isVisible())
+    {
+        const int available = area.getHeight();
+        const int arrangementHeight = juce::roundToInt (available * 0.36f);
+        const int pianoHeight       = juce::roundToInt (available * 0.38f);
+
+        arrangementView.setBounds (area.removeFromTop (arrangementHeight));
+        area.removeFromTop (4);
+        pianoRoll.setBounds (area.removeFromTop (pianoHeight));
+        area.removeFromTop (4);
+        mixerComponent.setBounds (area);
+    }
+    else
+    {
+        const int arrangementHeight = juce::roundToInt (area.getHeight() * 0.44f);
+        arrangementView.setBounds (area.removeFromTop (arrangementHeight));
+        area.removeFromTop (4);
+        pianoRoll.setBounds (area);
+    }
 }

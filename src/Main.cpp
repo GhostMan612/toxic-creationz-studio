@@ -295,6 +295,96 @@ int MainComponent::runHeadlessSmokeTest()
         }
     }
 
+    //--- WO-004: mixer gain/pan + Track 2 instrument persistence --------------
+    {
+        auto* edit = app.edit.get();
+        auto tracks = te::getAudioTracks (*edit);
+
+        if (tracks.size() < 2)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: expected at least 2 tracks for WO-004 mixer check" << std::endl;
+            return 1;
+        }
+
+        auto* track2 = tracks[1];
+        track2->setName ("Bass Line");
+
+        if (auto* vol = track2->getVolumePlugin())
+        {
+            vol->setVolumeDb (-6.5f);
+            vol->setPan (0.35f);
+        }
+
+        // Two inserts via the mixer's position helper: the second must land
+        // after the first in the chain, ahead of the terminal volume plugin.
+        tracktion::EditItemID firstSynthID, secondSynthID;
+
+        if (auto bassSynth = edit->getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {}))
+        {
+            firstSynthID = bassSynth->itemID;
+            track2->pluginList.insertPlugin (bassSynth, MixerComponent::getInsertIndexForNewPlugin (*track2), nullptr);
+        }
+
+        if (auto secondSynth = edit->getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {}))
+        {
+            secondSynthID = secondSynth->itemID;
+            track2->pluginList.insertPlugin (secondSynth, MixerComponent::getInsertIndexForNewPlugin (*track2), nullptr);
+        }
+
+        app.mixerComponent.rebuildStrips();
+
+        const auto mixerDir = tempDir.getChildFile ("tcs_wo004_mixer_smoke");
+        mixerDir.deleteRecursively();
+        mixerDir.createDirectory();
+
+        const auto mixerTestFile = mixerDir.getChildFile ("MixerRoundTrip.tracktionedit");
+
+        const auto prevEditFile = app.currentEditFile;
+        const bool prevUntitled = app.sessionUntitled;
+
+        app.currentEditFile = mixerTestFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        if (! app.loadSessionFromFileSafely (mixerTestFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-004 mixer round-trip save/load failed" << std::endl;
+            return 1;
+        }
+
+        auto reloadedTracks = te::getAudioTracks (*app.edit);
+
+        if (reloadedTracks.size() < 2)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-004 reloaded track count mismatch" << std::endl;
+            return 1;
+        }
+
+        auto* reloadedVol = reloadedTracks[1]->getVolumePlugin();
+        std::vector<tracktion::EditItemID> reloadedSynthIDs;
+
+        for (auto* p : reloadedTracks[1]->pluginList)
+            if (dynamic_cast<te::FourOscPlugin*> (p) != nullptr)
+                reloadedSynthIDs.push_back (p->itemID);
+
+        if (reloadedVol == nullptr
+            || std::abs (reloadedVol->getVolumeDb() - (-6.5f)) > 0.05f
+            || std::abs (reloadedVol->getPan() - 0.35f) > 0.02f
+            || reloadedSynthIDs.size() != 2
+            || reloadedSynthIDs[0] != firstSynthID
+            || reloadedSynthIDs[1] != secondSynthID)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-004 mixer dB/pan, Track 2 plugins, or insert order did not persist!" << std::endl;
+            return 1;
+        }
+
+        // Restore the app's file pointer: the round-trip file is deleted below.
+        app.currentEditFile = prevEditFile;
+        app.sessionUntitled = prevUntitled;
+
+        mixerDir.deleteRecursively();
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -321,7 +411,8 @@ int MainComponent::runHeadlessSmokeTest()
     truncatedFile.deleteFile();
 
     std::cout << "[SMOKE_TEST] PASS: persistence, non-destructive New, atomic Open rollback, "
-                 "Undo/Redo note editing, dirty-state isolation, and VST3 scanner lifecycle verified." << std::endl;
+                 "Undo/Redo note editing, dirty-state isolation, mixer gain/pan + instrument "
+                 "persistence & insert order, and VST3 scanner lifecycle verified." << std::endl;
     return 0;
 }
 

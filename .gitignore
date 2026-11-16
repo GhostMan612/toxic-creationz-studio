@@ -20,3 +20,10 @@ Thumbs.db
 .vscode/
 .idea/
 *.user
+
+# Local Gemini briefing & heartbeat inbox — BRIEFING.md deletion confirmed
+# intended by Glenn (16 Nov 2026): the blueprint is local-only, recoverable
+# from git history if ever needed.
+docs/BRIEFING.md
+.hermes_inbox.md
+
