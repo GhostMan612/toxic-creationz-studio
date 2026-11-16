@@ -367,11 +367,13 @@ void MainComponent::refreshDirtyFromSavedState()
         return;
 
     // Undo/redo can return the Edit to exactly its saved content; compare
-    // against the snapshot instead of unconditionally flagging dirty. Child
-    // order is ignored: the note list re-sorts by start beat in memory, and
-    // undo restores children without a guaranteed order.
+    // against the snapshot instead of unconditionally flagging dirty.
+    // Note: this JUCE's isEquivalentTo is order-sensitive, which is safe here
+    // — the note list re-sorts by start beat in memory only, the ValueTree
+    // children stay in insertion order, and undo restores a removed child at
+    // its recorded index.
     const bool clean = savedEditState.isValid()
-                       && getContentState (edit->state).isEquivalentTo (savedEditState, true);
+                       && getContentState (edit->state).isEquivalentTo (savedEditState);
 
     if (sessionDirty == ! clean)
         return;
