@@ -136,8 +136,19 @@ MainComponent::MainComponent()
 
     if (edit == nullptr)
     {
-        createNewSession (defaultFile, true, false);
+        // The startup file exists but could not be read: preserve it on disk and
+        // fall back to a fresh Untitled session rather than overwriting it.
+        const bool startupFileUnreadable = defaultFile.existsAsFile();
+        const auto target = startupFileUnreadable
+                                ? getProjectsDir().getNonexistentChildFile ("Untitled", ".tracktionedit", false)
+                                : defaultFile;
+
+        createNewSession (target, true, false);
         saveSession();
+
+        if (startupFileUnreadable)
+            statusLabel.setText ("Startup file unreadable; created a new session (original preserved).",
+                                 juce::dontSendNotification);
     }
 
     newButton.onClick = [this]
@@ -266,11 +277,17 @@ MainComponent::~MainComponent()
 //==============================================================================
 // Dirty-state tracking
 //==============================================================================
-bool MainComponent::isTransportOrViewStateSubtree (const juce::ValueTree& tree)
+bool MainComponent::isTransientEditSubtree (juce::ValueTree tree)
 {
-    for (auto t = tree; t.isValid(); t = t.getParent())
-        if (t.hasType (juce::Identifier ("TRANSPORT")) || t.hasType (juce::Identifier ("VIEWSTATE")))
+    while (tree.isValid())
+    {
+        const auto type = tree.getType();
+
+        if (type == juce::Identifier ("TRANSPORT") || type == juce::Identifier ("VIEWSTATE"))
             return true;
+
+        tree = tree.getParent();
+    }
 
     return false;
 }
@@ -279,35 +296,38 @@ void MainComponent::valueTreePropertyChanged (juce::ValueTree& treeWhoseProperty
                                              const juce::Identifier&)
 {
     // Transport/view-state churn (playhead, zoom, selection) is not a content edit.
-    if (isTransportOrViewStateSubtree (treeWhosePropertyHasChanged))
-        return;
-
-    markSessionDirty();
+    if (! suppressDirtyTracking && ! isTransientEditSubtree (treeWhosePropertyHasChanged))
+        markSessionDirty();
 }
 
-void MainComponent::valueTreeChildAdded (juce::ValueTree&, juce::ValueTree&)
+void MainComponent::valueTreeChildAdded (juce::ValueTree& parentTree, juce::ValueTree&)
 {
-    markSessionDirty();
+    if (! suppressDirtyTracking && ! isTransientEditSubtree (parentTree))
+        markSessionDirty();
 }
 
-void MainComponent::valueTreeChildRemoved (juce::ValueTree&, juce::ValueTree&, int)
+void MainComponent::valueTreeChildRemoved (juce::ValueTree& parentTree, juce::ValueTree&, int)
 {
-    markSessionDirty();
+    if (! suppressDirtyTracking && ! isTransientEditSubtree (parentTree))
+        markSessionDirty();
 }
 
-void MainComponent::valueTreeChildOrderChanged (juce::ValueTree&, int, int)
+void MainComponent::valueTreeChildOrderChanged (juce::ValueTree& parentTree, int, int)
 {
-    markSessionDirty();
+    if (! suppressDirtyTracking && ! isTransientEditSubtree (parentTree))
+        markSessionDirty();
 }
 
-void MainComponent::valueTreeParentChanged (juce::ValueTree&)
+void MainComponent::valueTreeParentChanged (juce::ValueTree& treeWhoseParentHasChanged)
 {
-    markSessionDirty();
+    if (! suppressDirtyTracking && ! isTransientEditSubtree (treeWhoseParentHasChanged))
+        markSessionDirty();
 }
 
-void MainComponent::valueTreeRedirected (juce::ValueTree&)
+void MainComponent::valueTreeRedirected (juce::ValueTree& treeWhichHasBeenChanged)
 {
-    markSessionDirty();
+    if (! suppressDirtyTracking && ! isTransientEditSubtree (treeWhichHasBeenChanged))
+        markSessionDirty();
 }
 
 void MainComponent::markSessionDirty()

@@ -66,7 +66,7 @@ private:
     void markSessionDirty();
 
     void attachEdit (te::Edit& editToAttach);
-    static bool isTransportOrViewStateSubtree (const juce::ValueTree& tree);
+    static bool isTransientEditSubtree (juce::ValueTree tree);
 
     void guardUnsavedChanges (std::function<void (bool)> onProceed);
 

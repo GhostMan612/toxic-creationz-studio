@@ -32,6 +32,7 @@ private:
     };
 
     te::MidiClip* resolveClip() const;
+    te::MidiNote* resolveActiveNote (te::MidiList& seq) const;
     double snapBeat (double rawBeat) const;
     int getPitchAtY (int y) const;
     double getBeatAtX (int x) const;
@@ -52,7 +53,9 @@ private:
     double lastNoteLengthBeats = 0.5; // FL-style remembered note length
 
     DragMode dragMode = DragMode::none;
-    int activeNoteIndex = -1;
+    // MidiNote has no EditItemID; its ValueTree identity is stable across the
+    // lazy startBeat re-sort, so it is used as the drag token.
+    juce::ValueTree activeNoteState;
     double dragStartBeatOffset = 0.0;
     double initialNoteStartBeat = 0.0;
     double initialNoteLengthBeats = 0.5;

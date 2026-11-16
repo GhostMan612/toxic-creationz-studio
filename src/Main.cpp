@@ -160,6 +160,79 @@ int MainComponent::runHeadlessSmokeTest()
         um.undo();
     }
 
+    //--- WO-003 follow-up: dragging past a neighbor must not transfer ---------
+    {
+        auto* clip = [&]() -> te::MidiClip*
+        {
+            for (auto* c : te::getAudioTracks (*app.edit)[0]->getClips())
+                if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                    return mc;
+            return nullptr;
+        }();
+
+        if (clip == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: no MIDI clip available for drag-reorder check" << std::endl;
+            return 1;
+        }
+
+        auto& seq = clip->getSequence();
+        auto& um  = app.edit->getUndoManager();
+
+        auto findNoteAtBeat = [&seq] (double beat)
+        {
+            for (auto* n : seq.getNotes())
+                if (std::abs (n->getStartBeat().inBeats() - beat) < 1e-4)
+                    return n;
+            return (te::MidiNote*) nullptr;
+        };
+
+        auto* dragged  = findNoteAtBeat (0.0);
+        auto* neighbor = findNoteAtBeat (2.0);
+
+        if (dragged == nullptr || neighbor == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: could not locate notes for drag-reorder check" << std::endl;
+            return 1;
+        }
+
+        const juce::ValueTree draggedState = dragged->state;
+        const double neighborStart = neighbor->getStartBeat().inBeats();
+        const int neighborPitch = neighbor->getNoteNumber();
+
+        um.beginNewTransaction ("Smoke Drag Note");
+        dragged->setStartAndLength (tracktion::BeatPosition::fromBeats (2.5),
+                                    tracktion::BeatDuration::fromBeats (1.0), &um);
+
+        // Re-resolve the dragged note by its stable ValueTree identity: the
+        // array re-sorts by startBeat, so an index would have moved.
+        te::MidiNote* tracked = nullptr;
+        for (auto* n : seq.getNotes())
+            if (n->state == draggedState)
+                tracked = n;
+
+        if (tracked == nullptr || std::abs (tracked->getStartBeat().inBeats() - 2.5) > 1e-4)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: dragged note did not land at 2.5 beats" << std::endl;
+            return 1;
+        }
+
+        auto* neighborAfter = findNoteAtBeat (neighborStart);
+
+        if (neighborAfter == nullptr || neighborAfter->getNoteNumber() != neighborPitch)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: neighboring note was disturbed by the drag" << std::endl;
+            return 1;
+        }
+
+        if (seq.getNumNotes() != 4)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: note count changed during drag, got "
+                      << seq.getNumNotes() << std::endl;
+            return 1;
+        }
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);

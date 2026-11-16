@@ -35,7 +35,7 @@ void PianoRollComponent::setTarget (te::Edit* targetEdit, tracktion::EditItemID 
     edit = targetEdit;
     targetClipID = clipID;
     dragMode = DragMode::none;
-    activeNoteIndex = -1;
+    activeNoteState = {};
     repaint();
 }
 
@@ -54,6 +54,18 @@ te::MidiClip* PianoRollComponent::resolveClip() const
         for (auto* clip : track->getClips())
             if (clip->itemID == targetClipID)
                 return dynamic_cast<te::MidiClip*> (clip);
+
+    return nullptr;
+}
+
+te::MidiNote* PianoRollComponent::resolveActiveNote (te::MidiList& seq) const
+{
+    if (! activeNoteState.isValid())
+        return nullptr;
+
+    for (auto* note : seq.getNotes())
+        if (note->state == activeNoteState)
+            return note;
 
     return nullptr;
 }
@@ -196,7 +208,7 @@ void PianoRollComponent::paint (juce::Graphics& g)
             continue;
 
         const auto rect = getNoteRect (*note);
-        const bool isActive = (i == activeNoteIndex);
+        const bool isActive = (note->state == activeNoteState);
 
         g.setColour (isActive ? juce::Colour (0xff60a5fa) : juce::Colour (0xff38bdf8));
         g.fillRoundedRectangle (rect.toFloat(), 3.0f);
@@ -230,8 +242,9 @@ void PianoRollComponent::mouseDown (const juce::MouseEvent& e)
         {
             if (e.mods.isRightButtonDown())
             {
+                um.beginNewTransaction ("Delete Note");
                 seq.removeNote (*note, &um);
-                activeNoteIndex = -1;
+                activeNoteState = {};
                 repaint();
 
                 if (onSequenceChanged != nullptr)
@@ -240,17 +253,21 @@ void PianoRollComponent::mouseDown (const juce::MouseEvent& e)
                 return;
             }
 
-            activeNoteIndex = i;
+            activeNoteState = note->state;
             initialNoteStartBeat  = note->getStartBeat().inBeats();
             initialNoteLengthBeats = note->getLengthBeats().inBeats();
             lastNoteLengthBeats   = initialNoteLengthBeats;
 
             if (e.x >= rect.getRight() - 7)
+            {
                 dragMode = DragMode::resizeNote;
+                um.beginNewTransaction ("Resize Note");
+            }
             else
             {
                 dragMode = DragMode::moveNote;
                 dragStartBeatOffset = getBeatAtX (e.x) - initialNoteStartBeat;
+                um.beginNewTransaction ("Move Note");
             }
 
             repaint();
@@ -265,26 +282,20 @@ void PianoRollComponent::mouseDown (const juce::MouseEvent& e)
         const int pitch = getPitchAtY (e.y);
         const double lengthBeats = std::max (snapBeats, lastNoteLengthBeats);
 
-        seq.addNote (pitch,
-                     tracktion::BeatPosition::fromBeats (startBeat),
-                     tracktion::BeatDuration::fromBeats (lengthBeats),
-                     110, 0, &um);
+        um.beginNewTransaction ("Paint Note");
 
-        // Select the newly added note so an immediate drag moves/resizes it
-        const auto& updatedNotes = seq.getNotes();
-
-        for (int i = updatedNotes.size() - 1; i >= 0; --i)
+        if (auto* added = seq.addNote (pitch,
+                                       tracktion::BeatPosition::fromBeats (startBeat),
+                                       tracktion::BeatDuration::fromBeats (lengthBeats),
+                                       110, 0, &um))
         {
-            if (updatedNotes[i]->getNoteNumber() == pitch
-                && std::abs (updatedNotes[i]->getStartBeat().inBeats() - startBeat) < 1e-4)
-            {
-                activeNoteIndex       = i;
-                initialNoteStartBeat  = startBeat;
-                initialNoteLengthBeats = lengthBeats;
-                dragStartBeatOffset   = 0.0;
-                dragMode              = DragMode::moveNote;
-                break;
-            }
+            // Track the new note by its stable ValueTree identity so an
+            // immediate drag stays locked to it.
+            activeNoteState        = added->state;
+            initialNoteStartBeat   = startBeat;
+            initialNoteLengthBeats = lengthBeats;
+            dragStartBeatOffset    = 0.0;
+            dragMode               = DragMode::moveNote;
         }
 
         repaint();
@@ -303,12 +314,12 @@ void PianoRollComponent::mouseDrag (const juce::MouseEvent& e)
 
     auto& seq = clip->getSequence();
     auto& um  = edit->getUndoManager();
-    const auto& notes = seq.getNotes();
 
-    if (! juce::isPositiveAndBelow (activeNoteIndex, notes.size()))
+    auto* note = resolveActiveNote (seq);
+
+    if (note == nullptr)
         return;
 
-    auto* note = notes[activeNoteIndex];
     const double pointerBeat = getBeatAtX (e.x);
 
     if (dragMode == DragMode::resizeNote)
@@ -344,4 +355,5 @@ void PianoRollComponent::mouseDrag (const juce::MouseEvent& e)
 void PianoRollComponent::mouseUp (const juce::MouseEvent&)
 {
     dragMode = DragMode::none;
+    activeNoteState = {};
 }
