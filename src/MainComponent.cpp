@@ -1,8 +1,8 @@
 #include "MainComponent.h"
 
-// ============================================================================
+//==============================================================================
 // Owned, Interruptible Background VST3 Scanner (Cooperative Cancellation)
-// ============================================================================
+//==============================================================================
 class MainComponent::Vst3ScanThread : public juce::Thread
 {
 public:
@@ -14,7 +14,6 @@ public:
 
     void run() override
     {
-        // RAII: publish completion no matter how run() leaves scope.
         struct FinishGuard
         {
             explicit FinishGuard (std::atomic<bool>& f) : flag (f) { flag.store (false); }
@@ -83,18 +82,54 @@ private:
     std::atomic<bool> scanFinished { false };
 };
 
-// ============================================================================
-// MainComponent Implementation
-// ============================================================================
+//==============================================================================
+// MainComponent
+//==============================================================================
 MainComponent::MainComponent()
 {
     loadCachedPlugins();
 
+    // Views
+    addAndMakeVisible (arrangementView);
+    addAndMakeVisible (pianoRoll);
+
+    arrangementView.onClipSelected = [this] (tracktion::EditItemID clipID)
+    {
+        pianoRoll.setTarget (edit.get(), clipID);
+    };
+
+    pianoRoll.onSequenceChanged = [this]
+    {
+        arrangementView.repaint();
+        markSessionDirty();
+    };
+
+    // Toolbar
+    addAndMakeVisible (newButton);
+    addAndMakeVisible (openButton);
+    addAndMakeVisible (saveButton);
+    addAndMakeVisible (saveAsButton);
+    addAndMakeVisible (addTrackButton);
+    addAndMakeVisible (undoButton);
+    addAndMakeVisible (redoButton);
+    addAndMakeVisible (playButton);
+    addAndMakeVisible (stopButton);
+    addAndMakeVisible (scanPluginsButton);
+    addAndMakeVisible (bpmSlider);
+    addAndMakeVisible (statusLabel);
+
+    bpmSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    bpmSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 52, 18);
+    bpmSlider.setRange (40.0, 240.0, 1.0);
+    bpmSlider.setValue (124.0, juce::dontSendNotification);
+
+    // Session (after the views exist so attachEdit can bind them)
     const auto defaultFile = getDefaultProjectFile();
 
     if (defaultFile.existsAsFile())
     {
         juce::String error;
+
         if (loadSessionFromFileSafely (defaultFile, &error))
             statusLabel.setText ("Loaded: " + currentEditFile.getFileName(), juce::dontSendNotification);
     }
@@ -104,15 +139,6 @@ MainComponent::MainComponent()
         createNewSession (defaultFile, true, false);
         saveSession();
     }
-
-    addAndMakeVisible (newButton);
-    addAndMakeVisible (openButton);
-    addAndMakeVisible (saveButton);
-    addAndMakeVisible (saveAsButton);
-    addAndMakeVisible (playButton);
-    addAndMakeVisible (stopButton);
-    addAndMakeVisible (scanPluginsButton);
-    addAndMakeVisible (statusLabel);
 
     newButton.onClick = [this]
     {
@@ -148,6 +174,43 @@ MainComponent::MainComponent()
     saveButton.onClick   = [this] { saveSession(); };
     saveAsButton.onClick = [this] { saveSessionAsDialog(); };
 
+    addTrackButton.onClick = [this]
+    {
+        if (edit == nullptr)
+            return;
+
+        edit->ensureNumberOfAudioTracks (te::getAudioTracks (*edit).size() + 1);
+        auto tracks = te::getAudioTracks (*edit);
+        tracks.getLast()->setName ("Track " + juce::String (tracks.size()));
+
+        arrangementView.setEdit (edit.get());
+        markSessionDirty();
+    };
+
+    undoButton.onClick = [this]
+    {
+        if (edit == nullptr)
+            return;
+
+        edit->getUndoManager().undo();
+        bpmSlider.setValue (edit->tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
+        arrangementView.repaint();
+        pianoRoll.repaint();
+        markSessionDirty();
+    };
+
+    redoButton.onClick = [this]
+    {
+        if (edit == nullptr)
+            return;
+
+        edit->getUndoManager().redo();
+        bpmSlider.setValue (edit->tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
+        arrangementView.repaint();
+        pianoRoll.repaint();
+        markSessionDirty();
+    };
+
     playButton.onClick = [this]
     {
         if (edit != nullptr)
@@ -162,7 +225,13 @@ MainComponent::MainComponent()
 
     scanPluginsButton.onClick = [this] { startVst3Scan(); };
 
-    setSize (1040, 620);
+    bpmSlider.onValueChange = [this]
+    {
+        if (edit != nullptr)
+            edit->tempoSequence.getTempo (0)->setBpm (bpmSlider.getValue());
+    };
+
+    setSize (1180, 760);
     startTimerHz (30);
     updateWindowTitle();
 }
@@ -184,6 +253,7 @@ MainComponent::~MainComponent()
     retiredScanThreads.clear();
 
     activeFileChooser.reset();
+    alertBox.close();
 
     if (edit != nullptr)
     {
@@ -196,8 +266,22 @@ MainComponent::~MainComponent()
 //==============================================================================
 // Dirty-state tracking
 //==============================================================================
-void MainComponent::valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&)
+bool MainComponent::isTransportOrViewStateSubtree (const juce::ValueTree& tree)
 {
+    for (auto t = tree; t.isValid(); t = t.getParent())
+        if (t.hasType (juce::Identifier ("TRANSPORT")) || t.hasType (juce::Identifier ("VIEWSTATE")))
+            return true;
+
+    return false;
+}
+
+void MainComponent::valueTreePropertyChanged (juce::ValueTree& treeWhosePropertyHasChanged,
+                                             const juce::Identifier&)
+{
+    // Transport/view-state churn (playhead, zoom, selection) is not a content edit.
+    if (isTransportOrViewStateSubtree (treeWhosePropertyHasChanged))
+        return;
+
     markSessionDirty();
 }
 
@@ -328,8 +412,7 @@ void MainComponent::stopVst3Scan (int timeoutMs)
     }
     else
     {
-        // Never destroy a thread that may still be running: quarantine it and
-        // reap it later once Vst3ScanThread::isFinished() flips.
+        // Never destroy a thread that may still be running: quarantine and reap later.
         retiredScanThreads.push_back (std::move (scanThread));
     }
 }
@@ -355,6 +438,13 @@ bool MainComponent::isVst3ScanRunning() const
 //==============================================================================
 // Session management
 //==============================================================================
+void MainComponent::attachEdit (te::Edit& editToAttach)
+{
+    arrangementView.setEdit (&editToAttach);
+    pianoRoll.setTarget (&editToAttach, arrangementView.getSelectedClipID());
+    bpmSlider.setValue (editToAttach.tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
+}
+
 void MainComponent::guardUnsavedChanges (std::function<void (bool)> onProceed)
 {
     if (onProceed == nullptr)
@@ -368,32 +458,37 @@ void MainComponent::guardUnsavedChanges (std::function<void (bool)> onProceed)
 
     juce::Component::SafePointer<MainComponent> safeThis (this);
 
-    juce::AlertWindow::showYesNoCancelBox (
-        juce::AlertWindow::WarningIcon,
-        "Unsaved Changes",
-        "The current session has unsaved changes. Save before continuing?",
-        "Save", "Discard", "Cancel",
-        nullptr,
-        juce::ModalCallbackFunction::create (
-            [safeThis, onProceed] (int result)
-            {
-                if (safeThis == nullptr)
-                    return;
+    auto options = juce::MessageBoxOptions()
+                       .withIconType (juce::MessageBoxIconType::WarningIcon)
+                       .withTitle ("Unsaved Changes")
+                       .withMessage ("The current session has unsaved changes. Save before continuing?")
+                       .withButton (juce::MessageBoxButtonOptions ("Save", 1).withPreferredAction())
+                       .withButton (juce::MessageBoxButtonOptions ("Discard", 2)
+                                        .withRole (juce::MessageBoxButtonRole::destroy))
+                       .withButton (juce::MessageBoxButtonOptions ("Cancel", 0)
+                                        .withRole (juce::MessageBoxButtonRole::cancel))
+                       .withAssociatedComponent (this);
 
-                if (result == 1)  // Save
+    alertBox = juce::AlertWindow::showScopedAsync (options,
+        [safeThis, onProceed] (int result)
+        {
+            if (safeThis == nullptr)
+                return;
+
+            if (result == 1)  // Save
+            {
+                safeThis->saveSession ([safeThis, onProceed] (bool saved)
                 {
-                    safeThis->saveSession ([safeThis, onProceed] (bool saved)
-                    {
-                        if (safeThis != nullptr && saved)
-                            onProceed (true);
-                    });
-                }
-                else if (result == 2)  // Discard
-                {
-                    onProceed (true);
-                }
-                // result == 0 -> Cancel: abort the pending action.
-            }));
+                    if (safeThis != nullptr && saved)
+                        onProceed (true);
+                });
+            }
+            else if (result == 2)  // Discard
+            {
+                onProceed (true);
+            }
+            // 0 == Cancel: abort the pending action.
+        });
 }
 
 void MainComponent::createNewSession (const juce::File& targetFile, bool seedDefaultContent, bool untitled)
@@ -408,8 +503,7 @@ void MainComponent::createNewSession (const juce::File& targetFile, bool seedDef
     currentEditFile = targetFile;
     sessionUntitled = untitled;
 
-    // Non-destructive: never delete targetFile here. Callers allocate a fresh
-    // getNonexistentChildFile() path for untitled sessions.
+    // Non-destructive: never delete targetFile here.
     edit = te::createEmptyEdit (engine, currentEditFile);
     edit->ensureNumberOfAudioTracks (4);
     edit->tempoSequence.getTempo (0)->setBpm (124.0);
@@ -451,6 +545,7 @@ void MainComponent::createNewSession (const juce::File& targetFile, bool seedDef
     suppressDirtyTracking = false;
 
     attachStateListener (*edit);
+    attachEdit (*edit);
     updateWindowTitle();
 }
 
@@ -467,7 +562,6 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
         return false;
     };
 
-    // Validate everything we can before touching the active edit.
     if (fileToLoad == juce::File() || ! fileToLoad.existsAsFile())
         return fail ("File not found: " + fileToLoad.getFullPathName());
 
@@ -484,7 +578,6 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
     if (candidateEdit == nullptr)
         return fail ("Failed to load: " + fileToLoad.getFileName());
 
-    // Commit: only now is the active edit replaced.
     if (edit != nullptr)
     {
         edit->getTransport().stop (false, false);
@@ -502,6 +595,7 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
     suppressDirtyTracking = false;
 
     attachStateListener (*edit);
+    attachEdit (*edit);
     updateWindowTitle();
     return true;
 }
@@ -526,7 +620,6 @@ void MainComponent::saveSession (std::function<void (bool)> completion)
 
     currentEditFile.getParentDirectory().createDirectory();
 
-    // Synchronous persistence: flush the edit state and write its XML directly.
     edit->flushState();
 
     bool saved = false;
@@ -650,6 +743,7 @@ void MainComponent::timerCallback()
     {
         const double posSec = edit->getTransport().getPosition().inSeconds();
         statusLabel.setText ("Playing: " + juce::String (posSec, 2) + "s", juce::dontSendNotification);
+        arrangementView.repaint();
     }
 }
 
@@ -663,27 +757,38 @@ void MainComponent::resized()
     auto area = getLocalBounds().reduced (12);
     auto topBar = area.removeFromTop (36);
 
-    auto addToolbarBtn = [&topBar] (juce::TextButton& btn, int width)
+    auto addToolbarItem = [&topBar] (juce::Component& comp, int width)
     {
-        btn.setBounds (topBar.removeFromLeft (width));
+        comp.setBounds (topBar.removeFromLeft (width));
         topBar.removeFromLeft (6);
     };
 
-    addToolbarBtn (newButton, 64);
-    addToolbarBtn (openButton, 74);
-    addToolbarBtn (saveButton, 64);
-    addToolbarBtn (saveAsButton, 82);
+    addToolbarItem (newButton, 64);
+    addToolbarItem (openButton, 74);
+    addToolbarItem (saveButton, 64);
+    addToolbarItem (saveAsButton, 82);
+    addToolbarItem (addTrackButton, 72);
+    addToolbarItem (undoButton, 56);
+    addToolbarItem (redoButton, 56);
 
     topBar.removeFromLeft (8);
 
-    addToolbarBtn (playButton, 68);
-    addToolbarBtn (stopButton, 68);
+    addToolbarItem (playButton, 68);
+    addToolbarItem (stopButton, 68);
 
     topBar.removeFromLeft (8);
 
-    addToolbarBtn (scanPluginsButton, 100);
+    addToolbarItem (scanPluginsButton, 100);
 
+    topBar.removeFromLeft (8);
+
+    bpmSlider.setBounds (topBar.removeFromLeft (150));
     topBar.removeFromLeft (10);
 
     statusLabel.setBounds (topBar);
+
+    const int arrangementHeight = juce::roundToInt (area.getHeight() * 0.44f);
+    arrangementView.setBounds (area.removeFromTop (arrangementHeight));
+    area.removeFromTop (4);
+    pianoRoll.setBounds (area);
 }

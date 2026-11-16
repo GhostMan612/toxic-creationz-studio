@@ -4,6 +4,9 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <tracktion_engine/tracktion_engine.h>
 
+#include "ArrangementView.h"
+#include "PianoRollComponent.h"
+
 #include <atomic>
 #include <functional>
 #include <vector>
@@ -62,6 +65,9 @@ private:
     void detachStateListener (te::Edit& edit);
     void markSessionDirty();
 
+    void attachEdit (te::Edit& editToAttach);
+    static bool isTransportOrViewStateSubtree (const juce::ValueTree& tree);
+
     void guardUnsavedChanges (std::function<void (bool)> onProceed);
 
     void createNewSession (const juce::File& targetFile, bool seedDefaultContent, bool untitled);
@@ -83,14 +89,22 @@ private:
     std::vector<std::unique_ptr<Vst3ScanThread>> retiredScanThreads;
     std::atomic<bool> scanAbortRequested { false };
     std::unique_ptr<juce::FileChooser> activeFileChooser;
+    juce::ScopedMessageBox alertBox;
+
+    ArrangementView arrangementView;
+    PianoRollComponent pianoRoll;
 
     juce::TextButton newButton         { "New" };
     juce::TextButton openButton        { "Open..." };
     juce::TextButton saveButton        { "Save" };
     juce::TextButton saveAsButton      { "Save As..." };
+    juce::TextButton addTrackButton    { "+ Track" };
+    juce::TextButton undoButton        { "Undo" };
+    juce::TextButton redoButton        { "Redo" };
     juce::TextButton playButton        { "Play" };
     juce::TextButton stopButton        { "Stop" };
     juce::TextButton scanPluginsButton { "Scan VST3" };
+    juce::Slider bpmSlider;
     juce::Label statusLabel            { {}, "Ready" };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)

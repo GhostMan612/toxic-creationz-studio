@@ -3,8 +3,8 @@
 | Work Order | Title | State |
 | --- | --- | --- |
 | WO-001 | Phase 1 Hardening, Session Persistence & Automated Verification | Merged to `main` (`7d67dba`, PR #1) |
-| WO-002 | Project Data Safety & Scanner Lifecycle Hardening | In progress (`feat/wo-002-data-safety-scanner-hardening`, PR #2) |
-| WO-003 | Multi-Track Arrangement Timeline & FL Studio-Style Piano Roll | Queued (was "WO-002" in the earlier revision) |
+| WO-002 | Project Data Safety & Scanner Lifecycle Hardening | Merged to `main` (`77aea26`, PR #2) |
+| WO-003 | Multi-Track Arrangement Timeline & FL Studio-Style Piano Roll | In review (`feat/wo-003-timeline-piano-roll`, PR #3) |
 
 ---
 

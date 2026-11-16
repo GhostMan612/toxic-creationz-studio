@@ -110,6 +110,56 @@ int MainComponent::runHeadlessSmokeTest()
         return 1;
     }
 
+    //--- WO-003: MidiList::removeNote + UndoManager undo/redo round-trip ------
+    {
+        auto* clip = [&]() -> te::MidiClip*
+        {
+            for (auto* c : te::getAudioTracks (*app.edit)[0]->getClips())
+                if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                    return mc;
+            return nullptr;
+        }();
+
+        if (clip == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: no MIDI clip available for undo check" << std::endl;
+            return 1;
+        }
+
+        auto& seq = clip->getSequence();
+        auto& um  = app.edit->getUndoManager();
+
+        um.beginNewTransaction ("Smoke Delete Note");
+        seq.removeNote (*seq.getNotes().getLast(), &um);
+
+        if (seq.getNumNotes() != 3)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: expected 3 notes after removeNote, got "
+                      << seq.getNumNotes() << std::endl;
+            return 1;
+        }
+
+        um.undo();
+
+        if (seq.getNumNotes() != 4)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: expected 4 notes after UndoManager::undo, got "
+                      << seq.getNumNotes() << std::endl;
+            return 1;
+        }
+
+        um.redo();
+
+        if (seq.getNumNotes() != 3)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: expected 3 notes after UndoManager::redo, got "
+                      << seq.getNumNotes() << std::endl;
+            return 1;
+        }
+
+        um.undo();
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -135,7 +185,7 @@ int MainComponent::runHeadlessSmokeTest()
     corruptFile.deleteFile();
 
     std::cout << "[SMOKE_TEST] PASS: persistence, non-destructive New, atomic Open rollback, "
-                 "and VST3 scanner lifecycle verified." << std::endl;
+                 "Undo/Redo note editing, and VST3 scanner lifecycle verified." << std::endl;
     return 0;
 }
 
