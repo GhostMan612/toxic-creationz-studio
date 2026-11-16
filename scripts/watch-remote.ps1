@@ -1,5 +1,5 @@
 param(
-    [string]$RepoPath = "C:\toxic-creationz-studio",
+    [string]$RepoPath = "C:\Toxic Creationz Studio",
     [int]$IntervalSeconds = 30
 )
 

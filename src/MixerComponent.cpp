@@ -126,6 +126,13 @@ void MixerComponent::ChannelStrip::syncState()
     }
 }
 
+int MixerComponent::ChannelStrip::getMinimumHeight() const
+{
+    // Title + M/S/add row + one 21px row per plugin slot + pan + a 32px
+    // minimum fader + dB label, plus the 6px top/bottom insets.
+    return 123 + 21 * static_cast<int> (pluginSlots.size());
+}
+
 void MixerComponent::ChannelStrip::rebuildPluginSlots()
 {
     pluginSlots.clear();
@@ -229,7 +236,7 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
         if (chosenId == 1)
         {
             if (auto synth = safeThis->edit.getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {}))
-                tr->pluginList.insertPlugin (synth, 0, nullptr);
+                tr->pluginList.insertPlugin (synth, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
         }
         else if (chosenId >= 100)
         {
@@ -240,7 +247,7 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
                 const auto pluginTree = te::ExternalPlugin::create (safeThis->engine, vstTypes[idx]);
 
                 if (auto extPlugin = safeThis->edit.getPluginCache().createNewPlugin (pluginTree))
-                    tr->pluginList.insertPlugin (extPlugin, 0, nullptr);
+                    tr->pluginList.insertPlugin (extPlugin, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
             }
         }
 
@@ -278,25 +285,17 @@ void MixerComponent::ChannelStrip::resized()
 
     area.removeFromTop (4);
 
-    const int maxVisibleSlots = std::min (3, static_cast<int> (pluginSlots.size()));
-
+    // All slots are laid out; if a strip needs more height than the pane
+    // offers, the mixer's viewport scrolls vertically (see resized()).
     for (int i = 0; i < static_cast<int> (pluginSlots.size()); ++i)
     {
-        if (i < maxVisibleSlots)
-        {
-            auto slotRow = area.removeFromTop (19);
-            pluginSlots[i].removeButton->setVisible (true);
-            pluginSlots[i].openButton->setVisible (true);
-            pluginSlots[i].removeButton->setBounds (slotRow.removeFromRight (20));
-            slotRow.removeFromRight (2);
-            pluginSlots[i].openButton->setBounds (slotRow);
-            area.removeFromTop (2);
-        }
-        else
-        {
-            pluginSlots[i].openButton->setVisible (false);
-            pluginSlots[i].removeButton->setVisible (false);
-        }
+        auto slotRow = area.removeFromTop (19);
+        pluginSlots[i].removeButton->setVisible (true);
+        pluginSlots[i].openButton->setVisible (true);
+        pluginSlots[i].removeButton->setBounds (slotRow.removeFromRight (20));
+        slotRow.removeFromRight (2);
+        pluginSlots[i].openButton->setBounds (slotRow);
+        area.removeFromTop (2);
     }
 
     panSlider.setBounds (area.removeFromTop (18));
@@ -313,7 +312,7 @@ MixerComponent::MixerComponent (te::Engine& targetEngine)
     setOpaque (true);
     addAndMakeVisible (viewport);
     viewport.setViewedComponent (&stripsContainer, false);
-    viewport.setScrollBarsShown (false, true);
+    viewport.setScrollBarsShown (true, true);
 }
 
 void MixerComponent::setEdit (te::Edit* newEdit)
@@ -341,19 +340,25 @@ void MixerComponent::rebuildStrips()
     resized();
 }
 
-void MixerComponent::syncFromEdit()
+int MixerComponent::getInsertIndexForNewPlugin (te::AudioTrack& track)
 {
-    if (edit == nullptr)
-        return;
+    int index = 0;
 
-    if (static_cast<int> (strips.size()) != te::getAudioTracks (*edit).size())
+    for (auto* plugin : track.pluginList)
     {
-        rebuildStrips();
-        return;
+        // The terminal utilities sit at the end of the chain; a new insert
+        // goes just before the first of them. If there are none, the index
+        // is past the end and insertPlugin appends.
+        if (dynamic_cast<te::VolumeAndPanPlugin*> (plugin) != nullptr
+            || dynamic_cast<te::LevelMeterPlugin*> (plugin) != nullptr)
+        {
+            break;
+        }
+
+        ++index;
     }
 
-    for (auto& strip : strips)
-        strip->syncState();
+    return index;
 }
 
 void MixerComponent::paint (juce::Graphics& g)
@@ -378,7 +383,11 @@ void MixerComponent::resized()
     auto body = getLocalBounds().withTrimmedTop (headerHeight);
     viewport.setBounds (body);
 
-    const int contentHeight = std::max (120, body.getHeight() - 10);
+    int contentHeight = std::max (120, body.getHeight() - 10);
+
+    for (auto& strip : strips)
+        contentHeight = std::max (contentHeight, strip->getMinimumHeight());
+
     const int contentWidth  = std::max (body.getWidth(),
                                         static_cast<int> (strips.size()) * stripWidth);
     stripsContainer.setBounds (0, 0, contentWidth, contentHeight);

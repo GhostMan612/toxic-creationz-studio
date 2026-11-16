@@ -315,8 +315,21 @@ int MainComponent::runHeadlessSmokeTest()
             vol->setPan (0.35f);
         }
 
+        // Two inserts via the mixer's position helper: the second must land
+        // after the first in the chain, ahead of the terminal volume plugin.
+        tracktion::EditItemID firstSynthID, secondSynthID;
+
         if (auto bassSynth = edit->getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {}))
-            track2->pluginList.insertPlugin (bassSynth, 0, nullptr);
+        {
+            firstSynthID = bassSynth->itemID;
+            track2->pluginList.insertPlugin (bassSynth, MixerComponent::getInsertIndexForNewPlugin (*track2), nullptr);
+        }
+
+        if (auto secondSynth = edit->getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {}))
+        {
+            secondSynthID = secondSynth->itemID;
+            track2->pluginList.insertPlugin (secondSynth, MixerComponent::getInsertIndexForNewPlugin (*track2), nullptr);
+        }
 
         app.mixerComponent.rebuildStrips();
 
@@ -325,6 +338,9 @@ int MainComponent::runHeadlessSmokeTest()
         mixerDir.createDirectory();
 
         const auto mixerTestFile = mixerDir.getChildFile ("MixerRoundTrip.tracktionedit");
+
+        const auto prevEditFile = app.currentEditFile;
+        const bool prevUntitled = app.sessionUntitled;
 
         app.currentEditFile = mixerTestFile;
         app.sessionUntitled = false;
@@ -345,20 +361,26 @@ int MainComponent::runHeadlessSmokeTest()
         }
 
         auto* reloadedVol = reloadedTracks[1]->getVolumePlugin();
-        bool foundTrack2Synth = false;
+        std::vector<tracktion::EditItemID> reloadedSynthIDs;
 
         for (auto* p : reloadedTracks[1]->pluginList)
             if (dynamic_cast<te::FourOscPlugin*> (p) != nullptr)
-                foundTrack2Synth = true;
+                reloadedSynthIDs.push_back (p->itemID);
 
         if (reloadedVol == nullptr
             || std::abs (reloadedVol->getVolumeDb() - (-6.5f)) > 0.05f
             || std::abs (reloadedVol->getPan() - 0.35f) > 0.02f
-            || ! foundTrack2Synth)
+            || reloadedSynthIDs.size() != 2
+            || reloadedSynthIDs[0] != firstSynthID
+            || reloadedSynthIDs[1] != secondSynthID)
         {
-            std::cerr << "[SMOKE_TEST] FAIL: WO-004 mixer dB/pan or Track 2 plugin did not persist!" << std::endl;
+            std::cerr << "[SMOKE_TEST] FAIL: WO-004 mixer dB/pan, Track 2 plugins, or insert order did not persist!" << std::endl;
             return 1;
         }
+
+        // Restore the app's file pointer: the round-trip file is deleted below.
+        app.currentEditFile = prevEditFile;
+        app.sessionUntitled = prevUntitled;
 
         mixerDir.deleteRecursively();
     }
@@ -390,7 +412,7 @@ int MainComponent::runHeadlessSmokeTest()
 
     std::cout << "[SMOKE_TEST] PASS: persistence, non-destructive New, atomic Open rollback, "
                  "Undo/Redo note editing, dirty-state isolation, mixer gain/pan + instrument "
-                 "persistence, and VST3 scanner lifecycle verified." << std::endl;
+                 "persistence & insert order, and VST3 scanner lifecycle verified." << std::endl;
     return 0;
 }
 

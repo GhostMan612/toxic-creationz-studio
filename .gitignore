@@ -21,7 +21,6 @@ Thumbs.db
 .idea/
 *.user
 
-# Local Gemini briefing & heartbeat inbox
-docs/BRIEFING.md
+# Heartbeat inbox (machine-local, written by scripts/watch-remote.ps1)
 .hermes_inbox.md
 

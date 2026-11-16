@@ -16,7 +16,12 @@ public:
 
     void setEdit (te::Edit* newEdit);
     void rebuildStrips();
-    void syncFromEdit();
+
+    // Insert position for a newly added plugin: just before the terminal
+    // VolumeAndPan / LevelMeter utilities, i.e. at the end of the audible
+    // insert chain. Inserting at index 0 would put an effect ahead of the
+    // instrument it is meant to process.
+    static int getInsertIndexForNewPlugin (te::AudioTrack& track);
 
     std::function<void()> onMixerChanged;
 
@@ -30,6 +35,7 @@ private:
         ChannelStrip (MixerComponent& ownerMixer, te::Engine& eng, te::Edit& ed, int index);
 
         void syncState();
+        int getMinimumHeight() const;
         void paint (juce::Graphics& g) override;
         void resized() override;
 
