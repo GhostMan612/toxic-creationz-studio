@@ -1,7 +1,7 @@
 #include "MainComponent.h"
 
 // ============================================================================
-// Owned, Interruptible Background VST3 Scanner (Zero Dangling `this`)
+// Owned, Interruptible Background VST3 Scanner (Cooperative Cancellation)
 // ============================================================================
 class MainComponent::Vst3ScanThread : public juce::Thread
 {
@@ -14,6 +14,14 @@ public:
 
     void run() override
     {
+        // RAII: publish completion no matter how run() leaves scope.
+        struct FinishGuard
+        {
+            explicit FinishGuard (std::atomic<bool>& f) : flag (f) { flag.store (false); }
+            ~FinishGuard() { flag.store (true); }
+            std::atomic<bool>& flag;
+        } finishGuard (scanFinished);
+
         juce::VST3PluginFormat vst3Format;
         const juce::FileSearchPath searchPaths = vst3Format.getDefaultLocationsToSearch();
 
@@ -41,6 +49,7 @@ public:
             });
         }
 
+        // Cancelled: never publish a partial list or write the cache file.
         if (threadShouldExit())
             return;
 
@@ -49,7 +58,7 @@ public:
 
         juce::MessageManager::callAsync ([safeTarget, xml = std::move (xmlSnapshot)]() mutable
         {
-            if (safeTarget == nullptr)
+            if (safeTarget == nullptr || safeTarget->isScanAbortRequested())
                 return;
 
             auto& knownList = safeTarget->engine.getPluginManager().knownPluginList;
@@ -67,8 +76,11 @@ public:
         });
     }
 
+    bool isFinished() const noexcept { return scanFinished.load(); }
+
 private:
     juce::Component::SafePointer<MainComponent> safeOwner;
+    std::atomic<bool> scanFinished { false };
 };
 
 // ============================================================================
@@ -82,18 +94,14 @@ MainComponent::MainComponent()
 
     if (defaultFile.existsAsFile())
     {
-        edit = te::loadEditFromFile (engine, defaultFile);
-
-        if (edit != nullptr)
-        {
-            currentEditFile = defaultFile;
+        juce::String error;
+        if (loadSessionFromFileSafely (defaultFile, &error))
             statusLabel.setText ("Loaded: " + currentEditFile.getFileName(), juce::dontSendNotification);
-        }
     }
 
     if (edit == nullptr)
     {
-        createNewSession (defaultFile, true);
+        createNewSession (defaultFile, true, false);
         saveSession();
     }
 
@@ -108,14 +116,35 @@ MainComponent::MainComponent()
 
     newButton.onClick = [this]
     {
-        createNewSession (getDefaultProjectFile(), true);
-        saveSession();
+        juce::Component::SafePointer<MainComponent> safeThis (this);
 
-        statusLabel.setText ("Created new session: " + currentEditFile.getFileName(),
-                             juce::dontSendNotification);
+        guardUnsavedChanges ([safeThis] (bool proceed)
+        {
+            if (safeThis == nullptr || ! proceed)
+                return;
+
+            const auto target = safeThis->getProjectsDir()
+                                    .getNonexistentChildFile ("Untitled", ".tracktionedit", false);
+
+            safeThis->createNewSession (target, true, true);
+            safeThis->statusLabel.setText ("New session: " + safeThis->currentEditFile.getFileName(),
+                                           juce::dontSendNotification);
+        });
     };
 
-    openButton.onClick   = [this] { openSessionDialog(); };
+    openButton.onClick = [this]
+    {
+        juce::Component::SafePointer<MainComponent> safeThis (this);
+
+        guardUnsavedChanges ([safeThis] (bool proceed)
+        {
+            if (safeThis == nullptr || ! proceed)
+                return;
+
+            safeThis->openSessionDialog();
+        });
+    };
+
     saveButton.onClick   = [this] { saveSession(); };
     saveAsButton.onClick = [this] { saveSessionAsDialog(); };
 
@@ -141,16 +170,84 @@ MainComponent::MainComponent()
 MainComponent::~MainComponent()
 {
     stopTimer();
-    stopVst3Scan();
+    stopVst3Scan (3000);
+    reapRetiredScanThreads();
+
+    // Release any still-hung vendor DLL thread instead of triggering ~Thread().
+    for (auto& retired : retiredScanThreads)
+    {
+        retired->signalThreadShouldExit();
+
+        if (! retired->stopThread (500))
+            retired.release();
+    }
+    retiredScanThreads.clear();
+
     activeFileChooser.reset();
 
     if (edit != nullptr)
     {
         edit->getTransport().stop (false, false);
+        detachStateListener (*edit);
         edit.reset();
     }
 }
 
+//==============================================================================
+// Dirty-state tracking
+//==============================================================================
+void MainComponent::valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&)
+{
+    markSessionDirty();
+}
+
+void MainComponent::valueTreeChildAdded (juce::ValueTree&, juce::ValueTree&)
+{
+    markSessionDirty();
+}
+
+void MainComponent::valueTreeChildRemoved (juce::ValueTree&, juce::ValueTree&, int)
+{
+    markSessionDirty();
+}
+
+void MainComponent::valueTreeChildOrderChanged (juce::ValueTree&, int, int)
+{
+    markSessionDirty();
+}
+
+void MainComponent::valueTreeParentChanged (juce::ValueTree&)
+{
+    markSessionDirty();
+}
+
+void MainComponent::valueTreeRedirected (juce::ValueTree&)
+{
+    markSessionDirty();
+}
+
+void MainComponent::markSessionDirty()
+{
+    if (suppressDirtyTracking || sessionDirty)
+        return;
+
+    sessionDirty = true;
+    updateWindowTitle();
+}
+
+void MainComponent::attachStateListener (te::Edit& editToWatch)
+{
+    editToWatch.state.addListener (this);
+}
+
+void MainComponent::detachStateListener (te::Edit& editToUnwatch)
+{
+    editToUnwatch.state.removeListener (this);
+}
+
+//==============================================================================
+// Paths & plugin cache
+//==============================================================================
 juce::File MainComponent::getStudioRootDir() const
 {
     auto dir = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
@@ -160,12 +257,16 @@ juce::File MainComponent::getStudioRootDir() const
     return dir;
 }
 
+juce::File MainComponent::getProjectsDir() const
+{
+    auto dir = getStudioRootDir().getChildFile ("Projects");
+    dir.createDirectory();
+    return dir;
+}
+
 juce::File MainComponent::getDefaultProjectFile() const
 {
-    auto projectsDir = getStudioRootDir().getChildFile ("Projects");
-    projectsDir.createDirectory();
-
-    return projectsDir.getChildFile ("autosave_session.tracktionedit");
+    return getProjectsDir().getChildFile ("autosave_session.tracktionedit");
 }
 
 juce::File MainComponent::getPluginCacheFile() const
@@ -197,10 +298,14 @@ void MainComponent::saveCachedPlugins()
         xml->writeTo (getPluginCacheFile());
 }
 
+//==============================================================================
+// VST3 scanner lifecycle
+//==============================================================================
 void MainComponent::startVst3Scan()
 {
     stopVst3Scan();
 
+    scanAbortRequested.store (false);
     scanPluginsButton.setEnabled (false);
     statusLabel.setText ("Scanning VST3 directories...", juce::dontSendNotification);
 
@@ -208,31 +313,103 @@ void MainComponent::startVst3Scan()
     scanThread->startThread();
 }
 
-void MainComponent::stopVst3Scan()
+void MainComponent::stopVst3Scan (int timeoutMs)
 {
-    if (scanThread != nullptr)
+    if (scanThread == nullptr)
+        return;
+
+    scanAbortRequested.store (true);
+    scanThread->signalThreadShouldExit();
+    const bool joined = scanThread->stopThread (timeoutMs);
+
+    if (joined)
     {
-        scanThread->signalThreadShouldExit();
-        scanThread->stopThread (3000);
         scanThread.reset();
+    }
+    else
+    {
+        // Never destroy a thread that may still be running: quarantine it and
+        // reap it later once Vst3ScanThread::isFinished() flips.
+        retiredScanThreads.push_back (std::move (scanThread));
     }
 }
 
-void MainComponent::createNewSession (const juce::File& targetFile, bool seedDefaultContent)
+void MainComponent::reapRetiredScanThreads()
+{
+    for (auto it = retiredScanThreads.begin(); it != retiredScanThreads.end(); )
+    {
+        auto& retired = *it;
+
+        if (retired->isFinished() && retired->stopThread (0))
+            it = retiredScanThreads.erase (it);
+        else
+            ++it;
+    }
+}
+
+bool MainComponent::isVst3ScanRunning() const
+{
+    return scanThread != nullptr || ! retiredScanThreads.empty();
+}
+
+//==============================================================================
+// Session management
+//==============================================================================
+void MainComponent::guardUnsavedChanges (std::function<void (bool)> onProceed)
+{
+    if (onProceed == nullptr)
+        return;
+
+    if (! hasUnsavedChanges())
+    {
+        onProceed (true);
+        return;
+    }
+
+    juce::Component::SafePointer<MainComponent> safeThis (this);
+
+    juce::AlertWindow::showYesNoCancelBox (
+        juce::AlertWindow::WarningIcon,
+        "Unsaved Changes",
+        "The current session has unsaved changes. Save before continuing?",
+        "Save", "Discard", "Cancel",
+        nullptr,
+        juce::ModalCallbackFunction::create (
+            [safeThis, onProceed] (int result)
+            {
+                if (safeThis == nullptr)
+                    return;
+
+                if (result == 1)  // Save
+                {
+                    safeThis->saveSession ([safeThis, onProceed] (bool saved)
+                    {
+                        if (safeThis != nullptr && saved)
+                            onProceed (true);
+                    });
+                }
+                else if (result == 2)  // Discard
+                {
+                    onProceed (true);
+                }
+                // result == 0 -> Cancel: abort the pending action.
+            }));
+}
+
+void MainComponent::createNewSession (const juce::File& targetFile, bool seedDefaultContent, bool untitled)
 {
     if (edit != nullptr)
     {
         edit->getTransport().stop (false, false);
+        detachStateListener (*edit);
         edit.reset();
     }
 
-    targetFile.getParentDirectory().createDirectory();
-
-    if (targetFile.existsAsFile())
-        targetFile.deleteFile();
-
     currentEditFile = targetFile;
+    sessionUntitled = untitled;
 
+    // Non-destructive: never delete targetFile here. Callers allocate a fresh
+    // getNonexistentChildFile() path for untitled sessions.
     edit = te::createEmptyEdit (engine, currentEditFile);
     edit->ensureNumberOfAudioTracks (4);
     edit->tempoSequence.getTempo (0)->setBpm (124.0);
@@ -268,28 +445,101 @@ void MainComponent::createNewSession (const juce::File& targetFile, bool seedDef
         }
     }
 
+    suppressDirtyTracking = true;
+    edit->resetChangedStatus();
+    sessionDirty = false;
+    suppressDirtyTracking = false;
+
+    attachStateListener (*edit);
     updateWindowTitle();
 }
 
-void MainComponent::saveSession()
+bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juce::String* errorOut)
+{
+    if (errorOut != nullptr)
+        errorOut->clear();
+
+    auto fail = [errorOut] (const juce::String& message)
+    {
+        if (errorOut != nullptr)
+            *errorOut = message;
+
+        return false;
+    };
+
+    // Validate everything we can before touching the active edit.
+    if (fileToLoad == juce::File() || ! fileToLoad.existsAsFile())
+        return fail ("File not found: " + fileToLoad.getFullPathName());
+
+    if (fileToLoad.getSize() == 0)
+        return fail ("File is empty: " + fileToLoad.getFileName());
+
+    auto xml = juce::XmlDocument::parse (fileToLoad);
+
+    if (xml == nullptr || ! xml->hasTagName ("EDIT"))
+        return fail ("Not a valid Tracktion edit: " + fileToLoad.getFileName());
+
+    auto candidateEdit = te::loadEditFromFile (engine, fileToLoad);
+
+    if (candidateEdit == nullptr)
+        return fail ("Failed to load: " + fileToLoad.getFileName());
+
+    // Commit: only now is the active edit replaced.
+    if (edit != nullptr)
+    {
+        edit->getTransport().stop (false, false);
+        detachStateListener (*edit);
+        edit.reset();
+    }
+
+    edit = std::move (candidateEdit);
+    currentEditFile = fileToLoad;
+    sessionUntitled = false;
+
+    suppressDirtyTracking = true;
+    edit->resetChangedStatus();
+    sessionDirty = false;
+    suppressDirtyTracking = false;
+
+    attachStateListener (*edit);
+    updateWindowTitle();
+    return true;
+}
+
+void MainComponent::saveSession (std::function<void (bool)> completion)
 {
     if (edit == nullptr)
+    {
+        if (completion != nullptr)
+            completion (false);
         return;
+    }
+
+    if (sessionUntitled)
+    {
+        saveSessionAsDialog (completion);
+        return;
+    }
 
     if (currentEditFile == juce::File())
         currentEditFile = getDefaultProjectFile();
 
     currentEditFile.getParentDirectory().createDirectory();
 
-    // Write the edit's XML state directly to the target file. This is the
-    // synchronous EditFileOperations path; the edit's own file binding is set
-    // at create/load time, so Save As simply retargets currentEditFile.
-    te::EditFileOperations fileOps (*edit);
-    const bool saved = fileOps.writeToFile (currentEditFile, false);
+    // Synchronous persistence: flush the edit state and write its XML directly.
+    edit->flushState();
+
+    bool saved = false;
+    if (auto xml = edit->state.createXml())
+        saved = xml->writeTo (currentEditFile);
 
     if (saved)
     {
+        suppressDirtyTracking = true;
         edit->resetChangedStatus();
+        sessionDirty = false;
+        suppressDirtyTracking = false;
+
         statusLabel.setText ("Saved: " + currentEditFile.getFileName(), juce::dontSendNotification);
         updateWindowTitle();
     }
@@ -297,16 +547,63 @@ void MainComponent::saveSession()
     {
         statusLabel.setText ("Save failed: " + currentEditFile.getFullPathName(), juce::dontSendNotification);
     }
+
+    if (completion != nullptr)
+        completion (saved);
+}
+
+void MainComponent::saveSessionAsDialog (std::function<void (bool)> completion)
+{
+    if (edit == nullptr)
+    {
+        if (completion != nullptr)
+            completion (false);
+        return;
+    }
+
+    const auto suggested = currentEditFile.existsAsFile()
+                               ? currentEditFile
+                               : getProjectsDir().getChildFile ("untitled.tracktionedit");
+
+    activeFileChooser = std::make_unique<juce::FileChooser> (
+        "Save Tracktion Edit As", suggested, "*.tracktionedit");
+
+    juce::Component::SafePointer<MainComponent> safeThis (this);
+
+    activeFileChooser->launchAsync (
+        juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+            | juce::FileBrowserComponent::warnAboutOverwriting,
+        [safeThis, completion] (const juce::FileChooser& chooser)
+        {
+            if (safeThis == nullptr)
+            {
+                if (completion != nullptr)
+                    completion (false);
+                return;
+            }
+
+            auto target = chooser.getResult();
+
+            if (target == juce::File())
+            {
+                if (completion != nullptr)
+                    completion (false);
+                return;
+            }
+
+            if (! target.hasFileExtension (".tracktionedit"))
+                target = target.withFileExtension (".tracktionedit");
+
+            safeThis->currentEditFile = target;
+            safeThis->sessionUntitled = false;
+            safeThis->saveSession (completion);
+        });
 }
 
 void MainComponent::openSessionDialog()
 {
-    auto projectsDir = getStudioRootDir().getChildFile ("Projects");
-
     activeFileChooser = std::make_unique<juce::FileChooser> (
-        "Open Tracktion Edit",
-        projectsDir,
-        "*.tracktionedit");
+        "Open Tracktion Edit", getProjectsDir(), "*.tracktionedit");
 
     juce::Component::SafePointer<MainComponent> safeThis (this);
 
@@ -318,61 +615,19 @@ void MainComponent::openSessionDialog()
                 return;
 
             const auto chosen = chooser.getResult();
-            if (! chosen.existsAsFile())
+
+            if (chosen == juce::File())
                 return;
 
-            if (safeThis->edit != nullptr)
+            juce::String error;
+
+            if (! safeThis->loadSessionFromFileSafely (chosen, &error))
             {
-                safeThis->edit->getTransport().stop (false, false);
-                safeThis->edit.reset();
-            }
-
-            safeThis->edit = te::loadEditFromFile (safeThis->engine, chosen);
-
-            if (safeThis->edit != nullptr)
-            {
-                safeThis->currentEditFile = chosen;
-                safeThis->statusLabel.setText ("Opened: " + chosen.getFileName(), juce::dontSendNotification);
-                safeThis->updateWindowTitle();
-            }
-            else
-            {
-                safeThis->statusLabel.setText ("Failed to open: " + chosen.getFileName(), juce::dontSendNotification);
-            }
-        });
-}
-
-void MainComponent::saveSessionAsDialog()
-{
-    if (edit == nullptr)
-        return;
-
-    auto projectsDir = getStudioRootDir().getChildFile ("Projects");
-
-    activeFileChooser = std::make_unique<juce::FileChooser> (
-        "Save Tracktion Edit As",
-        projectsDir.getChildFile ("untitled.tracktionedit"),
-        "*.tracktionedit");
-
-    juce::Component::SafePointer<MainComponent> safeThis (this);
-
-    activeFileChooser->launchAsync (
-        juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
-            | juce::FileBrowserComponent::warnAboutOverwriting,
-        [safeThis] (const juce::FileChooser& chooser)
-        {
-            if (safeThis == nullptr || safeThis->edit == nullptr)
+                safeThis->statusLabel.setText (error, juce::dontSendNotification);
                 return;
+            }
 
-            auto target = chooser.getResult();
-            if (target == juce::File())
-                return;
-
-            if (! target.hasFileExtension (".tracktionedit"))
-                target = target.withFileExtension (".tracktionedit");
-
-            safeThis->currentEditFile = target;
-            safeThis->saveSession();
+            safeThis->statusLabel.setText ("Opened: " + chosen.getFileName(), juce::dontSendNotification);
         });
 }
 
@@ -380,13 +635,17 @@ void MainComponent::updateWindowTitle()
 {
     if (auto* topWindow = findParentComponentOfClass<juce::DocumentWindow>())
     {
-        const auto suffix = currentEditFile.exists() ? (" — " + currentEditFile.getFileName()) : juce::String();
-        topWindow->setName (JUCE_APPLICATION_NAME_STRING + suffix);
+        const auto suffix = currentEditFile.exists() ? (" — " + currentEditFile.getFileName())
+                                                     : juce::String();
+
+        topWindow->setName (JUCE_APPLICATION_NAME_STRING + suffix + (sessionDirty ? " •" : ""));
     }
 }
 
 void MainComponent::timerCallback()
 {
+    reapRetiredScanThreads();
+
     if (edit != nullptr && edit->getTransport().isPlaying())
     {
         const double posSec = edit->getTransport().getPosition().inSeconds();
