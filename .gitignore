@@ -21,6 +21,9 @@ Thumbs.db
 .idea/
 *.user
 
-# Heartbeat inbox (machine-local, written by scripts/watch-remote.ps1)
+# Local Gemini briefing & heartbeat inbox — BRIEFING.md deletion confirmed
+# intended by Glenn (16 Nov 2026): the blueprint is local-only, recoverable
+# from git history if ever needed.
+docs/BRIEFING.md
 .hermes_inbox.md
 

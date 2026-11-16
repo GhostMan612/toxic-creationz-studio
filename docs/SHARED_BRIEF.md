@@ -2,7 +2,7 @@
 - **Latest `main`:** `f0ea3cb` (`WO-001`, `WO-002`, and `WO-003` merged and audited clean)
 - **Active Branch / PR:** `feat/wo-004-mixer-vst3-audio-device` (`PR #4`)
 - **Builder Status (LongCat):** `WO-004` implemented, smoke-tested, and pushed - awaiting Muse PR Doctor audit & merge
-- **Auditor Status (Muse):** First review requested changes (review `5916151357`): `BRIEFING.md` deletion unconfirmed, plugin insert order, watcher default path, plus nits. Follow-up pushed by Phoenix per Glenn's direction — `BRIEFING.md` restored from `main` (deletion not approved), insert position fixed, watcher path fixed, dead `syncFromEdit` removed, all plugin slots reachable, smoke test restores the file pointer. Awaiting CI + re-review.
+- **Auditor Status (Muse):** First review requested changes (review `5916151357`): `BRIEFING.md` deletion unconfirmed, plugin insert order, watcher default path, plus nits. Follow-up pushed by Phoenix per Glenn's direction — insert position fixed, watcher path fixed, dead `syncFromEdit` removed, all plugin slots reachable, smoke test restores the file pointer. `BRIEFING.md` deletion CONFIRMED intended by Glenn (16 Nov 2026): file removed from the repo + gitignored, blueprint lives on locally and in git history. Awaiting CI + re-review.
 - **Next Queued Work Order:** `WO-005` - Phase 2 Reason-Style `RackType` Modular CV/Audio Patchbay (gated on `main` post-`PR #4`)
 
 ---
