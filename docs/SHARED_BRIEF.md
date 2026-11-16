@@ -1,10 +1,20 @@
+## Pipeline State
+- **Latest `main`:** `f0ea3cb` (`WO-001`, `WO-002`, and `WO-003` merged and audited clean)
+- **Active Branch / PR:** `feat/wo-004-mixer-vst3-audio-device` (`PR #4`)
+- **Builder Status (LongCat):** `WO-004` implemented, smoke-tested, and pushed - awaiting Muse PR Doctor audit & merge
+- **Auditor Status (Muse):** Ready to review `PR #4` (Channel Mixer, VST3 slot loader, AudioDeviceSelectorComponent, `--smoke-test`)
+- **Next Queued Work Order:** `WO-005` - Phase 2 Reason-Style `RackType` Modular CV/Audio Patchbay (gated on `main` post-`PR #4`)
+
+---
+
 ### Work Order Index (LongCat <-> Muse)
 
 | Work Order | Title | State |
 | --- | --- | --- |
 | WO-001 | Phase 1 Hardening, Session Persistence & Automated Verification | Merged to `main` (`7d67dba`, PR #1) |
 | WO-002 | Project Data Safety & Scanner Lifecycle Hardening | Merged to `main` (`77aea26`, PR #2) |
-| WO-003 | Multi-Track Arrangement Timeline & FL Studio-Style Piano Roll | In review (`feat/wo-003-timeline-piano-roll`, PR #3) |
+| WO-003 | Multi-Track Arrangement Timeline & FL Studio-Style Piano Roll | Merged to `main` (`f0ea3cb`, PR #3) |
+| WO-004 | Interactive Channel Mixer, VST3 Plugin Rack & Audio Device Settings | In review (`feat/wo-004-mixer-vst3-audio-device`, PR #4) |
 
 ---
 

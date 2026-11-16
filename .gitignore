@@ -20,3 +20,8 @@ Thumbs.db
 .vscode/
 .idea/
 *.user
+
+# Local Gemini briefing & heartbeat inbox
+docs/BRIEFING.md
+.hermes_inbox.md
+

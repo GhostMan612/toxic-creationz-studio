@@ -295,6 +295,74 @@ int MainComponent::runHeadlessSmokeTest()
         }
     }
 
+    //--- WO-004: mixer gain/pan + Track 2 instrument persistence --------------
+    {
+        auto* edit = app.edit.get();
+        auto tracks = te::getAudioTracks (*edit);
+
+        if (tracks.size() < 2)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: expected at least 2 tracks for WO-004 mixer check" << std::endl;
+            return 1;
+        }
+
+        auto* track2 = tracks[1];
+        track2->setName ("Bass Line");
+
+        if (auto* vol = track2->getVolumePlugin())
+        {
+            vol->setVolumeDb (-6.5f);
+            vol->setPan (0.35f);
+        }
+
+        if (auto bassSynth = edit->getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {}))
+            track2->pluginList.insertPlugin (bassSynth, 0, nullptr);
+
+        app.mixerComponent.rebuildStrips();
+
+        const auto mixerDir = tempDir.getChildFile ("tcs_wo004_mixer_smoke");
+        mixerDir.deleteRecursively();
+        mixerDir.createDirectory();
+
+        const auto mixerTestFile = mixerDir.getChildFile ("MixerRoundTrip.tracktionedit");
+
+        app.currentEditFile = mixerTestFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        if (! app.loadSessionFromFileSafely (mixerTestFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-004 mixer round-trip save/load failed" << std::endl;
+            return 1;
+        }
+
+        auto reloadedTracks = te::getAudioTracks (*app.edit);
+
+        if (reloadedTracks.size() < 2)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-004 reloaded track count mismatch" << std::endl;
+            return 1;
+        }
+
+        auto* reloadedVol = reloadedTracks[1]->getVolumePlugin();
+        bool foundTrack2Synth = false;
+
+        for (auto* p : reloadedTracks[1]->pluginList)
+            if (dynamic_cast<te::FourOscPlugin*> (p) != nullptr)
+                foundTrack2Synth = true;
+
+        if (reloadedVol == nullptr
+            || std::abs (reloadedVol->getVolumeDb() - (-6.5f)) > 0.05f
+            || std::abs (reloadedVol->getPan() - 0.35f) > 0.02f
+            || ! foundTrack2Synth)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-004 mixer dB/pan or Track 2 plugin did not persist!" << std::endl;
+            return 1;
+        }
+
+        mixerDir.deleteRecursively();
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -321,7 +389,8 @@ int MainComponent::runHeadlessSmokeTest()
     truncatedFile.deleteFile();
 
     std::cout << "[SMOKE_TEST] PASS: persistence, non-destructive New, atomic Open rollback, "
-                 "Undo/Redo note editing, dirty-state isolation, and VST3 scanner lifecycle verified." << std::endl;
+                 "Undo/Redo note editing, dirty-state isolation, mixer gain/pan + instrument "
+                 "persistence, and VST3 scanner lifecycle verified." << std::endl;
     return 0;
 }
 
