@@ -91,6 +91,19 @@ int MainComponent::runHeadlessSmokeTest()
         return 1;
     }
 
+    // Truncated XML with the correct root tag: still rejected.
+    // (A well-formed <EDIT> that fails inside loadEditFromFile would need the
+    // Edit constructor itself to throw; no static file deterministically does
+    // that, so the two rejected-at-the-gate cases above are the coverage.)
+    const auto truncatedFile = tempDir.getChildFile ("aidaw_wo002_truncated.tracktionedit");
+    truncatedFile.replaceWithText ("<EDIT><TRACK>");
+
+    if (app.loadSessionFromFileSafely (truncatedFile))
+    {
+        std::cerr << "[SMOKE_TEST] FAIL: truncated file unexpectedly loaded" << std::endl;
+        return 1;
+    }
+
     if (static_cast<int> (te::getAudioTracks (*app.edit).size()) != tracksBefore
         || app.edit->tempoSequence.getTempo (0)->getBpm() != bpmBefore)
     {
@@ -158,6 +171,55 @@ int MainComponent::runHeadlessSmokeTest()
         }
 
         um.undo();
+
+        // The round-trip returns the Edit to its saved content.
+        app.refreshDirtyFromSavedState();
+
+        if (app.hasUnsavedChanges())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: undo round-trip did not return to a clean session" << std::endl;
+            return 1;
+        }
+    }
+
+    //--- WO-003 follow-up: dirty-state isolation + undo-to-saved -----------
+    {
+        // Transport movement must not dirty the session (PR #2 finding 1).
+        app.edit->getTransport().setPosition (tracktion::TimePosition::fromSeconds (2.0));
+
+        if (app.hasUnsavedChanges())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: transport setPosition marked the session dirty" << std::endl;
+            return 1;
+        }
+
+        // A real content edit must dirty it...
+        auto& um = app.edit->getUndoManager();
+        um.beginNewTransaction ("Smoke BPM Change");
+        app.edit->tempoSequence.getTempo (0)->setBpm (130.0);
+
+        if (! app.hasUnsavedChanges())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: BPM edit did not mark the session dirty" << std::endl;
+            return 1;
+        }
+
+        // ...and undoing that edit must return to clean (undo-to-saved).
+        um.undo();
+        app.refreshDirtyFromSavedState();
+
+        if (app.hasUnsavedChanges())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: undo back to the saved state still shows dirty" << std::endl;
+            return 1;
+        }
+
+        if (app.edit->tempoSequence.getTempo (0)->getBpm() != 124.0)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: BPM was not restored by undo, got "
+                      << app.edit->tempoSequence.getTempo (0)->getBpm() << std::endl;
+            return 1;
+        }
     }
 
     //--- WO-003 follow-up: dragging past a neighbor must not transfer ---------
@@ -256,9 +318,10 @@ int MainComponent::runHeadlessSmokeTest()
     savedFile.deleteFile();
     otherFile.deleteFile();
     corruptFile.deleteFile();
+    truncatedFile.deleteFile();
 
     std::cout << "[SMOKE_TEST] PASS: persistence, non-destructive New, atomic Open rollback, "
-                 "Undo/Redo note editing, and VST3 scanner lifecycle verified." << std::endl;
+                 "Undo/Redo note editing, dirty-state isolation, and VST3 scanner lifecycle verified." << std::endl;
     return 0;
 }
 

@@ -6,9 +6,10 @@
 class MainComponent::Vst3ScanThread : public juce::Thread
 {
 public:
-    explicit Vst3ScanThread (MainComponent& ownerComponent)
+    explicit Vst3ScanThread (MainComponent& ownerComponent, int generationToUse)
         : juce::Thread ("Vst3ScanThread"),
-          safeOwner (&ownerComponent)
+          safeOwner (&ownerComponent),
+          generation (generationToUse)
     {
     }
 
@@ -55,9 +56,12 @@ public:
         auto xmlSnapshot = threadLocalList.createXml();
         auto safeTarget = safeOwner;
 
-        juce::MessageManager::callAsync ([safeTarget, xml = std::move (xmlSnapshot)]() mutable
+        // Capture this scan's generation: a publish posted by a superseded scan
+        // must not overwrite a newer scan's results or re-enable its button.
+        juce::MessageManager::callAsync ([safeTarget, xml = std::move (xmlSnapshot), gen = generation]() mutable
         {
-            if (safeTarget == nullptr || safeTarget->isScanAbortRequested())
+            if (safeTarget == nullptr || safeTarget->isScanAbortRequested()
+                || gen != safeTarget->scanGeneration.load())
                 return;
 
             auto& knownList = safeTarget->engine.getPluginManager().knownPluginList;
@@ -79,6 +83,7 @@ public:
 
 private:
     juce::Component::SafePointer<MainComponent> safeOwner;
+    const int generation;
     std::atomic<bool> scanFinished { false };
 };
 
@@ -190,11 +195,23 @@ MainComponent::MainComponent()
         if (edit == nullptr)
             return;
 
+        const auto previouslySelectedClip = arrangementView.getSelectedClipID();
+
         edit->ensureNumberOfAudioTracks (te::getAudioTracks (*edit).size() + 1);
         auto tracks = te::getAudioTracks (*edit);
         tracks.getLast()->setName ("Track " + juce::String (tracks.size()));
 
         arrangementView.setEdit (edit.get());
+
+        // setEdit() re-selects the first MIDI clip; restore the user's clip.
+        if (previouslySelectedClip.isValid())
+        {
+            arrangementView.setSelectedClipID (previouslySelectedClip);
+
+            if (arrangementView.resolveSelectedClip() == nullptr)
+                arrangementView.setEdit (edit.get());
+        }
+
         markSessionDirty();
     };
 
@@ -207,7 +224,7 @@ MainComponent::MainComponent()
         bpmSlider.setValue (edit->tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
         arrangementView.repaint();
         pianoRoll.repaint();
-        markSessionDirty();
+        refreshDirtyFromSavedState();
     };
 
     redoButton.onClick = [this]
@@ -219,7 +236,7 @@ MainComponent::MainComponent()
         bpmSlider.setValue (edit->tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
         arrangementView.repaint();
         pianoRoll.repaint();
-        markSessionDirty();
+        refreshDirtyFromSavedState();
     };
 
     playButton.onClick = [this]
@@ -339,6 +356,44 @@ void MainComponent::markSessionDirty()
     updateWindowTitle();
 }
 
+void MainComponent::snapshotSavedState()
+{
+    savedEditState = (edit != nullptr) ? getContentState (edit->state) : juce::ValueTree();
+}
+
+void MainComponent::refreshDirtyFromSavedState()
+{
+    if (suppressDirtyTracking || edit == nullptr)
+        return;
+
+    // Undo/redo can return the Edit to exactly its saved content; compare
+    // against the snapshot instead of unconditionally flagging dirty. Child
+    // order is ignored: the note list re-sorts by start beat in memory, and
+    // undo restores children without a guaranteed order.
+    const bool clean = savedEditState.isValid()
+                       && getContentState (edit->state).isEquivalentTo (savedEditState, true);
+
+    if (sessionDirty == ! clean)
+        return;
+
+    sessionDirty = ! clean;
+    updateWindowTitle();
+}
+
+// The saved-state comparison covers content only: TRANSPORT (playhead) and
+// VIEWSTATE (selection/zoom) churn constantly at runtime and must never make
+// an otherwise-untouched session look dirty.
+juce::ValueTree MainComponent::getContentState (const juce::ValueTree& state)
+{
+    auto copy = state.createCopy();
+
+    for (auto type : { juce::Identifier ("TRANSPORT"), juce::Identifier ("VIEWSTATE") })
+        if (auto child = copy.getChildWithName (type); child.isValid())
+            copy.removeChild (child, nullptr);
+
+    return copy;
+}
+
 void MainComponent::attachStateListener (te::Edit& editToWatch)
 {
     editToWatch.state.addListener (this);
@@ -410,10 +465,11 @@ void MainComponent::startVst3Scan()
     stopVst3Scan();
 
     scanAbortRequested.store (false);
+    const int generation = ++scanGeneration;
     scanPluginsButton.setEnabled (false);
     statusLabel.setText ("Scanning VST3 directories...", juce::dontSendNotification);
 
-    scanThread = std::make_unique<Vst3ScanThread> (*this);
+    scanThread = std::make_unique<Vst3ScanThread> (*this, generation);
     scanThread->startThread();
 }
 
@@ -562,6 +618,7 @@ void MainComponent::createNewSession (const juce::File& targetFile, bool seedDef
     suppressDirtyTracking = true;
     edit->resetChangedStatus();
     sessionDirty = false;
+    snapshotSavedState();
     suppressDirtyTracking = false;
 
     attachStateListener (*edit);
@@ -612,6 +669,7 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
     suppressDirtyTracking = true;
     edit->resetChangedStatus();
     sessionDirty = false;
+    snapshotSavedState();
     suppressDirtyTracking = false;
 
     attachStateListener (*edit);
@@ -640,18 +698,22 @@ void MainComponent::saveSession (std::function<void (bool)> completion)
 
     currentEditFile.getParentDirectory().createDirectory();
 
+    // Suppress first: flushState() stamps appVersion/modifiedBy properties,
+    // which would otherwise trip the listener and flip dirty momentarily.
+    suppressDirtyTracking = true;
     edit->flushState();
 
     bool saved = false;
     if (auto xml = edit->state.createXml())
         saved = xml->writeTo (currentEditFile);
 
+    suppressDirtyTracking = false;
+
     if (saved)
     {
-        suppressDirtyTracking = true;
         edit->resetChangedStatus();
         sessionDirty = false;
-        suppressDirtyTracking = false;
+        snapshotSavedState();
 
         statusLabel.setText ("Saved: " + currentEditFile.getFileName(), juce::dontSendNotification);
         updateWindowTitle();

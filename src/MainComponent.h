@@ -64,6 +64,9 @@ private:
     void attachStateListener (te::Edit& edit);
     void detachStateListener (te::Edit& edit);
     void markSessionDirty();
+    void snapshotSavedState();
+    void refreshDirtyFromSavedState();
+    static juce::ValueTree getContentState (const juce::ValueTree& state);
 
     void attachEdit (te::Edit& editToAttach);
     static bool isTransientEditSubtree (juce::ValueTree tree);
@@ -84,10 +87,12 @@ private:
     bool sessionUntitled = false;
     bool sessionDirty = false;
     bool suppressDirtyTracking = false;
+    juce::ValueTree savedEditState;
 
     std::unique_ptr<Vst3ScanThread> scanThread;
     std::vector<std::unique_ptr<Vst3ScanThread>> retiredScanThreads;
     std::atomic<bool> scanAbortRequested { false };
+    std::atomic<int> scanGeneration { 0 };
     std::unique_ptr<juce::FileChooser> activeFileChooser;
     juce::ScopedMessageBox alertBox;
 
