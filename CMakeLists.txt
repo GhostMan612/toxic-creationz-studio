@@ -30,6 +30,10 @@ target_sources(AIDAW PRIVATE
     src/Main.cpp
     src/MainComponent.h
     src/MainComponent.cpp
+    src/ArrangementView.h
+    src/ArrangementView.cpp
+    src/PianoRollComponent.h
+    src/PianoRollComponent.cpp
 )
 
 # 4. Preprocessor flags: enable VST3 hosting, disable unused bloat

@@ -91,6 +91,19 @@ int MainComponent::runHeadlessSmokeTest()
         return 1;
     }
 
+    // Truncated XML with the correct root tag: still rejected.
+    // (A well-formed <EDIT> that fails inside loadEditFromFile would need the
+    // Edit constructor itself to throw; no static file deterministically does
+    // that, so the two rejected-at-the-gate cases above are the coverage.)
+    const auto truncatedFile = tempDir.getChildFile ("aidaw_wo002_truncated.tracktionedit");
+    truncatedFile.replaceWithText ("<EDIT><TRACK>");
+
+    if (app.loadSessionFromFileSafely (truncatedFile))
+    {
+        std::cerr << "[SMOKE_TEST] FAIL: truncated file unexpectedly loaded" << std::endl;
+        return 1;
+    }
+
     if (static_cast<int> (te::getAudioTracks (*app.edit).size()) != tracksBefore
         || app.edit->tempoSequence.getTempo (0)->getBpm() != bpmBefore)
     {
@@ -108,6 +121,178 @@ int MainComponent::runHeadlessSmokeTest()
     {
         std::cerr << "[SMOKE_TEST] FAIL: loaded track count mismatch" << std::endl;
         return 1;
+    }
+
+    //--- WO-003: MidiList::removeNote + UndoManager undo/redo round-trip ------
+    {
+        auto* clip = [&]() -> te::MidiClip*
+        {
+            for (auto* c : te::getAudioTracks (*app.edit)[0]->getClips())
+                if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                    return mc;
+            return nullptr;
+        }();
+
+        if (clip == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: no MIDI clip available for undo check" << std::endl;
+            return 1;
+        }
+
+        auto& seq = clip->getSequence();
+        auto& um  = app.edit->getUndoManager();
+
+        um.beginNewTransaction ("Smoke Delete Note");
+        seq.removeNote (*seq.getNotes().getLast(), &um);
+
+        if (seq.getNumNotes() != 3)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: expected 3 notes after removeNote, got "
+                      << seq.getNumNotes() << std::endl;
+            return 1;
+        }
+
+        um.undo();
+
+        if (seq.getNumNotes() != 4)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: expected 4 notes after UndoManager::undo, got "
+                      << seq.getNumNotes() << std::endl;
+            return 1;
+        }
+
+        um.redo();
+
+        if (seq.getNumNotes() != 3)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: expected 3 notes after UndoManager::redo, got "
+                      << seq.getNumNotes() << std::endl;
+            return 1;
+        }
+
+        um.undo();
+
+        // The round-trip returns the Edit to its saved content.
+        app.refreshDirtyFromSavedState();
+
+        if (app.hasUnsavedChanges())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: undo round-trip did not return to a clean session" << std::endl;
+            return 1;
+        }
+    }
+
+    //--- WO-003 follow-up: dirty-state isolation + undo-to-saved -----------
+    {
+        // Transport movement must not dirty the session (PR #2 finding 1).
+        app.edit->getTransport().setPosition (tracktion::TimePosition::fromSeconds (2.0));
+
+        if (app.hasUnsavedChanges())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: transport setPosition marked the session dirty" << std::endl;
+            return 1;
+        }
+
+        // A real content edit must dirty it...
+        auto& um = app.edit->getUndoManager();
+        um.beginNewTransaction ("Smoke BPM Change");
+        app.edit->tempoSequence.getTempo (0)->setBpm (130.0);
+
+        if (! app.hasUnsavedChanges())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: BPM edit did not mark the session dirty" << std::endl;
+            return 1;
+        }
+
+        // ...and undoing that edit must return to clean (undo-to-saved).
+        um.undo();
+        app.refreshDirtyFromSavedState();
+
+        if (app.hasUnsavedChanges())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: undo back to the saved state still shows dirty" << std::endl;
+            return 1;
+        }
+
+        if (app.edit->tempoSequence.getTempo (0)->getBpm() != 124.0)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: BPM was not restored by undo, got "
+                      << app.edit->tempoSequence.getTempo (0)->getBpm() << std::endl;
+            return 1;
+        }
+    }
+
+    //--- WO-003 follow-up: dragging past a neighbor must not transfer ---------
+    {
+        auto* clip = [&]() -> te::MidiClip*
+        {
+            for (auto* c : te::getAudioTracks (*app.edit)[0]->getClips())
+                if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                    return mc;
+            return nullptr;
+        }();
+
+        if (clip == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: no MIDI clip available for drag-reorder check" << std::endl;
+            return 1;
+        }
+
+        auto& seq = clip->getSequence();
+        auto& um  = app.edit->getUndoManager();
+
+        auto findNoteAtBeat = [&seq] (double beat)
+        {
+            for (auto* n : seq.getNotes())
+                if (std::abs (n->getStartBeat().inBeats() - beat) < 1e-4)
+                    return n;
+            return (te::MidiNote*) nullptr;
+        };
+
+        auto* dragged  = findNoteAtBeat (0.0);
+        auto* neighbor = findNoteAtBeat (2.0);
+
+        if (dragged == nullptr || neighbor == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: could not locate notes for drag-reorder check" << std::endl;
+            return 1;
+        }
+
+        const juce::ValueTree draggedState = dragged->state;
+        const double neighborStart = neighbor->getStartBeat().inBeats();
+        const int neighborPitch = neighbor->getNoteNumber();
+
+        um.beginNewTransaction ("Smoke Drag Note");
+        dragged->setStartAndLength (tracktion::BeatPosition::fromBeats (2.5),
+                                    tracktion::BeatDuration::fromBeats (1.0), &um);
+
+        // Re-resolve the dragged note by its stable ValueTree identity: the
+        // array re-sorts by startBeat, so an index would have moved.
+        te::MidiNote* tracked = nullptr;
+        for (auto* n : seq.getNotes())
+            if (n->state == draggedState)
+                tracked = n;
+
+        if (tracked == nullptr || std::abs (tracked->getStartBeat().inBeats() - 2.5) > 1e-4)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: dragged note did not land at 2.5 beats" << std::endl;
+            return 1;
+        }
+
+        auto* neighborAfter = findNoteAtBeat (neighborStart);
+
+        if (neighborAfter == nullptr || neighborAfter->getNoteNumber() != neighborPitch)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: neighboring note was disturbed by the drag" << std::endl;
+            return 1;
+        }
+
+        if (seq.getNumNotes() != 4)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: note count changed during drag, got "
+                      << seq.getNumNotes() << std::endl;
+            return 1;
+        }
     }
 
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
@@ -133,9 +318,10 @@ int MainComponent::runHeadlessSmokeTest()
     savedFile.deleteFile();
     otherFile.deleteFile();
     corruptFile.deleteFile();
+    truncatedFile.deleteFile();
 
     std::cout << "[SMOKE_TEST] PASS: persistence, non-destructive New, atomic Open rollback, "
-                 "and VST3 scanner lifecycle verified." << std::endl;
+                 "Undo/Redo note editing, dirty-state isolation, and VST3 scanner lifecycle verified." << std::endl;
     return 0;
 }
 

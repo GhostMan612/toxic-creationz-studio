@@ -1,20 +1,20 @@
 #include "MainComponent.h"
 
-// ============================================================================
+//==============================================================================
 // Owned, Interruptible Background VST3 Scanner (Cooperative Cancellation)
-// ============================================================================
+//==============================================================================
 class MainComponent::Vst3ScanThread : public juce::Thread
 {
 public:
-    explicit Vst3ScanThread (MainComponent& ownerComponent)
+    explicit Vst3ScanThread (MainComponent& ownerComponent, int generationToUse)
         : juce::Thread ("Vst3ScanThread"),
-          safeOwner (&ownerComponent)
+          safeOwner (&ownerComponent),
+          generation (generationToUse)
     {
     }
 
     void run() override
     {
-        // RAII: publish completion no matter how run() leaves scope.
         struct FinishGuard
         {
             explicit FinishGuard (std::atomic<bool>& f) : flag (f) { flag.store (false); }
@@ -56,9 +56,12 @@ public:
         auto xmlSnapshot = threadLocalList.createXml();
         auto safeTarget = safeOwner;
 
-        juce::MessageManager::callAsync ([safeTarget, xml = std::move (xmlSnapshot)]() mutable
+        // Capture this scan's generation: a publish posted by a superseded scan
+        // must not overwrite a newer scan's results or re-enable its button.
+        juce::MessageManager::callAsync ([safeTarget, xml = std::move (xmlSnapshot), gen = generation]() mutable
         {
-            if (safeTarget == nullptr || safeTarget->isScanAbortRequested())
+            if (safeTarget == nullptr || safeTarget->isScanAbortRequested()
+                || gen != safeTarget->scanGeneration.load())
                 return;
 
             auto& knownList = safeTarget->engine.getPluginManager().knownPluginList;
@@ -80,39 +83,78 @@ public:
 
 private:
     juce::Component::SafePointer<MainComponent> safeOwner;
+    const int generation;
     std::atomic<bool> scanFinished { false };
 };
 
-// ============================================================================
-// MainComponent Implementation
-// ============================================================================
+//==============================================================================
+// MainComponent
+//==============================================================================
 MainComponent::MainComponent()
 {
     loadCachedPlugins();
 
+    // Views
+    addAndMakeVisible (arrangementView);
+    addAndMakeVisible (pianoRoll);
+
+    arrangementView.onClipSelected = [this] (tracktion::EditItemID clipID)
+    {
+        pianoRoll.setTarget (edit.get(), clipID);
+    };
+
+    pianoRoll.onSequenceChanged = [this]
+    {
+        arrangementView.repaint();
+        markSessionDirty();
+    };
+
+    // Toolbar
+    addAndMakeVisible (newButton);
+    addAndMakeVisible (openButton);
+    addAndMakeVisible (saveButton);
+    addAndMakeVisible (saveAsButton);
+    addAndMakeVisible (addTrackButton);
+    addAndMakeVisible (undoButton);
+    addAndMakeVisible (redoButton);
+    addAndMakeVisible (playButton);
+    addAndMakeVisible (stopButton);
+    addAndMakeVisible (scanPluginsButton);
+    addAndMakeVisible (bpmSlider);
+    addAndMakeVisible (statusLabel);
+
+    bpmSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    bpmSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 52, 18);
+    bpmSlider.setRange (40.0, 240.0, 1.0);
+    bpmSlider.setValue (124.0, juce::dontSendNotification);
+
+    // Session (after the views exist so attachEdit can bind them)
     const auto defaultFile = getDefaultProjectFile();
 
     if (defaultFile.existsAsFile())
     {
         juce::String error;
+
         if (loadSessionFromFileSafely (defaultFile, &error))
             statusLabel.setText ("Loaded: " + currentEditFile.getFileName(), juce::dontSendNotification);
     }
 
     if (edit == nullptr)
     {
-        createNewSession (defaultFile, true, false);
-        saveSession();
-    }
+        // The startup file exists but could not be read: preserve it on disk and
+        // fall back to a fresh Untitled session rather than overwriting it.
+        const bool startupFileUnreadable = defaultFile.existsAsFile();
+        const auto target = startupFileUnreadable
+                                ? getProjectsDir().getNonexistentChildFile ("Untitled", ".tracktionedit", false)
+                                : defaultFile;
 
-    addAndMakeVisible (newButton);
-    addAndMakeVisible (openButton);
-    addAndMakeVisible (saveButton);
-    addAndMakeVisible (saveAsButton);
-    addAndMakeVisible (playButton);
-    addAndMakeVisible (stopButton);
-    addAndMakeVisible (scanPluginsButton);
-    addAndMakeVisible (statusLabel);
+        createNewSession (target, true, false);
+        saveSession();
+
+        if (startupFileUnreadable)
+            statusLabel.setText ("Startup file unreadable; created a new session (original preserved).",
+                                 juce::dontSendNotification);
+    }
 
     newButton.onClick = [this]
     {
@@ -148,6 +190,55 @@ MainComponent::MainComponent()
     saveButton.onClick   = [this] { saveSession(); };
     saveAsButton.onClick = [this] { saveSessionAsDialog(); };
 
+    addTrackButton.onClick = [this]
+    {
+        if (edit == nullptr)
+            return;
+
+        const auto previouslySelectedClip = arrangementView.getSelectedClipID();
+
+        edit->ensureNumberOfAudioTracks (te::getAudioTracks (*edit).size() + 1);
+        auto tracks = te::getAudioTracks (*edit);
+        tracks.getLast()->setName ("Track " + juce::String (tracks.size()));
+
+        arrangementView.setEdit (edit.get());
+
+        // setEdit() re-selects the first MIDI clip; restore the user's clip.
+        if (previouslySelectedClip.isValid())
+        {
+            arrangementView.setSelectedClipID (previouslySelectedClip);
+
+            if (arrangementView.resolveSelectedClip() == nullptr)
+                arrangementView.setEdit (edit.get());
+        }
+
+        markSessionDirty();
+    };
+
+    undoButton.onClick = [this]
+    {
+        if (edit == nullptr)
+            return;
+
+        edit->getUndoManager().undo();
+        bpmSlider.setValue (edit->tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
+        arrangementView.repaint();
+        pianoRoll.repaint();
+        refreshDirtyFromSavedState();
+    };
+
+    redoButton.onClick = [this]
+    {
+        if (edit == nullptr)
+            return;
+
+        edit->getUndoManager().redo();
+        bpmSlider.setValue (edit->tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
+        arrangementView.repaint();
+        pianoRoll.repaint();
+        refreshDirtyFromSavedState();
+    };
+
     playButton.onClick = [this]
     {
         if (edit != nullptr)
@@ -162,7 +253,13 @@ MainComponent::MainComponent()
 
     scanPluginsButton.onClick = [this] { startVst3Scan(); };
 
-    setSize (1040, 620);
+    bpmSlider.onValueChange = [this]
+    {
+        if (edit != nullptr)
+            edit->tempoSequence.getTempo (0)->setBpm (bpmSlider.getValue());
+    };
+
+    setSize (1180, 760);
     startTimerHz (30);
     updateWindowTitle();
 }
@@ -184,6 +281,7 @@ MainComponent::~MainComponent()
     retiredScanThreads.clear();
 
     activeFileChooser.reset();
+    alertBox.close();
 
     if (edit != nullptr)
     {
@@ -196,34 +294,57 @@ MainComponent::~MainComponent()
 //==============================================================================
 // Dirty-state tracking
 //==============================================================================
-void MainComponent::valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&)
+bool MainComponent::isTransientEditSubtree (juce::ValueTree tree)
 {
-    markSessionDirty();
+    while (tree.isValid())
+    {
+        const auto type = tree.getType();
+
+        if (type == juce::Identifier ("TRANSPORT") || type == juce::Identifier ("VIEWSTATE"))
+            return true;
+
+        tree = tree.getParent();
+    }
+
+    return false;
 }
 
-void MainComponent::valueTreeChildAdded (juce::ValueTree&, juce::ValueTree&)
+void MainComponent::valueTreePropertyChanged (juce::ValueTree& treeWhosePropertyHasChanged,
+                                             const juce::Identifier&)
 {
-    markSessionDirty();
+    // Transport/view-state churn (playhead, zoom, selection) is not a content edit.
+    if (! suppressDirtyTracking && ! isTransientEditSubtree (treeWhosePropertyHasChanged))
+        markSessionDirty();
 }
 
-void MainComponent::valueTreeChildRemoved (juce::ValueTree&, juce::ValueTree&, int)
+void MainComponent::valueTreeChildAdded (juce::ValueTree& parentTree, juce::ValueTree&)
 {
-    markSessionDirty();
+    if (! suppressDirtyTracking && ! isTransientEditSubtree (parentTree))
+        markSessionDirty();
 }
 
-void MainComponent::valueTreeChildOrderChanged (juce::ValueTree&, int, int)
+void MainComponent::valueTreeChildRemoved (juce::ValueTree& parentTree, juce::ValueTree&, int)
 {
-    markSessionDirty();
+    if (! suppressDirtyTracking && ! isTransientEditSubtree (parentTree))
+        markSessionDirty();
 }
 
-void MainComponent::valueTreeParentChanged (juce::ValueTree&)
+void MainComponent::valueTreeChildOrderChanged (juce::ValueTree& parentTree, int, int)
 {
-    markSessionDirty();
+    if (! suppressDirtyTracking && ! isTransientEditSubtree (parentTree))
+        markSessionDirty();
 }
 
-void MainComponent::valueTreeRedirected (juce::ValueTree&)
+void MainComponent::valueTreeParentChanged (juce::ValueTree& treeWhoseParentHasChanged)
 {
-    markSessionDirty();
+    if (! suppressDirtyTracking && ! isTransientEditSubtree (treeWhoseParentHasChanged))
+        markSessionDirty();
+}
+
+void MainComponent::valueTreeRedirected (juce::ValueTree& treeWhichHasBeenChanged)
+{
+    if (! suppressDirtyTracking && ! isTransientEditSubtree (treeWhichHasBeenChanged))
+        markSessionDirty();
 }
 
 void MainComponent::markSessionDirty()
@@ -233,6 +354,46 @@ void MainComponent::markSessionDirty()
 
     sessionDirty = true;
     updateWindowTitle();
+}
+
+void MainComponent::snapshotSavedState()
+{
+    savedEditState = (edit != nullptr) ? getContentState (edit->state) : juce::ValueTree();
+}
+
+void MainComponent::refreshDirtyFromSavedState()
+{
+    if (suppressDirtyTracking || edit == nullptr)
+        return;
+
+    // Undo/redo can return the Edit to exactly its saved content; compare
+    // against the snapshot instead of unconditionally flagging dirty.
+    // Note: this JUCE's isEquivalentTo is order-sensitive, which is safe here
+    // — the note list re-sorts by start beat in memory only, the ValueTree
+    // children stay in insertion order, and undo restores a removed child at
+    // its recorded index.
+    const bool clean = savedEditState.isValid()
+                       && getContentState (edit->state).isEquivalentTo (savedEditState);
+
+    if (sessionDirty == ! clean)
+        return;
+
+    sessionDirty = ! clean;
+    updateWindowTitle();
+}
+
+// The saved-state comparison covers content only: TRANSPORT (playhead) and
+// VIEWSTATE (selection/zoom) churn constantly at runtime and must never make
+// an otherwise-untouched session look dirty.
+juce::ValueTree MainComponent::getContentState (const juce::ValueTree& state)
+{
+    auto copy = state.createCopy();
+
+    for (auto type : { juce::Identifier ("TRANSPORT"), juce::Identifier ("VIEWSTATE") })
+        if (auto child = copy.getChildWithName (type); child.isValid())
+            copy.removeChild (child, nullptr);
+
+    return copy;
 }
 
 void MainComponent::attachStateListener (te::Edit& editToWatch)
@@ -306,10 +467,11 @@ void MainComponent::startVst3Scan()
     stopVst3Scan();
 
     scanAbortRequested.store (false);
+    const int generation = ++scanGeneration;
     scanPluginsButton.setEnabled (false);
     statusLabel.setText ("Scanning VST3 directories...", juce::dontSendNotification);
 
-    scanThread = std::make_unique<Vst3ScanThread> (*this);
+    scanThread = std::make_unique<Vst3ScanThread> (*this, generation);
     scanThread->startThread();
 }
 
@@ -328,8 +490,7 @@ void MainComponent::stopVst3Scan (int timeoutMs)
     }
     else
     {
-        // Never destroy a thread that may still be running: quarantine it and
-        // reap it later once Vst3ScanThread::isFinished() flips.
+        // Never destroy a thread that may still be running: quarantine and reap later.
         retiredScanThreads.push_back (std::move (scanThread));
     }
 }
@@ -355,6 +516,13 @@ bool MainComponent::isVst3ScanRunning() const
 //==============================================================================
 // Session management
 //==============================================================================
+void MainComponent::attachEdit (te::Edit& editToAttach)
+{
+    arrangementView.setEdit (&editToAttach);
+    pianoRoll.setTarget (&editToAttach, arrangementView.getSelectedClipID());
+    bpmSlider.setValue (editToAttach.tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
+}
+
 void MainComponent::guardUnsavedChanges (std::function<void (bool)> onProceed)
 {
     if (onProceed == nullptr)
@@ -368,32 +536,37 @@ void MainComponent::guardUnsavedChanges (std::function<void (bool)> onProceed)
 
     juce::Component::SafePointer<MainComponent> safeThis (this);
 
-    juce::AlertWindow::showYesNoCancelBox (
-        juce::AlertWindow::WarningIcon,
-        "Unsaved Changes",
-        "The current session has unsaved changes. Save before continuing?",
-        "Save", "Discard", "Cancel",
-        nullptr,
-        juce::ModalCallbackFunction::create (
-            [safeThis, onProceed] (int result)
-            {
-                if (safeThis == nullptr)
-                    return;
+    auto options = juce::MessageBoxOptions()
+                       .withIconType (juce::MessageBoxIconType::WarningIcon)
+                       .withTitle ("Unsaved Changes")
+                       .withMessage ("The current session has unsaved changes. Save before continuing?")
+                       .withButton (juce::MessageBoxButtonOptions ("Save", 1).withPreferredAction())
+                       .withButton (juce::MessageBoxButtonOptions ("Discard", 2)
+                                        .withRole (juce::MessageBoxButtonRole::destroy))
+                       .withButton (juce::MessageBoxButtonOptions ("Cancel", 0)
+                                        .withRole (juce::MessageBoxButtonRole::cancel))
+                       .withAssociatedComponent (this);
 
-                if (result == 1)  // Save
+    alertBox = juce::AlertWindow::showScopedAsync (options,
+        [safeThis, onProceed] (int result)
+        {
+            if (safeThis == nullptr)
+                return;
+
+            if (result == 1)  // Save
+            {
+                safeThis->saveSession ([safeThis, onProceed] (bool saved)
                 {
-                    safeThis->saveSession ([safeThis, onProceed] (bool saved)
-                    {
-                        if (safeThis != nullptr && saved)
-                            onProceed (true);
-                    });
-                }
-                else if (result == 2)  // Discard
-                {
-                    onProceed (true);
-                }
-                // result == 0 -> Cancel: abort the pending action.
-            }));
+                    if (safeThis != nullptr && saved)
+                        onProceed (true);
+                });
+            }
+            else if (result == 2)  // Discard
+            {
+                onProceed (true);
+            }
+            // 0 == Cancel: abort the pending action.
+        });
 }
 
 void MainComponent::createNewSession (const juce::File& targetFile, bool seedDefaultContent, bool untitled)
@@ -408,8 +581,7 @@ void MainComponent::createNewSession (const juce::File& targetFile, bool seedDef
     currentEditFile = targetFile;
     sessionUntitled = untitled;
 
-    // Non-destructive: never delete targetFile here. Callers allocate a fresh
-    // getNonexistentChildFile() path for untitled sessions.
+    // Non-destructive: never delete targetFile here.
     edit = te::createEmptyEdit (engine, currentEditFile);
     edit->ensureNumberOfAudioTracks (4);
     edit->tempoSequence.getTempo (0)->setBpm (124.0);
@@ -448,9 +620,11 @@ void MainComponent::createNewSession (const juce::File& targetFile, bool seedDef
     suppressDirtyTracking = true;
     edit->resetChangedStatus();
     sessionDirty = false;
+    snapshotSavedState();
     suppressDirtyTracking = false;
 
     attachStateListener (*edit);
+    attachEdit (*edit);
     updateWindowTitle();
 }
 
@@ -467,7 +641,6 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
         return false;
     };
 
-    // Validate everything we can before touching the active edit.
     if (fileToLoad == juce::File() || ! fileToLoad.existsAsFile())
         return fail ("File not found: " + fileToLoad.getFullPathName());
 
@@ -484,7 +657,6 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
     if (candidateEdit == nullptr)
         return fail ("Failed to load: " + fileToLoad.getFileName());
 
-    // Commit: only now is the active edit replaced.
     if (edit != nullptr)
     {
         edit->getTransport().stop (false, false);
@@ -499,9 +671,11 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
     suppressDirtyTracking = true;
     edit->resetChangedStatus();
     sessionDirty = false;
+    snapshotSavedState();
     suppressDirtyTracking = false;
 
     attachStateListener (*edit);
+    attachEdit (*edit);
     updateWindowTitle();
     return true;
 }
@@ -526,19 +700,22 @@ void MainComponent::saveSession (std::function<void (bool)> completion)
 
     currentEditFile.getParentDirectory().createDirectory();
 
-    // Synchronous persistence: flush the edit state and write its XML directly.
+    // Suppress first: flushState() stamps appVersion/modifiedBy properties,
+    // which would otherwise trip the listener and flip dirty momentarily.
+    suppressDirtyTracking = true;
     edit->flushState();
 
     bool saved = false;
     if (auto xml = edit->state.createXml())
         saved = xml->writeTo (currentEditFile);
 
+    suppressDirtyTracking = false;
+
     if (saved)
     {
-        suppressDirtyTracking = true;
         edit->resetChangedStatus();
         sessionDirty = false;
-        suppressDirtyTracking = false;
+        snapshotSavedState();
 
         statusLabel.setText ("Saved: " + currentEditFile.getFileName(), juce::dontSendNotification);
         updateWindowTitle();
@@ -650,6 +827,7 @@ void MainComponent::timerCallback()
     {
         const double posSec = edit->getTransport().getPosition().inSeconds();
         statusLabel.setText ("Playing: " + juce::String (posSec, 2) + "s", juce::dontSendNotification);
+        arrangementView.repaint();
     }
 }
 
@@ -663,27 +841,38 @@ void MainComponent::resized()
     auto area = getLocalBounds().reduced (12);
     auto topBar = area.removeFromTop (36);
 
-    auto addToolbarBtn = [&topBar] (juce::TextButton& btn, int width)
+    auto addToolbarItem = [&topBar] (juce::Component& comp, int width)
     {
-        btn.setBounds (topBar.removeFromLeft (width));
+        comp.setBounds (topBar.removeFromLeft (width));
         topBar.removeFromLeft (6);
     };
 
-    addToolbarBtn (newButton, 64);
-    addToolbarBtn (openButton, 74);
-    addToolbarBtn (saveButton, 64);
-    addToolbarBtn (saveAsButton, 82);
+    addToolbarItem (newButton, 64);
+    addToolbarItem (openButton, 74);
+    addToolbarItem (saveButton, 64);
+    addToolbarItem (saveAsButton, 82);
+    addToolbarItem (addTrackButton, 72);
+    addToolbarItem (undoButton, 56);
+    addToolbarItem (redoButton, 56);
 
     topBar.removeFromLeft (8);
 
-    addToolbarBtn (playButton, 68);
-    addToolbarBtn (stopButton, 68);
+    addToolbarItem (playButton, 68);
+    addToolbarItem (stopButton, 68);
 
     topBar.removeFromLeft (8);
 
-    addToolbarBtn (scanPluginsButton, 100);
+    addToolbarItem (scanPluginsButton, 100);
 
+    topBar.removeFromLeft (8);
+
+    bpmSlider.setBounds (topBar.removeFromLeft (150));
     topBar.removeFromLeft (10);
 
     statusLabel.setBounds (topBar);
+
+    const int arrangementHeight = juce::roundToInt (area.getHeight() * 0.44f);
+    arrangementView.setBounds (area.removeFromTop (arrangementHeight));
+    area.removeFromTop (4);
+    pianoRoll.setBounds (area);
 }
