@@ -4,10 +4,15 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <tracktion_engine/tracktion_engine.h>
 
+#include <atomic>
+#include <functional>
+#include <vector>
+
 namespace te = tracktion::engine;
 
 class MainComponent : public juce::Component,
-                      private juce::Timer
+                      private juce::Timer,
+                      private juce::ValueTree::Listener
 {
 public:
     MainComponent();
@@ -16,12 +21,33 @@ public:
     void paint (juce::Graphics& g) override;
     void resized() override;
 
+    bool hasUnsavedChanges() const noexcept { return sessionDirty; }
+    bool isVst3ScanRunning() const;
+    bool isScanAbortRequested() const noexcept { return scanAbortRequested.load(); }
+
+    // Headless regression harness, invoked by AI DAW.exe --smoke-test.
+    static int runHeadlessSmokeTest();
+
 private:
     class Vst3ScanThread;
+
+    // juce::ValueTree::Listener
+    void valueTreePropertyChanged (juce::ValueTree& treeWhosePropertyHasChanged,
+                                   const juce::Identifier& property) override;
+    void valueTreeChildAdded (juce::ValueTree& parentTree,
+                              juce::ValueTree& childWhichHasBeenAdded) override;
+    void valueTreeChildRemoved (juce::ValueTree& parentTree,
+                                juce::ValueTree& childWhichHasBeenRemoved,
+                                int indexFromWhichChildWasRemoved) override;
+    void valueTreeChildOrderChanged (juce::ValueTree& parentTreeWhoseChildrenHaveMoved,
+                                     int oldIndex, int newIndex) override;
+    void valueTreeParentChanged (juce::ValueTree& treeWhoseParentHasChanged) override;
+    void valueTreeRedirected (juce::ValueTree& treeWhichHasBeenChanged) override;
 
     void timerCallback() override;
 
     juce::File getStudioRootDir() const;
+    juce::File getProjectsDir() const;
     juce::File getDefaultProjectFile() const;
     juce::File getPluginCacheFile() const;
 
@@ -29,20 +55,33 @@ private:
     void saveCachedPlugins();
 
     void startVst3Scan();
-    void stopVst3Scan();
+    void stopVst3Scan (int timeoutMs = 3000);
+    void reapRetiredScanThreads();
 
-    void createNewSession (const juce::File& targetFile, bool seedDefaultContent);
+    void attachStateListener (te::Edit& edit);
+    void detachStateListener (te::Edit& edit);
+    void markSessionDirty();
+
+    void guardUnsavedChanges (std::function<void (bool)> onProceed);
+
+    void createNewSession (const juce::File& targetFile, bool seedDefaultContent, bool untitled);
+    bool loadSessionFromFileSafely (const juce::File& fileToLoad, juce::String* errorOut = nullptr);
     void openSessionDialog();
-    void saveSession();
-    void saveSessionAsDialog();
+    void saveSession (std::function<void (bool)> completion = nullptr);
+    void saveSessionAsDialog (std::function<void (bool)> completion = nullptr);
     void updateWindowTitle();
 
     te::Engine engine { "AI DAW" };
     std::unique_ptr<te::Edit> edit;
 
     juce::File currentEditFile;
+    bool sessionUntitled = false;
+    bool sessionDirty = false;
+    bool suppressDirtyTracking = false;
 
     std::unique_ptr<Vst3ScanThread> scanThread;
+    std::vector<std::unique_ptr<Vst3ScanThread>> retiredScanThreads;
+    std::atomic<bool> scanAbortRequested { false };
     std::unique_ptr<juce::FileChooser> activeFileChooser;
 
     juce::TextButton newButton         { "New" };
