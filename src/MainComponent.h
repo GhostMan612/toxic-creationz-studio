@@ -7,6 +7,7 @@
 #include "ArrangementView.h"
 #include "PianoRollComponent.h"
 #include "MixerComponent.h"
+#include "ModularRackComponent.h"
 
 #include <atomic>
 #include <functional>
@@ -84,6 +85,7 @@ private:
     te::Engine engine { "AI DAW" };
     std::unique_ptr<te::Edit> edit;
     MixerComponent mixerComponent { engine };
+    ModularRackComponent modularRackComponent { engine };
 
     juce::File currentEditFile;
     bool sessionUntitled = false;
@@ -112,6 +114,7 @@ private:
     juce::TextButton stopButton        { "Stop" };
     juce::TextButton scanPluginsButton { "Scan VST3" };
     juce::TextButton mixerToggleButton   { "Mixer" };
+    juce::TextButton rackToggleButton     { "Rack" };
     juce::TextButton audioSettingsButton { "Audio Settings" };
     juce::Slider bpmSlider;
     juce::Label statusLabel            { {}, "Ready" };

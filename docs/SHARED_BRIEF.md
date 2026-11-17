@@ -1,9 +1,9 @@
 ## Pipeline State
-- **Latest `main`:** `f0ea3cb` (`WO-001`, `WO-002`, and `WO-003` merged and audited clean)
-- **Active Branch / PR:** `feat/wo-004-mixer-vst3-audio-device` (`PR #4`)
-- **Builder Status (LongCat):** `WO-004` implemented, smoke-tested, and pushed - awaiting Muse PR Doctor audit & merge
-- **Auditor Status (Muse):** First review requested changes (review `5916151357`): `BRIEFING.md` deletion unconfirmed, plugin insert order, watcher default path, plus nits. Follow-up pushed by Phoenix per Glenn's direction — insert position fixed, watcher path fixed, dead `syncFromEdit` removed, all plugin slots reachable, smoke test restores the file pointer. `BRIEFING.md` deletion CONFIRMED intended by Glenn (16 Nov 2026): file removed from the repo + gitignored, blueprint lives on locally and in git history. Awaiting CI + re-review.
-- **Next Queued Work Order:** `WO-005` - Phase 2 Reason-Style `RackType` Modular CV/Audio Patchbay (gated on `main` post-`PR #4`)
+- **Latest `main`:** `757e8cc` (`WO-001` through `WO-004` merged and audited clean)
+- **Active Branch / PR:** `feat/wo-005-reason-modular-rack` (`PR #5`)
+- **Builder Status (LongCat):** `WO-005` implemented, heap/teardown hardened, ASAN clean + 5x Release `--smoke-test` verified green — awaiting Muse PR Doctor audit & merge
+- **Auditor Status (Muse):** Ready to review `PR #5` (`CvRackPlugins.h`, `ModularRackComponent`, `MainComponent` 3-way layout, `--smoke-test`)
+- **Next Queued Work Order:** `WO-006` — Phase 3 Riff-Layering BGM Solver & Stem Library (gated on `main` post-`PR #5`)
 
 ---
 
@@ -14,7 +14,8 @@
 | WO-001 | Phase 1 Hardening, Session Persistence & Automated Verification | Merged to `main` (`7d67dba`, PR #1) |
 | WO-002 | Project Data Safety & Scanner Lifecycle Hardening | Merged to `main` (`77aea26`, PR #2) |
 | WO-003 | Multi-Track Arrangement Timeline & FL Studio-Style Piano Roll | Merged to `main` (`f0ea3cb`, PR #3) |
-| WO-004 | Interactive Channel Mixer, VST3 Plugin Rack & Audio Device Settings | In review (`feat/wo-004-mixer-vst3-audio-device`, PR #4) |
+| WO-004 | Interactive Channel Mixer, VST3 Plugin Rack & Audio Device Settings | Merged to `main` (`757e8cc`, PR #4) |
+| WO-005 | Reason-Style `RackType` Modular Audio, MIDI & CV Patchbay | In review (`feat/wo-005-reason-modular-rack`, PR #5) |
 
 ---
 

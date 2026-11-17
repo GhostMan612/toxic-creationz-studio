@@ -74,6 +74,7 @@ public:
 
             safeTarget->saveCachedPlugins();
             safeTarget->mixerComponent.rebuildStrips();
+            safeTarget->modularRackComponent.refresh();
 
             safeTarget->scanPluginsButton.setEnabled (true);
             safeTarget->statusLabel.setText (
@@ -95,12 +96,24 @@ private:
 //==============================================================================
 MainComponent::MainComponent()
 {
-    engine.getDeviceManager().initialise (0, 2);
+    // A live WASAPI real-time callback thread races the rapid headless
+    // Edit/RackType teardown that --smoke-test performs, so don't open audio
+    // devices on that path.
+    const bool headlessSmokeTest =
+        juce::JUCEApplicationBase::getCommandLineParameters().contains ("--smoke-test");
+
+    if (! headlessSmokeTest)
+        engine.getDeviceManager().initialise (0, 2);
+
+    engine.getPluginManager().createBuiltInType<CvLfoPlugin>();
+    engine.getPluginManager().createBuiltInType<CvWobbleFilterPlugin>();
     loadCachedPlugins();
 
     // Views
     addAndMakeVisible (arrangementView);
     addAndMakeVisible (pianoRoll);
+    addAndMakeVisible (mixerComponent);
+    addAndMakeVisible (modularRackComponent);
 
     arrangementView.onClipSelected = [this] (tracktion::EditItemID clipID)
     {
@@ -125,6 +138,7 @@ MainComponent::MainComponent()
     addAndMakeVisible (stopButton);
     addAndMakeVisible (scanPluginsButton);
     addAndMakeVisible (mixerToggleButton);
+    addAndMakeVisible (rackToggleButton);
     addAndMakeVisible (audioSettingsButton);
     addAndMakeVisible (bpmSlider);
     addAndMakeVisible (statusLabel);
@@ -232,6 +246,7 @@ MainComponent::MainComponent()
         arrangementView.repaint();
         pianoRoll.repaint();
         mixerComponent.rebuildStrips();
+        modularRackComponent.syncFromEdit();
         refreshDirtyFromSavedState();
     };
 
@@ -245,6 +260,7 @@ MainComponent::MainComponent()
         arrangementView.repaint();
         pianoRoll.repaint();
         mixerComponent.rebuildStrips();
+        modularRackComponent.syncFromEdit();
         refreshDirtyFromSavedState();
     };
 
@@ -271,6 +287,16 @@ MainComponent::MainComponent()
     };
 
     mixerComponent.onMixerChanged = [this] { arrangementView.repaint(); };
+
+    rackToggleButton.setClickingTogglesState (true);
+    rackToggleButton.setToggleState (true, juce::dontSendNotification);
+    rackToggleButton.onClick = [this]
+    {
+        modularRackComponent.setVisible (rackToggleButton.getToggleState());
+        resized();
+    };
+
+    modularRackComponent.onMixerChanged = [this] { arrangementView.repaint(); };
 
     audioSettingsButton.onClick = [this]
     {
@@ -321,6 +347,13 @@ MainComponent::~MainComponent()
 
     if (edit != nullptr)
     {
+        // Detach every child view (and their ValueTree listeners) BEFORE the
+        // Edit is destroyed: ~Edit() fires tree teardown callbacks synchronously.
+        arrangementView.setEdit (nullptr);
+        pianoRoll.setTarget (nullptr, {});
+        mixerComponent.setEdit (nullptr);
+        modularRackComponent.setEdit (nullptr);
+
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
         edit.reset();
@@ -557,6 +590,7 @@ void MainComponent::attachEdit (te::Edit& editToAttach)
     arrangementView.setEdit (&editToAttach);
     pianoRoll.setTarget (&editToAttach, arrangementView.getSelectedClipID());
     mixerComponent.setEdit (&editToAttach);
+    modularRackComponent.setEdit (&editToAttach);
     bpmSlider.setValue (editToAttach.tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
 }
 
@@ -610,6 +644,12 @@ void MainComponent::createNewSession (const juce::File& targetFile, bool seedDef
 {
     if (edit != nullptr)
     {
+        // Detach views/listeners before ~Edit() runs its synchronous teardown.
+        arrangementView.setEdit (nullptr);
+        pianoRoll.setTarget (nullptr, {});
+        mixerComponent.setEdit (nullptr);
+        modularRackComponent.setEdit (nullptr);
+
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
         edit.reset();
@@ -696,6 +736,12 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
 
     if (edit != nullptr)
     {
+        // Detach views/listeners before ~Edit() runs its synchronous teardown.
+        arrangementView.setEdit (nullptr);
+        pianoRoll.setTarget (nullptr, {});
+        mixerComponent.setEdit (nullptr);
+        modularRackComponent.setEdit (nullptr);
+
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
         edit.reset();
@@ -904,6 +950,7 @@ void MainComponent::resized()
     topBar.removeFromLeft (8);
 
     addToolbarItem (mixerToggleButton, 60);
+    addToolbarItem (rackToggleButton, 50);
     addToolbarItem (audioSettingsButton, 110);
 
     topBar.removeFromLeft (8);
@@ -913,17 +960,31 @@ void MainComponent::resized()
 
     statusLabel.setBounds (topBar);
 
-    if (mixerComponent.isVisible())
+    const bool showMixer = mixerComponent.isVisible();
+    const bool showRack   = modularRackComponent.isVisible();
+
+    if (showMixer || showRack)
     {
         const int available = area.getHeight();
-        const int arrangementHeight = juce::roundToInt (available * 0.36f);
-        const int pianoHeight       = juce::roundToInt (available * 0.38f);
+        const int arrangementHeight = juce::roundToInt (available * 0.30f);
+        const int pianoHeight       = juce::roundToInt (available * 0.32f);
 
         arrangementView.setBounds (area.removeFromTop (arrangementHeight));
         area.removeFromTop (4);
         pianoRoll.setBounds (area.removeFromTop (pianoHeight));
         area.removeFromTop (4);
-        mixerComponent.setBounds (area);
+
+        const int panelCount = (showMixer ? 1 : 0) + (showRack ? 1 : 0);
+        const int gap = 4;
+        const int panelHeight = juce::jmax (20, (area.getHeight() - gap * (panelCount - 1)) / panelCount);
+
+        if (showMixer)
+        {
+            mixerComponent.setBounds (area.removeFromTop (panelHeight));
+            if (showRack) area.removeFromTop (gap);
+        }
+        if (showRack)
+            modularRackComponent.setBounds (area);
     }
     else
     {
