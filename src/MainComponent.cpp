@@ -109,11 +109,18 @@ MainComponent::MainComponent()
     engine.getPluginManager().createBuiltInType<CvWobbleFilterPlugin>();
     loadCachedPlugins();
 
+    // Provision the starter riff pack once for interactive sessions. The
+    // headless smoke test provisions its own pack into a temp dir instead, so
+    // CI never writes into the runner's Documents folder.
+    if (! headlessSmokeTest)
+        riffLibrary.ensureStarterPack (RiffLibrary::getDefaultLibraryDirectory());
+
     // Views
     addAndMakeVisible (arrangementView);
     addAndMakeVisible (pianoRoll);
     addAndMakeVisible (mixerComponent);
     addAndMakeVisible (modularRackComponent);
+    addAndMakeVisible (bgmGeneratorComponent);
 
     arrangementView.onClipSelected = [this] (tracktion::EditItemID clipID)
     {
@@ -139,6 +146,7 @@ MainComponent::MainComponent()
     addAndMakeVisible (scanPluginsButton);
     addAndMakeVisible (mixerToggleButton);
     addAndMakeVisible (rackToggleButton);
+    addAndMakeVisible (bgmToggleButton);
     addAndMakeVisible (audioSettingsButton);
     addAndMakeVisible (bpmSlider);
     addAndMakeVisible (statusLabel);
@@ -309,6 +317,22 @@ MainComponent::MainComponent()
         resized();
     };
 
+    bgmToggleButton.setClickingTogglesState (true);
+    bgmToggleButton.setToggleState (true, juce::dontSendNotification);
+    bgmToggleButton.onClick = [this]
+    {
+        bgmGeneratorComponent.setVisible (bgmToggleButton.getToggleState());
+        resized();
+    };
+
+    bgmGeneratorComponent.onBgmGenerated = [this] (int clipsCreated)
+    {
+        arrangementView.repaint();
+        mixerComponent.rebuildStrips();
+        statusLabel.setText ("BGM Generated (" + juce::String (clipsCreated) + " riff clips)",
+                             juce::dontSendNotification);
+    };
+
     audioSettingsButton.onClick = [this]
     {
         auto selector = std::make_unique<juce::AudioDeviceSelectorComponent> (
@@ -364,6 +388,7 @@ MainComponent::~MainComponent()
         pianoRoll.setTarget (nullptr, {});
         mixerComponent.setEdit (nullptr);
         modularRackComponent.setEdit (nullptr);
+        bgmGeneratorComponent.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
@@ -602,6 +627,7 @@ void MainComponent::attachEdit (te::Edit& editToAttach)
     pianoRoll.setTarget (&editToAttach, arrangementView.getSelectedClipID());
     mixerComponent.setEdit (&editToAttach);
     modularRackComponent.setEdit (&editToAttach);
+    bgmGeneratorComponent.setEdit (&editToAttach);
     bpmSlider.setValue (editToAttach.tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
 }
 
@@ -660,6 +686,7 @@ void MainComponent::createNewSession (const juce::File& targetFile, bool seedDef
         pianoRoll.setTarget (nullptr, {});
         mixerComponent.setEdit (nullptr);
         modularRackComponent.setEdit (nullptr);
+        bgmGeneratorComponent.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
@@ -752,6 +779,7 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
         pianoRoll.setTarget (nullptr, {});
         mixerComponent.setEdit (nullptr);
         modularRackComponent.setEdit (nullptr);
+        bgmGeneratorComponent.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
@@ -962,6 +990,7 @@ void MainComponent::resized()
 
     addToolbarItem (mixerToggleButton, 60);
     addToolbarItem (rackToggleButton, 50);
+    addToolbarItem (bgmToggleButton, 70);
     addToolbarItem (audioSettingsButton, 110);
 
     topBar.removeFromLeft (8);
@@ -970,6 +999,12 @@ void MainComponent::resized()
     topBar.removeFromLeft (10);
 
     statusLabel.setBounds (topBar);
+
+    if (bgmGeneratorComponent.isVisible())
+    {
+        bgmGeneratorComponent.setBounds (area.removeFromTop (34));
+        area.removeFromTop (4);
+    }
 
     const bool showMixer = mixerComponent.isVisible();
     const bool showRack   = modularRackComponent.isVisible();

@@ -542,6 +542,123 @@ int MainComponent::runHeadlessSmokeTest()
         rackDir.deleteRecursively();
     }
 
+    //===========================================================================
+    // WO-006 Regression: Riff-Layering BGM Solver & WaveAudioClip Persistence
+    //===========================================================================
+    {
+        const auto riffTempDir = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                   .getChildFile ("tcs_wo006_riff_smoke");
+
+        riffTempDir.deleteRecursively();
+        riffTempDir.createDirectory();
+
+        RiffLibrary smokeLibrary;
+        smokeLibrary.ensureStarterPack (riffTempDir);
+
+        if (smokeLibrary.getRiffs().size() < 8)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: expected at least 8 starter WAV riffs, got "
+                      << smokeLibrary.getRiffs().size() << std::endl;
+            return 1;
+        }
+
+        BgmRequest req;
+
+        req.genre            = "Cyberpunk";
+        req.targetKeyLabel   = "Cm";
+        req.targetPitchClass = RiffLibrary::parseKeyPitchClass ("Cm"); // 0 (+3 semitones from Am=9)
+        req.targetEnergy     = 4;
+        req.totalBars        = 8;
+
+        const int createdClips = BgmArrangementSolver::generateArrangement (*app.edit, smokeLibrary, req);
+
+        if (createdClips < 8)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: expected >= 8 layered BGM WaveAudioClips, got "
+                      << createdClips << std::endl;
+            return 1;
+        }
+
+        // Tight inner scope so no clip/track pointer outlives the reload.
+        {
+            auto smokeTracks = te::getAudioTracks (*app.edit);
+
+            if (smokeTracks.size() < 2)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-006 expected the four BGM tracks" << std::endl;
+                return 1;
+            }
+
+            te::WaveAudioClip* firstBassWave = nullptr;
+
+            for (auto* c : smokeTracks[1]->getClips())
+            {
+                if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+                {
+                    firstBassWave = wc;
+                    break;
+                }
+            }
+
+            if (firstBassWave == nullptr
+                || ! firstBassWave->getAutoTempo()
+                || std::abs (firstBassWave->getLoopInfo().getNumBeats() - 8.0) > 0.01
+                || std::abs (firstBassWave->getPitchChange() - 3.0f) > 0.01f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: BGM Bass WaveAudioClip missing autoTempo, 8-beat LoopInfo, or +3st pitch shift" << std::endl;
+                return 1;
+            }
+        }
+
+        const auto bgmSessionFile = riffTempDir.getChildFile ("BgmRoundTrip.tracktionedit");
+
+        app.currentEditFile = bgmSessionFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        if (! app.loadSessionFromFileSafely (bgmSessionFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-006 BGM session save/load round-trip failed" << std::endl;
+            return 1;
+        }
+
+        int persistedWaveClips = 0;
+        bool persistedBassSettings = false;
+
+        {
+            auto reloadedTracks = te::getAudioTracks (*app.edit);
+
+            for (auto* t : reloadedTracks)
+                for (auto* c : t->getClips())
+                    if (dynamic_cast<te::WaveAudioClip*> (c) != nullptr)
+                        ++persistedWaveClips;
+
+            if (reloadedTracks.size() >= 2)
+            {
+                for (auto* c : reloadedTracks[1]->getClips())
+                {
+                    if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+                    {
+                        if (wc->getAutoTempo() && std::abs (wc->getPitchChange() - 3.0f) <= 0.01f)
+                            persistedBassSettings = true;
+                    }
+                }
+            }
+        }
+
+        if (persistedWaveClips != createdClips || ! persistedBassSettings)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: expected " << createdClips
+                      << " persisted WaveAudioClips with intact autoTempo/pitchChange after reload, got "
+                      << persistedWaveClips << std::endl;
+            return 1;
+        }
+
+        riffTempDir.deleteRecursively();
+
+        std::cout << "[SMOKE_TEST] WO-006 riff-layering BGM solver & WaveAudioClip persistence PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -569,7 +686,8 @@ int MainComponent::runHeadlessSmokeTest()
 
     std::cout << "[SMOKE_TEST] PASS: persistence, non-destructive New, atomic Open rollback, "
                  "Undo/Redo note editing, dirty-state isolation, mixer gain/pan + instrument "
-                 "persistence & insert order, CV rack plugin/connection persistence, and "
+                 "persistence & insert order, CV rack plugin/connection persistence, "
+                 "BGM riff-layering WaveAudioClip time-stretch/pitch persistence, and "
                  "VST3 scanner lifecycle verified." << std::endl;
     return 0;
 }
