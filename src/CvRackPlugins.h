@@ -5,8 +5,8 @@
 
 namespace te = tracktion::engine;
 
-// Reason-style CV-over-audio modulation source. Emits a bipolar sine LFO
-// on output pins (1 = phase, 2 = amplitude).
+// Reason-style CV-over-audio modulation source. Emits a depth-scaled bipolar
+// sine LFO on its single mono output pin; it takes no audio input.
 class CvLfoPlugin : public te::Plugin
 {
 public:
@@ -35,8 +35,12 @@ public:
 
     void getChannelNames (juce::StringArray* ins, juce::StringArray* outs) override
     {
-        if (ins)   ins->add ("CV Out 1");
-        if (outs) outs->add ("CV Out 2");
+        // No audio inputs: the only pin is the mono CV output. (RackType's
+        // isConnectionLegal reads these lists, so a phantom input name here
+        // would make a connection into the LFO look legal.)
+        juce::ignoreUnused (ins);
+
+        if (outs) outs->add ("CV Out");
     }
 
     te::Plugin::BusLayout getBusses() const override

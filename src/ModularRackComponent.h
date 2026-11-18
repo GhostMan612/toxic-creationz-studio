@@ -49,8 +49,6 @@ public:
     juce::Point<float> getPinCentreInRack (te::EditItemID pluginID, int pinIndex, bool isInput) const;
     bool verifyNonOverlappingLayoutForSmokeTest() const;
 
-    std::function<void()> onMixerChanged;
-
 private:
     struct RackNode
     {
@@ -97,7 +95,6 @@ private:
     bool awaitingSecondNode = false;
     int firstNodeIndex = -1;
     int firstPinIndex = -1;
-    int refreshDepth = 0;
 
     void addCvPluginToRack (const char* xmlTypeName);
     void rebuildRackSelector();

@@ -309,8 +309,6 @@ MainComponent::MainComponent()
         resized();
     };
 
-    modularRackComponent.onMixerChanged = [this] { arrangementView.repaint(); };
-
     audioSettingsButton.onClick = [this]
     {
         auto selector = std::make_unique<juce::AudioDeviceSelectorComponent> (

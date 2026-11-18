@@ -425,7 +425,7 @@ int MainComponent::runHeadlessSmokeTest()
         }
 
         const auto instanceTree = te::RackInstance::create (*rack);
-        tracks.getFirst()->pluginList.insertPlugin (instanceTree, 0);
+        tracks.getFirst()->pluginList.insertPlugin (instanceTree, MixerComponent::getInsertIndexForNewPlugin (*tracks.getFirst()));
 
         const auto rackDir = tempDir.getChildFile ("tcs_wo005_rack_smoke");
         rackDir.deleteRecursively();

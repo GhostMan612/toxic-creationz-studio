@@ -91,26 +91,16 @@ void ModularRackComponent::setEdit (te::Edit* editToAttach)
 
 void ModularRackComponent::refresh()
 {
-    // addNewRack() fires valueTreeChildAdded synchronously, which re-enters the
-    // listeners below. Never let a notification re-enter refresh(): the rack
-    // list has not been updated yet at that point, so a nested call would see
-    // an empty list and provision yet another rack (unbounded recursion).
-    if (refreshDepth > 0)
+    if (edit == nullptr)
         return;
 
-    ++refreshDepth;
-
-    if (edit != nullptr)
-    {
-        // Read-only: never create or destroy racks from here. Auto-provisioning
-        // a rack on every attach would mutate (and dirty) sessions that were
-        // just loaded, and addNewRack() re-enters the ValueTree listeners.
-        rebuildRackSelector();
-        rebuildFromRack();
-        resized();
-    }
-
-    --refreshDepth;
+    // Read-only: never create or destroy racks from here. Auto-provisioning
+    // a rack on every attach would mutate (and dirty) sessions that were
+    // just loaded, and addNewRack() re-enters the ValueTree listeners.
+    // No re-entrancy guard is needed: nothing below mutates the tree.
+    rebuildRackSelector();
+    rebuildFromRack();
+    resized();
 }
 
 void ModularRackComponent::rebuildRackSelector()
