@@ -385,6 +385,163 @@ int MainComponent::runHeadlessSmokeTest()
         mixerDir.deleteRecursively();
     }
 
+    //--- WO-005: Reason-style modular CV/audio rack persistence ---------------
+    {
+        auto* edit = app.edit.get();
+        auto tracks = te::getAudioTracks (*edit);
+
+        if (tracks.isEmpty())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-005 needs an audio track for the RackInstance" << std::endl;
+            return 1;
+        }
+
+        auto rack = edit->getRackList().addNewRack();
+        rack->rackName = "Reason CV Wobble Rack";
+
+        auto lfoPtr    = edit->getPluginCache().createNewPlugin (CvLfoPlugin::xmlTypeName, {});
+        auto wobblePtr = edit->getPluginCache().createNewPlugin (CvWobbleFilterPlugin::xmlTypeName, {});
+
+        auto* lfo    = dynamic_cast<CvLfoPlugin*> (lfoPtr.get());
+        auto* wobble = dynamic_cast<CvWobbleFilterPlugin*> (wobblePtr.get());
+
+        if (lfo == nullptr || wobble == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-005 built-in CV plugins failed to instantiate" << std::endl;
+            return 1;
+        }
+
+        if (! rack->addPlugin (lfoPtr,    { 0.22f, 0.24f }, false)
+            || ! rack->addPlugin (wobblePtr, { 0.52f, 0.26f }, false))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-005 could not add plugins to the rack" << std::endl;
+            return 1;
+        }
+
+        if (! rack->addConnection (lfo->itemID, 0, wobble->itemID, 0))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-005 could not add CV LFO -> Wobble connection" << std::endl;
+            return 1;
+        }
+
+        const auto instanceTree = te::RackInstance::create (*rack);
+        tracks.getFirst()->pluginList.insertPlugin (instanceTree, MixerComponent::getInsertIndexForNewPlugin (*tracks.getFirst()));
+
+        const auto rackDir = tempDir.getChildFile ("tcs_wo005_rack_smoke");
+        rackDir.deleteRecursively();
+        rackDir.createDirectory();
+
+        const auto rackTestFile = rackDir.getChildFile ("RackRoundTrip.tracktionedit");
+
+        app.currentEditFile = rackTestFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        //--- Regression (Muse finding 1): syncFromEdit() must be read-only ---
+        {
+            auto smokeTracks = te::getAudioTracks (*app.edit);
+
+            if (! smokeTracks.isEmpty())
+            {
+                auto* vol = smokeTracks[0]->getVolumePlugin();
+
+                if (vol != nullptr)
+                {
+                    app.edit->getUndoManager().beginNewTransaction ("Smoke Fader Move");
+                    vol->setVolumeDb (-4.2f);
+
+                    app.modularRackComponent.syncFromEdit();
+
+                    if (std::abs (vol->getVolumeDb() - (-4.2f)) > 0.05f)
+                    {
+                        std::cerr << "[SMOKE_TEST] FAIL: syncFromEdit() reverted the last edit!" << std::endl;
+                        return 1;
+                    }
+                }
+            }
+        }
+
+        //--- Regression (Muse finding 2): no stacked nodes, aligned cables ---
+        app.modularRackComponent.setSize (640, 320);
+        app.modularRackComponent.resized();
+        app.modularRackComponent.syncFromEdit();
+
+        if (! app.modularRackComponent.verifyNonOverlappingLayoutForSmokeTest())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: ModularRackComponent nodes stacked or pin/cable coordinates misaligned!" << std::endl;
+            return 1;
+        }
+
+        // Release every RackType/Plugin reference BEFORE the reload destroys the
+        // Edit. ~RackType walks Edit-owned state, so a Ptr held past
+        // edit.reset() is a use-after-free (ASAN: heap-use-after-free in
+        // RackType::ConnectionList::deleteObject).
+        rack = nullptr;
+        lfoPtr = nullptr;
+        wobblePtr = nullptr;
+
+        if (! app.loadSessionFromFileSafely (rackTestFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-005 rack round-trip save/load failed" << std::endl;
+            return 1;
+        }
+
+        const auto& reloadedRacks = app.edit->getRackList().getTypes();
+
+        te::RackType::Ptr reloadedRack;
+
+        for (auto* r : reloadedRacks)
+            if (r->rackName.get() == "Reason CV Wobble Rack")
+                reloadedRack = r;
+
+        if (reloadedRack == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-005 named rack did not persist" << std::endl;
+            return 1;
+        }
+
+        const auto plugins = reloadedRack->getPlugins();
+
+        if (plugins.size() != 2)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-005 reloaded rack plugin count mismatch" << std::endl;
+            return 1;
+        }
+
+        bool foundLfo = false, foundWobble = false;
+
+        for (auto* p : plugins)
+        {
+            if (dynamic_cast<CvLfoPlugin*> (p) != nullptr)          foundLfo = true;
+            if (dynamic_cast<CvWobbleFilterPlugin*> (p) != nullptr) foundWobble = true;
+        }
+
+        if (! foundLfo || ! foundWobble)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-005 CV plugin types did not persist" << std::endl;
+            return 1;
+        }
+
+        const auto reloadedConnections = reloadedRack->getConnections();
+
+        if (reloadedConnections.size() != 1)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-005 connection count did not persist" << std::endl;
+            return 1;
+        }
+
+        auto* conn = reloadedConnections.getFirst();
+
+        if (reloadedRack->getPluginForID (conn->sourceID.get()) == nullptr
+            || reloadedRack->getPluginForID (conn->destID.get()) == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-005 connection endpoints did not resolve after reload" << std::endl;
+            return 1;
+        }
+
+        rackDir.deleteRecursively();
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -412,7 +569,8 @@ int MainComponent::runHeadlessSmokeTest()
 
     std::cout << "[SMOKE_TEST] PASS: persistence, non-destructive New, atomic Open rollback, "
                  "Undo/Redo note editing, dirty-state isolation, mixer gain/pan + instrument "
-                 "persistence & insert order, and VST3 scanner lifecycle verified." << std::endl;
+                 "persistence & insert order, CV rack plugin/connection persistence, and "
+                 "VST3 scanner lifecycle verified." << std::endl;
     return 0;
 }
 
