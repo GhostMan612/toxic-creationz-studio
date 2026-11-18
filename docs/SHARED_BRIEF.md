@@ -1,9 +1,9 @@
 ## Pipeline State
-- **Latest `main`:** `757e8cc` (`WO-001` through `WO-004` merged and audited clean)
-- **Active Branch / PR:** `feat/wo-005-reason-modular-rack` (`PR #5`)
-- **Builder Status (LongCat):** Addressed Muse review `5948774748` — removed `undoCurrentTransactionOnly()` from `syncFromEdit()` (it fell through to `undo()` on an empty redo stack), guarded Undo/Redo with `canUndo()`/`canRedo()`, mapped normalised `0..1` RackType positions to canvas pixels with a non-overlapping grid fallback, unified cable/pin coordinates via `getLocalArea`/`getLocalPoint`, and added both regression checks to `--smoke-test` — awaiting Muse re-audit & merge
-- **Auditor Status (Muse):** Re-review `PR #5` follow-up commit against review `5948774748`
-- **Next Queued Work Order:** `WO-006` — Phase 3 Riff-Layering BGM Solver & Time-Stretched Audio Clips (gated on `main` post-`PR #5`)
+- **Latest `main`:** `5e36347` (`WO-001` through `WO-005` merged and audited clean)
+- **Active Branch / PR:** `feat/wo-006-riff-layering-bgm-solver` (`PR #6`)
+- **Builder Status (LongCat):** `WO-006` implemented and pushed — awaiting Muse PR Doctor audit & merge
+- **Auditor Status (Muse):** Review `5950564554` posted (REQUEST CHANGES: lookup-before-wipe ordering + scope wipe to solver clips). Fix applied directly to the PR branch per Glenn's word (Option A): riff lookup before any track mutation, `bgmSolverClip` ValueTree tag + scoped wipe, real WAV bar lengths from headers, genuine 4-stage Intro/Groove/Peak/Outro gating, toolbar compacted to fit 1280px (1084px before statusLabel), + user-clip preservation and empty-library no-op smoke assertions — pushed, awaiting CI + Muse re-audit & merge
+- **Next Queued Work Order:** `WO-007` — Phase 4 Native JSON-RPC IPC Server (`DawIpcServer`) & Python FastMCP Co-Producer Bridge (gated on `main` post-`PR #6`)
 
 ---
 
@@ -15,7 +15,8 @@
 | WO-002 | Project Data Safety & Scanner Lifecycle Hardening | Merged to `main` (`77aea26`, PR #2) |
 | WO-003 | Multi-Track Arrangement Timeline & FL Studio-Style Piano Roll | Merged to `main` (`f0ea3cb`, PR #3) |
 | WO-004 | Interactive Channel Mixer, VST3 Plugin Rack & Audio Device Settings | Merged to `main` (`757e8cc`, PR #4) |
-| WO-005 | Reason-Style `RackType` Modular Audio, MIDI & CV Patchbay | In review (`feat/wo-005-reason-modular-rack`, PR #5) |
+| WO-005 | Reason-Style `RackType` Modular Audio, MIDI & CV Patchbay | Merged to `main` (`5e36347`, PR #5) |
+| WO-006 | Phase 3 Riff-Layering BGM Solver, Starter WAV Provisioner & Time-Stretched Audio Clips | In review (`feat/wo-006-riff-layering-bgm-solver`, PR #6) |
 
 ---
 

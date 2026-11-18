@@ -8,6 +8,7 @@
 #include "PianoRollComponent.h"
 #include "MixerComponent.h"
 #include "ModularRackComponent.h"
+#include "BgmGeneratorComponent.h"
 
 #include <atomic>
 #include <functional>
@@ -86,6 +87,8 @@ private:
     std::unique_ptr<te::Edit> edit;
     MixerComponent mixerComponent { engine };
     ModularRackComponent modularRackComponent { engine };
+    RiffLibrary riffLibrary;
+    BgmGeneratorComponent bgmGeneratorComponent { riffLibrary };
 
     juce::File currentEditFile;
     bool sessionUntitled = false;
@@ -115,6 +118,7 @@ private:
     juce::TextButton scanPluginsButton { "Scan VST3" };
     juce::TextButton mixerToggleButton   { "Mixer" };
     juce::TextButton rackToggleButton     { "Rack" };
+    juce::TextButton bgmToggleButton       { "BGM Gen" };
     juce::TextButton audioSettingsButton { "Audio Settings" };
     juce::Slider bpmSlider;
     juce::Label statusLabel            { {}, "Ready" };

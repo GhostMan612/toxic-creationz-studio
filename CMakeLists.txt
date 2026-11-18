@@ -39,6 +39,10 @@ target_sources(AIDAW PRIVATE
     src/CvRackPlugins.h
     src/ModularRackComponent.h
     src/ModularRackComponent.cpp
+    src/RiffLibrary.h
+    src/RiffLibrary.cpp
+    src/BgmGeneratorComponent.h
+    src/BgmGeneratorComponent.cpp
 )
 
 # 4. Preprocessor flags: enable VST3 hosting, disable unused bloat
