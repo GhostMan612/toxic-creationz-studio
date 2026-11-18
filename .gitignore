@@ -27,3 +27,7 @@ Thumbs.db
 docs/BRIEFING.md
 .hermes_inbox.md
 
+
+# Python
+__pycache__/
+*.pyc
