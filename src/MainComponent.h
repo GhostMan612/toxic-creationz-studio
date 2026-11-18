@@ -9,6 +9,7 @@
 #include "MixerComponent.h"
 #include "ModularRackComponent.h"
 #include "BgmGeneratorComponent.h"
+#include "DawIpcServer.h"
 
 #include <atomic>
 #include <functional>
@@ -89,6 +90,7 @@ private:
     ModularRackComponent modularRackComponent { engine };
     RiffLibrary riffLibrary;
     BgmGeneratorComponent bgmGeneratorComponent { riffLibrary };
+    DawIpcServer ipcServer { riffLibrary };
 
     juce::File currentEditFile;
     bool sessionUntitled = false;

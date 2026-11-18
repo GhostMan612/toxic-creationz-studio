@@ -1,5 +1,7 @@
 #include "MainComponent.h"
 
+#include <chrono>
+#include <future>
 #include <iostream>
 
 //==============================================================================
@@ -620,6 +622,11 @@ int MainComponent::runHeadlessSmokeTest()
             userClipPtr->removeFromParent();
         }
 
+        // Release the last smart pointer to that clip before the reload below
+        // destroys the Edit: ~WaveAudioClip walks Edit-owned state, so a Ptr
+        // held past edit.reset() is a use-after-free.
+        userClip = nullptr;
+
         // Empty-library no-op: with no riffs, generateArrangement must return 0
         // and leave the track name and clips untouched.
         {
@@ -732,6 +739,180 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-006 riff-layering BGM solver & WaveAudioClip persistence PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-007 Regression: Native TCP JSON-RPC 2.0 Server (DawIpcServer)
+    //===========================================================================
+    {
+        int boundTestPort = 0;
+
+        for (int candidatePort = 19450; candidatePort <= 19465; ++candidatePort)
+        {
+            if (app.ipcServer.startListening (candidatePort))
+            {
+                boundTestPort = candidatePort;
+                break;
+            }
+        }
+
+        if (boundTestPort == 0 || ! app.ipcServer.isListening())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: DawIpcServer could not bind a loopback test port" << std::endl;
+            return 1;
+        }
+
+        // Sends a newline-delimited JSON-RPC request over a real TCP socket on a
+        // worker thread while the calling (message) thread pumps the RPC queue.
+        auto sendTcpRpc = [&app, boundTestPort] (const juce::String& jsonLine) -> juce::var
+        {
+            auto clientFuture = std::async (std::launch::async, [boundTestPort, jsonLine]() -> juce::String
+            {
+                juce::StreamingSocket sock;
+
+                if (! sock.connect ("127.0.0.1", boundTestPort, 1500))
+                    return {};
+
+                const juce::String payload = jsonLine + "\n";
+
+                if (sock.write (payload.toRawUTF8(),
+                                static_cast<int> (payload.getNumBytesAsUTF8())) <= 0)
+                    return {};
+
+                juce::MemoryBlock respBuf;
+                char ch = 0;
+
+                while (sock.waitUntilReady (true, 2000) == 1 && sock.read (&ch, 1, false) == 1)
+                {
+                    if (ch == '\n')
+                        break;
+
+                    if (ch != '\r')
+                        respBuf.append (&ch, 1);
+                }
+
+                return juce::String::fromUTF8 (static_cast<const char*> (respBuf.getData()),
+                                              static_cast<int> (respBuf.getSize()));
+            });
+
+            while (clientFuture.wait_for (std::chrono::milliseconds (5)) != std::future_status::ready)
+                app.ipcServer.servicePendingRequestsOnMessageThread();
+
+            app.ipcServer.servicePendingRequestsOnMessageThread();
+
+            return juce::JSON::parse (clientFuture.get());
+        };
+
+        // 1. Create an AI Lead Track via track.create
+        const auto createResp = sendTcpRpc (
+            R"({"jsonrpc":"2.0","id":1,"method":"track.create","params":{"name":"MCP AI Lead","plugin_type":"4osc"}})");
+
+        const int aiTrackIdx = static_cast<int> (createResp["result"]["track_index"]);
+
+        if (aiTrackIdx < 4)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: track.create returned unexpected track_index " << aiTrackIdx << std::endl;
+            app.ipcServer.stopListening();
+            return 1;
+        }
+
+        // 2. Write 3 MIDI notes via midi.add_notes
+        const auto addNotesResp = sendTcpRpc (
+            juce::String (R"({"jsonrpc":"2.0","id":2,"method":"midi.add_notes","params":{"track_index":)")
+            + juce::String (aiTrackIdx)
+            + R"(,"notes":[{"pitch":60,"start_beat":0.0,"length_beats":1.0,"velocity":110},{"pitch":64,"start_beat":1.0,"length_beats":1.0,"velocity":112},{"pitch":67,"start_beat":2.0,"length_beats":2.0,"velocity":118}]}})");
+
+        if (static_cast<int> (addNotesResp["result"]["added"]) != 3)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: midi.add_notes did not add 3 notes" << std::endl;
+            app.ipcServer.stopListening();
+            return 1;
+        }
+
+        // 3. Read back notes via midi.get_notes
+        const auto getNotesResp = sendTcpRpc (
+            juce::String (R"({"jsonrpc":"2.0","id":3,"method":"midi.get_notes","params":{"track_index":)")
+            + juce::String (aiTrackIdx) + R"(,"start_beat":0.0,"end_beat":8.0}})");
+
+        const auto* notesArr = getNotesResp["result"]["notes"].getArray();
+
+        if (notesArr == nullptr || notesArr->size() != 3)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: midi.get_notes expected 3 notes" << std::endl;
+            app.ipcServer.stopListening();
+            return 1;
+        }
+
+        // 4. Update mixer & transport, then verify via daw.get_state
+        sendTcpRpc (
+            juce::String (R"({"jsonrpc":"2.0","id":4,"method":"mixer.set_track","params":{"track_index":)")
+            + juce::String (aiTrackIdx) + R"(,"volume_db":-3.5,"pan":-0.25,"mute":true}})");
+
+        sendTcpRpc (R"({"jsonrpc":"2.0","id":5,"method":"transport.control","params":{"bpm":132.0,"beat":4.0}})");
+
+        const auto stateResp = sendTcpRpc (R"({"jsonrpc":"2.0","id":6,"method":"daw.get_state","params":{}})");
+
+        const double stateBpm = static_cast<double> (stateResp["result"]["bpm"]);
+        const auto* stateTracks = stateResp["result"]["tracks"].getArray();
+        const double statePositionBeats = static_cast<double> (stateResp["result"]["position_beats"]);
+
+        app.ipcServer.stopListening();
+
+        // Read the AI track's entry back: the mixer update (volume -3.5 dB,
+        // pan -0.25, mute true) and the beat-4 seek must be visible in the
+        // state response, not merely sent. A missing property reads as 0/false
+        // through var conversion, so a dropped update fails loudly here.
+        const auto aiTrackState = (stateTracks != nullptr && stateTracks->size() > aiTrackIdx)
+                                      ? stateTracks->getUnchecked (aiTrackIdx)
+                                      : juce::var();
+
+        const double stateVolumeDb = static_cast<double> (aiTrackState["volume_db"]);
+        const double statePan      = static_cast<double> (aiTrackState["pan"]);
+        const bool stateMute       = static_cast<bool> (aiTrackState["mute"]);
+
+        if (std::abs (stateBpm - 132.0) > 0.01 || stateTracks == nullptr || stateTracks->size() <= aiTrackIdx
+            || std::abs (stateVolumeDb - (-3.5)) > 0.01 || std::abs (statePan - (-0.25)) > 0.01
+            || ! stateMute || std::abs (statePositionBeats - 4.0) > 0.01)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: daw.get_state did not reflect RPC mutations" << std::endl;
+            return 1;
+        }
+
+        // 5. Verify RPC-created track & notes survive save/load round-trip
+        const auto ipcTempDir = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                  .getChildFile ("tcs_wo007_ipc_smoke");
+
+        ipcTempDir.deleteRecursively();
+        ipcTempDir.createDirectory();
+
+        const auto ipcSessionFile = ipcTempDir.getChildFile ("IpcRoundTrip.tracktionedit");
+
+        app.currentEditFile = ipcSessionFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        if (! ipcSessionFile.existsAsFile() || ! app.loadSessionFromFileSafely (ipcSessionFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-007 IPC session save/load round-trip failed" << std::endl;
+            return 1;
+        }
+
+        const auto reloadedVerify = app.ipcServer.executeJsonRpcOnMessageThread (
+            juce::String (R"({"jsonrpc":"2.0","id":7,"method":"midi.get_notes","params":{"track_index":)")
+            + juce::String (aiTrackIdx) + R"(,"start_beat":0.0,"end_beat":8.0}})");
+
+        const auto parsedReload = juce::JSON::parse (reloadedVerify);
+        const auto* reloadedNotes = parsedReload["result"]["notes"].getArray();
+
+        if (reloadedNotes == nullptr || reloadedNotes->size() != 3)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-007 RPC-authored MIDI notes did not persist across reload" << std::endl;
+            return 1;
+        }
+
+        ipcTempDir.deleteRecursively();
+
+        std::cout << "[SMOKE_TEST] WO-007 native TCP JSON-RPC IPC server & persistence PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -760,8 +941,8 @@ int MainComponent::runHeadlessSmokeTest()
     std::cout << "[SMOKE_TEST] PASS: persistence, non-destructive New, atomic Open rollback, "
                  "Undo/Redo note editing, dirty-state isolation, mixer gain/pan + instrument "
                  "persistence & insert order, CV rack plugin/connection persistence, "
-                 "BGM riff-layering WaveAudioClip time-stretch/pitch persistence, and "
-                 "VST3 scanner lifecycle verified." << std::endl;
+                 "BGM riff-layering WaveAudioClip time-stretch/pitch persistence, "
+                 "native TCP JSON-RPC IPC round-trip, and VST3 scanner lifecycle verified." << std::endl;
     return 0;
 }
 

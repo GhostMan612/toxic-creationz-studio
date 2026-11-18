@@ -1,9 +1,9 @@
 ## Pipeline State
-- **Latest `main`:** `5e36347` (`WO-001` through `WO-005` merged and audited clean)
-- **Active Branch / PR:** `feat/wo-006-riff-layering-bgm-solver` (`PR #6`)
-- **Builder Status (LongCat):** `WO-006` implemented and pushed — awaiting Muse PR Doctor audit & merge
-- **Auditor Status (Muse):** Review `5950564554` posted (REQUEST CHANGES: lookup-before-wipe ordering + scope wipe to solver clips). Fix applied directly to the PR branch per Glenn's word (Option A): riff lookup before any track mutation, `bgmSolverClip` ValueTree tag + scoped wipe, real WAV bar lengths from headers, genuine 4-stage Intro/Groove/Peak/Outro gating, toolbar compacted to fit 1280px (1084px before statusLabel), + user-clip preservation and empty-library no-op smoke assertions — pushed, awaiting CI + Muse re-audit & merge
-- **Next Queued Work Order:** `WO-007` — Phase 4 Native JSON-RPC IPC Server (`DawIpcServer`) & Python FastMCP Co-Producer Bridge (gated on `main` post-`PR #6`)
+- **Latest `main`:** `4105512` (`WO-001` through `WO-006` merged and audited clean)
+- **Active Branch / PR:** `feat/wo-007-mcp-ipc-coproducer` (`PR #7`)
+- **Builder Status (LongCat):** `WO-007` implemented, 5x Release `--smoke-test` verified green, and pushed — awaiting Muse PR Doctor audit & merge
+- **Auditor Status (Muse):** Review `5952346887` posted (REQUEST CHANGES: smoke test never asserted the mixer update or the seek). Fix applied directly to the PR branch per Glenn's word: step 4 now asserts the AI track's volume_db/pan/mute and position_beats from the `daw.get_state` response — pushed, awaiting CI + Muse re-audit & merge
+- **Next Queued Work Order:** `WO-008` — Phase 5 Audacity-Style Non-Destructive Waveform Editor & Bounce-to-Take DSP (gated on `main` post-`PR #7`)
 
 ---
 
@@ -16,7 +16,8 @@
 | WO-003 | Multi-Track Arrangement Timeline & FL Studio-Style Piano Roll | Merged to `main` (`f0ea3cb`, PR #3) |
 | WO-004 | Interactive Channel Mixer, VST3 Plugin Rack & Audio Device Settings | Merged to `main` (`757e8cc`, PR #4) |
 | WO-005 | Reason-Style `RackType` Modular Audio, MIDI & CV Patchbay | Merged to `main` (`5e36347`, PR #5) |
-| WO-006 | Phase 3 Riff-Layering BGM Solver, Starter WAV Provisioner & Time-Stretched Audio Clips | In review (`feat/wo-006-riff-layering-bgm-solver`, PR #6) |
+| WO-006 | Phase 3 Riff-Layering BGM Solver, Starter WAV Provisioner & Time-Stretched Audio Clips | Merged to `main` (`4105512`, PR #6) |
+| WO-007 | Phase 4 Native JSON-RPC 2.0 IPC Server (`DawIpcServer`) & Python FastMCP Co-Producer Bridge | In review (`feat/wo-007-mcp-ipc-coproducer`, PR #7) |
 
 ---
 

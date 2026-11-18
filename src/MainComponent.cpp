@@ -115,6 +115,23 @@ MainComponent::MainComponent()
     if (! headlessSmokeTest)
         riffLibrary.ensureStarterPack (RiffLibrary::getDefaultLibraryDirectory());
 
+    // Bind the AI co-producer bridge only for real sessions: --smoke-test binds
+    // its own loopback port so parallel/CI runs never collide on 9450.
+    if (! headlessSmokeTest)
+        ipcServer.startListening (9450);
+
+    ipcServer.onEditMutatedByRpc = [this] (const juce::String& summary)
+    {
+        if (edit != nullptr)
+            bpmSlider.setValue (edit->tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
+
+        arrangementView.repaint();
+        pianoRoll.repaint();
+        mixerComponent.rebuildStrips();
+        modularRackComponent.syncFromEdit();
+        statusLabel.setText (summary, juce::dontSendNotification);
+    };
+
     // Views
     addAndMakeVisible (arrangementView);
     addAndMakeVisible (pianoRoll);
@@ -367,6 +384,9 @@ MainComponent::~MainComponent()
     stopVst3Scan (3000);
     reapRetiredScanThreads();
 
+    // Stop accepting RPC connections before the Edit (and its listener) goes away.
+    ipcServer.stopListening();
+
     // Release any still-hung vendor DLL thread instead of triggering ~Thread().
     for (auto& retired : retiredScanThreads)
     {
@@ -389,6 +409,7 @@ MainComponent::~MainComponent()
         mixerComponent.setEdit (nullptr);
         modularRackComponent.setEdit (nullptr);
         bgmGeneratorComponent.setEdit (nullptr);
+        ipcServer.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
@@ -628,6 +649,7 @@ void MainComponent::attachEdit (te::Edit& editToAttach)
     mixerComponent.setEdit (&editToAttach);
     modularRackComponent.setEdit (&editToAttach);
     bgmGeneratorComponent.setEdit (&editToAttach);
+    ipcServer.setEdit (&editToAttach);
     bpmSlider.setValue (editToAttach.tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
 }
 
@@ -687,6 +709,7 @@ void MainComponent::createNewSession (const juce::File& targetFile, bool seedDef
         mixerComponent.setEdit (nullptr);
         modularRackComponent.setEdit (nullptr);
         bgmGeneratorComponent.setEdit (nullptr);
+        ipcServer.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
@@ -780,6 +803,7 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
         mixerComponent.setEdit (nullptr);
         modularRackComponent.setEdit (nullptr);
         bgmGeneratorComponent.setEdit (nullptr);
+        ipcServer.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
