@@ -1,8 +1,8 @@
 ## Pipeline State
 - **Latest `main`:** `5e36347` (`WO-001` through `WO-005` merged and audited clean)
 - **Active Branch / PR:** `feat/wo-006-riff-layering-bgm-solver` (`PR #6`)
-- **Builder Status (LongCat):** `WO-006` implemented, 5x Release `--smoke-test` verified green, and pushed — awaiting Muse PR Doctor audit & merge
-- **Auditor Status (Muse):** Ready to review `PR #6` (`RiffLibrary`, `BgmArrangementSolver`, `BgmGeneratorComponent`, `WaveAudioClip` persistence)
+- **Builder Status (LongCat):** `WO-006` implemented and pushed — awaiting Muse PR Doctor audit & merge
+- **Auditor Status (Muse):** Review `5950564554` posted (REQUEST CHANGES: lookup-before-wipe ordering + scope wipe to solver clips). Fix applied directly to the PR branch per Glenn's word (Option A): riff lookup before any track mutation, `bgmSolverClip` ValueTree tag + scoped wipe, real WAV bar lengths from headers, genuine 4-stage Intro/Groove/Peak/Outro gating, toolbar compacted to fit 1280px (1084px before statusLabel), + user-clip preservation and empty-library no-op smoke assertions — pushed, awaiting CI + Muse re-audit & merge
 - **Next Queued Work Order:** `WO-007` — Phase 4 Native JSON-RPC IPC Server (`DawIpcServer`) & Python FastMCP Co-Producer Bridge (gated on `main` post-`PR #6`)
 
 ---

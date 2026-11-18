@@ -267,7 +267,24 @@ void RiffLibrary::scanDirectory (const juce::File& targetDirectory)
             meta.energy = juce::jlimit (1, 5, tokens[4].substring (1).getIntValue());
 
         meta.name = tokens.size() > 5 ? tokens[5] : f.getFileNameWithoutExtension();
+
+        // Read the real loop length from the WAV header instead of assuming
+        // 2 bars: a 4-bar user loop treated as 2 bars would play double-speed
+        // under autoTempo. Falls back to 2 bars if the file is unreadable.
         meta.bars = 2;
+
+        juce::WavAudioFormat wavFormat;
+
+        if (std::unique_ptr<juce::AudioFormatReader> reader (
+                wavFormat.createReaderFor (f.createInputStream().release(), true)))
+        {
+            if (reader->sampleRate > 0.0 && reader->lengthInSamples > 0)
+            {
+                const double durationSec = static_cast<double> (reader->lengthInSamples) / reader->sampleRate;
+                const double beats = durationSec * (meta.bpm / 60.0);
+                meta.bars = std::max (1, static_cast<int> (std::round (beats / 4.0)));
+            }
+        }
 
         riffs.push_back (std::move (meta));
     }
@@ -313,52 +330,67 @@ int BgmArrangementSolver::generateArrangement (te::Edit& edit,
                                                const RiffLibrary& library,
                                                const BgmRequest& request)
 {
-    const int totalBars = std::max (4, request.totalBars);
+    static const juce::Identifier bgmSolverClipProp ("bgmSolverClip");
 
+    const int totalBars = std::max (4, request.totalBars);
     edit.ensureNumberOfAudioTracks (4);
     auto tracks = te::getAudioTracks (edit);
 
-    const RiffRole roles[4] = { RiffRole::drums, RiffRole::bass, RiffRole::lead, RiffRole::pad };
+    const RiffRole roles[4] = {
+        RiffRole::drums,
+        RiffRole::bass,
+        RiffRole::lead,
+        RiffRole::pad
+    };
 
     int insertedClips = 0;
 
-    for (int rIdx = 0; rIdx < 4 && rIdx < tracks.size(); ++rIdx)
+    for (int rIdx = 0; rIdx < 4; ++rIdx)
     {
         const auto role = roles[rIdx];
-        auto* track = tracks[rIdx];
 
-        track->setName (RiffLibrary::roleToTrackName (role));
-
-        // Replace any wave clips from a previous generation pass.
-        const auto existing = track->getClips();
-
-        for (int c = existing.size() - 1; c >= 0; --c)
-            if (dynamic_cast<te::WaveAudioClip*> (existing[c]) != nullptr)
-                existing[c]->removeFromParent();
-
-        const auto* riff = library.findBestMatch (role, request.genre,
+        // 1. Look up matching riff FIRST; if none exists, leave track name & clips untouched
+        const auto* riff = library.findBestMatch (role,
+                                                  request.genre,
                                                   request.targetEnergy,
                                                   request.targetPitchClass);
-
         if (riff == nullptr)
             continue;
 
-        const int loopBars = std::max (1, riff->bars);
+        auto* track = tracks[rIdx];
+        track->setName (RiffLibrary::roleToTrackName (role));
 
+        // 2. Remove ONLY WaveAudioClips previously created by BgmArrangementSolver
+        for (int c = track->getClips().size() - 1; c >= 0; --c)
+        {
+            auto* clip = track->getClips()[c];
+            if (dynamic_cast<te::WaveAudioClip*> (clip) != nullptr
+                && static_cast<bool> (clip->state.getProperty (bgmSolverClipProp, false)))
+            {
+                clip->removeFromParent();
+            }
+        }
+
+        const int loopBars = std::max (1, riff->bars);
         const int semitoneShift = (role == RiffRole::drums)
-                                    ? 0
-                                    : RiffLibrary::computeClosestSemitoneShift (
-                                          riff->rootPitchClass, request.targetPitchClass);
+                                      ? 0
+                                      : RiffLibrary::computeClosestSemitoneShift (
+                                            riff->rootPitchClass, request.targetPitchClass);
 
         for (int bar = 0; bar < totalBars; bar += loopBars)
         {
-            const bool isIntro = (bar < 2);
-            const bool isOutro = (bar >= totalBars - 2 && totalBars >= 8);
+            // 4-stage Intro -> Groove -> Peak -> Outro arrangement gating
+            const bool isIntro  = (bar < 2);
+            const bool isGroove = (! isIntro && bar < totalBars / 2 && totalBars >= 8);
+            const bool isOutro  = (bar >= totalBars - 2 && totalBars >= 8);
 
-            if (isIntro && role == RiffRole::lead && request.targetEnergy < 4)
+            if (isIntro && role == RiffRole::lead)
                 continue;
-
-            if (isOutro && role == RiffRole::drums && request.targetEnergy < 5)
+            if (isIntro && role == RiffRole::drums && request.targetEnergy < 4)
+                continue;
+            if (isGroove && role == RiffRole::lead && request.targetEnergy < 4)
+                continue;
+            if (isOutro && (role == RiffRole::drums || role == RiffRole::bass) && request.targetEnergy < 5)
                 continue;
 
             const double startBeat = static_cast<double> (bar * 4);
@@ -370,19 +402,13 @@ int BgmArrangementSolver::generateArrangement (te::Edit& edit,
             };
 
             const te::ClipPosition clipPos { clipRange, tracktion::TimeDuration::fromSeconds (0.0) };
-
-            // The clip pointer must not outlive this iteration: the clip is
-            // owned by the track, and a stale Ptr past an Edit teardown is a
-            // use-after-free (see the WO-005 ASAN finding).
-            auto waveClip = track->insertWaveClip (riff->name, riff->wavFile, clipPos, false);
-
-            if (waveClip != nullptr)
+            if (auto waveClip = track->insertWaveClip (riff->name, riff->wavFile, clipPos, false))
             {
+                waveClip->state.setProperty (bgmSolverClipProp, true, nullptr);
                 waveClip->getLoopInfo().setNumBeats (static_cast<double> (loopBars * 4));
                 waveClip->setAutoTempo (true);
                 waveClip->setAutoPitch (false);
                 waveClip->setPitchChange (static_cast<float> (semitoneShift));
-
                 ++insertedClips;
             }
         }

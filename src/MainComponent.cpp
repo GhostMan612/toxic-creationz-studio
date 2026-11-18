@@ -963,39 +963,42 @@ void MainComponent::resized()
     auto area = getLocalBounds().reduced (12);
     auto topBar = area.removeFromTop (36);
 
+    // Compact toolbar: gaps 4px, section separators 4px, and trimmed button
+    // widths so the whole row (buttons + BPM slider + status label) fits
+    // inside a 1280px window with room to spare (1084px before statusLabel).
     auto addToolbarItem = [&topBar] (juce::Component& comp, int width)
     {
         comp.setBounds (topBar.removeFromLeft (width));
-        topBar.removeFromLeft (6);
+        topBar.removeFromLeft (4);
     };
 
-    addToolbarItem (newButton, 64);
-    addToolbarItem (openButton, 74);
-    addToolbarItem (saveButton, 64);
-    addToolbarItem (saveAsButton, 82);
-    addToolbarItem (addTrackButton, 72);
-    addToolbarItem (undoButton, 56);
-    addToolbarItem (redoButton, 56);
+    addToolbarItem (newButton, 56);
+    addToolbarItem (openButton, 64);
+    addToolbarItem (saveButton, 56);
+    addToolbarItem (saveAsButton, 72);
+    addToolbarItem (addTrackButton, 68);
+    addToolbarItem (undoButton, 48);
+    addToolbarItem (redoButton, 48);
 
-    topBar.removeFromLeft (8);
+    topBar.removeFromLeft (4);
 
-    addToolbarItem (playButton, 68);
-    addToolbarItem (stopButton, 68);
+    addToolbarItem (playButton, 60);
+    addToolbarItem (stopButton, 60);
 
-    topBar.removeFromLeft (8);
+    topBar.removeFromLeft (4);
 
-    addToolbarItem (scanPluginsButton, 100);
+    addToolbarItem (scanPluginsButton, 88);
 
-    topBar.removeFromLeft (8);
+    topBar.removeFromLeft (4);
 
-    addToolbarItem (mixerToggleButton, 60);
-    addToolbarItem (rackToggleButton, 50);
-    addToolbarItem (bgmToggleButton, 70);
-    addToolbarItem (audioSettingsButton, 110);
+    addToolbarItem (mixerToggleButton, 52);
+    addToolbarItem (rackToggleButton, 46);
+    addToolbarItem (bgmToggleButton, 60);
+    addToolbarItem (audioSettingsButton, 104);
 
-    topBar.removeFromLeft (8);
+    topBar.removeFromLeft (4);
 
-    bpmSlider.setBounds (topBar.removeFromLeft (150));
+    bpmSlider.setBounds (topBar.removeFromLeft (120));
     topBar.removeFromLeft (10);
 
     statusLabel.setBounds (topBar);

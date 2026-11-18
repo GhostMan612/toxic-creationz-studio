@@ -562,6 +562,27 @@ int MainComponent::runHeadlessSmokeTest()
             return 1;
         }
 
+        // User WaveAudioClip preservation: a clip the solver did not create
+        // must survive generateArrangement untouched.
+        auto userTracks = te::getAudioTracks (*app.edit);
+
+        const tracktion::TimeRange userClipRange {
+            app.edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (0.0)),
+            app.edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (8.0))
+        };
+
+        auto userClip = userTracks[0]->insertWaveClip (
+            "User Imported Vocal",
+            smokeLibrary.getRiffs()[0].wavFile,
+            te::ClipPosition { userClipRange, tracktion::TimeDuration::fromSeconds (0.0) },
+            false);
+
+        if (userClip == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: could not insert the user WaveAudioClip for the preservation check" << std::endl;
+            return 1;
+        }
+
         BgmRequest req;
 
         req.genre            = "Cyberpunk";
@@ -577,6 +598,58 @@ int MainComponent::runHeadlessSmokeTest()
             std::cerr << "[SMOKE_TEST] FAIL: expected >= 8 layered BGM WaveAudioClips, got "
                       << createdClips << std::endl;
             return 1;
+        }
+
+        {
+            auto postTracks = te::getAudioTracks (*app.edit);
+
+            te::WaveAudioClip* userClipPtr = nullptr;
+
+            for (auto* c : postTracks[0]->getClips())
+                if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+                    if (wc->getName() == "User Imported Vocal")
+                        userClipPtr = wc;
+
+            if (userClipPtr == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: generateArrangement deleted the user WaveAudioClip on Track 0" << std::endl;
+                return 1;
+            }
+
+            // Remove it again so the persisted-clip count below stays exact.
+            userClipPtr->removeFromParent();
+        }
+
+        // Empty-library no-op: with no riffs, generateArrangement must return 0
+        // and leave the track name and clips untouched.
+        {
+            RiffLibrary emptyLib;
+
+            auto preTracks = te::getAudioTracks (*app.edit);
+            int preClipCount = 0;
+
+            for (auto* t : preTracks)
+                preClipCount += t->getClips().size();
+
+            preTracks[0]->setName ("Custom User Track");
+
+            if (BgmArrangementSolver::generateArrangement (*app.edit, emptyLib, req) != 0)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: empty-library generateArrangement should return 0" << std::endl;
+                return 1;
+            }
+
+            auto postTracks = te::getAudioTracks (*app.edit);
+            int postClipCount = 0;
+
+            for (auto* t : postTracks)
+                postClipCount += t->getClips().size();
+
+            if (postTracks[0]->getName() != "Custom User Track" || postClipCount != preClipCount)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: empty-library generateArrangement renamed a track or removed clips" << std::endl;
+                return 1;
+            }
         }
 
         // Tight inner scope so no clip/track pointer outlives the reload.
