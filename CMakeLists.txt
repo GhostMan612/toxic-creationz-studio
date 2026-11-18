@@ -43,6 +43,8 @@ target_sources(AIDAW PRIVATE
     src/RiffLibrary.cpp
     src/BgmGeneratorComponent.h
     src/BgmGeneratorComponent.cpp
+    src/DawIpcServer.h
+    src/DawIpcServer.cpp
 )
 
 # 4. Preprocessor flags: enable VST3 hosting, disable unused bloat
