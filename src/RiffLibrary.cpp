@@ -275,8 +275,13 @@ void RiffLibrary::scanDirectory (const juce::File& targetDirectory)
 
         juce::WavAudioFormat wavFormat;
 
-        if (std::unique_ptr<juce::AudioFormatReader> reader (
-                wavFormat.createReaderFor (f.createInputStream().release(), true)))
+        // NB: a parenthesised initialiser is NOT allowed for a declaration
+        // used as an if-condition (only = or braced initialisers are), so the
+        // reader is declared here and tested on the next line.
+        std::unique_ptr<juce::AudioFormatReader> reader (
+            wavFormat.createReaderFor (f.createInputStream().release(), true));
+
+        if (reader != nullptr)
         {
             if (reader->sampleRate > 0.0 && reader->lengthInSamples > 0)
             {
