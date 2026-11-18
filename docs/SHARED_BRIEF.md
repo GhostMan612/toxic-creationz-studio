@@ -1,9 +1,9 @@
 ## Pipeline State
 - **Latest `main`:** `757e8cc` (`WO-001` through `WO-004` merged and audited clean)
 - **Active Branch / PR:** `feat/wo-005-reason-modular-rack` (`PR #5`)
-- **Builder Status (LongCat):** `WO-005` implemented, heap/teardown hardened, ASAN clean + 5x Release `--smoke-test` verified green — awaiting Muse PR Doctor audit & merge
-- **Auditor Status (Muse):** Ready to review `PR #5` (`CvRackPlugins.h`, `ModularRackComponent`, `MainComponent` 3-way layout, `--smoke-test`)
-- **Next Queued Work Order:** `WO-006` — Phase 3 Riff-Layering BGM Solver & Stem Library (gated on `main` post-`PR #5`)
+- **Builder Status (LongCat):** Addressed Muse review `5948774748` — removed `undoCurrentTransactionOnly()` from `syncFromEdit()` (it fell through to `undo()` on an empty redo stack), guarded Undo/Redo with `canUndo()`/`canRedo()`, mapped normalised `0..1` RackType positions to canvas pixels with a non-overlapping grid fallback, unified cable/pin coordinates via `getLocalArea`/`getLocalPoint`, and added both regression checks to `--smoke-test` — awaiting Muse re-audit & merge
+- **Auditor Status (Muse):** Re-review `PR #5` follow-up commit against review `5948774748`
+- **Next Queued Work Order:** `WO-006` — Phase 3 Riff-Layering BGM Solver & Time-Stretched Audio Clips (gated on `main` post-`PR #5`)
 
 ---
 

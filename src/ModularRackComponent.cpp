@@ -10,9 +10,14 @@ namespace
     const juce::Colour wireColour      (0xff7fd1ae);
     const juce::Colour pendingColour   (0xffe0b13a);
 
-    constexpr int nodeWidth  = 120;
-    constexpr int nodeHeight = 92;
+    constexpr int nodeWidth  = 180;
+    constexpr int nodeHeight = 110;
+    constexpr int padX       = 24;
+    constexpr int padY       = 20;
     constexpr int pinSize    = 8;
+    constexpr int pinY       = 26;
+    constexpr int minCanvasW = 760;
+    constexpr int minCanvasH = 520;
 }
 
 ModularRackComponent::ModularRackComponent (te::Engine& engineRef)
@@ -49,7 +54,7 @@ ModularRackComponent::ModularRackComponent (te::Engine& engineRef)
             return;
 
         // RackType exposes no per-plugin removal, so "Clear" removes the rack
-        // itself; refresh() then provisions a fresh empty one.
+        // itself; refresh() then rebuilds an empty canvas.
         edit->getRackList().removeRackType (selectedRack);
         selectedRack = nullptr;
         awaitingSecondNode = false;
@@ -134,8 +139,12 @@ void ModularRackComponent::rebuildRackSelector()
 
 void ModularRackComponent::syncFromEdit()
 {
-    if (edit != nullptr)
-        edit->getUndoManager().undoCurrentTransactionOnly();
+    // Strictly read-only UI sync. Never touch UndoManager here: JUCE's
+    // undoCurrentTransactionOnly() falls back to undo() when no new transaction
+    // is open, so calling it after a Redo with an empty redo stack silently
+    // reverts the user's last edit.
+    refresh();
+    repaint();
 }
 
 void ModularRackComponent::selectRack (int rackIndex)
@@ -167,6 +176,174 @@ int ModularRackComponent::getNumConnectionsInSelectedRack() const
     return selectedRack != nullptr ? selectedRack->getConnections().size() : 0;
 }
 
+//==============================================================================
+// Layout: RackType positions are normalised 0..1; the canvas is pixels.
+//==============================================================================
+juce::Rectangle<int> ModularRackComponent::getCanvasArea() const
+{
+    const auto view = nodesViewport.getLocalBounds();
+
+    return { 0, 0,
+             juce::jmax (view.getWidth(), minCanvasW),
+             juce::jmax (view.getHeight(), minCanvasH) };
+}
+
+juce::Rectangle<int> ModularRackComponent::computeGridSlot (int pluginIndex,
+                                                            juce::Rectangle<int> canvasArea) const
+{
+    const int cols = juce::jmax (1, canvasArea.getWidth() / (nodeWidth + padX));
+    const int col  = pluginIndex % cols;
+    const int row  = pluginIndex / cols;
+
+    return { canvasArea.getX() + padX + col * (nodeWidth + padX),
+             canvasArea.getY() + padY + row * (nodeHeight + padY),
+             nodeWidth, nodeHeight };
+}
+
+juce::Rectangle<int> ModularRackComponent::computeModuleSlotBounds (int pluginIndex,
+                                                                    int totalPlugins,
+                                                                    juce::Point<float> storedPos,
+                                                                    juce::Rectangle<int> canvasArea) const
+{
+    juce::ignoreUnused (totalPlugins);
+
+    const int usableW = juce::jmax (nodeWidth,  canvasArea.getWidth()  - nodeWidth  - padX * 2);
+    const int usableH = juce::jmax (nodeHeight, canvasArea.getHeight() - nodeHeight - padY * 2);
+
+    // Deterministic, guaranteed non-overlapping fallback slot.
+    auto slot = computeGridSlot (pluginIndex, canvasArea);
+
+    // A position near (0,0) means "unset" (or a normalised coord that would
+    // stack the card in the corner), so keep the grid slot.
+    if (storedPos.x > 0.01f || storedPos.y > 0.01f)
+    {
+        if (storedPos.x <= 1.0f && storedPos.y <= 1.0f)
+        {
+            slot.setX (canvasArea.getX() + padX + juce::roundToInt (storedPos.x * (float) usableW));
+            slot.setY (canvasArea.getY() + padY + juce::roundToInt (storedPos.y * (float) usableH));
+        }
+        else
+        {
+            // Already pixel-valued.
+            slot.setX (juce::roundToInt (storedPos.x));
+            slot.setY (juce::roundToInt (storedPos.y));
+        }
+    }
+
+    return slot;
+}
+
+int ModularRackComponent::findNodeIndex (te::EditItemID pluginID) const
+{
+    for (int i = 0; i < nodes.size(); ++i)
+        if (nodes.getReference (i).plugin->itemID == pluginID)
+            return i;
+
+    return -1;
+}
+
+juce::Rectangle<float> ModularRackComponent::getPinRectInCanvas (int nodeIndex, int pinIndex) const
+{
+    if (nodeIndex < 0 || nodeIndex >= nodes.size())
+        return {};
+
+    const auto& n = nodes.getReference (nodeIndex);
+    const float px = n.rect.getX() + (pinIndex == 0 ? 6.0f : (float) nodeWidth - 14.0f);
+
+    return juce::Rectangle<float> (px, n.rect.getY() + (float) pinY, (float) pinSize, (float) pinSize);
+}
+
+juce::Rectangle<float> ModularRackComponent::getPinRectInRack (int nodeIndex, int pinIndex) const
+{
+    const auto canvasRect = getPinRectInCanvas (nodeIndex, pinIndex);
+
+    if (canvasRect.isEmpty())
+        return canvasRect;
+
+    return getLocalArea (&nodesContainer, canvasRect.toNearestInt()).toFloat();
+}
+
+juce::Rectangle<int> ModularRackComponent::getModuleBoundsInRack (int index) const
+{
+    if (index < 0 || index >= nodes.size())
+        return {};
+
+    return getLocalArea (&nodesContainer, nodes.getReference (index).rect.toNearestInt());
+}
+
+juce::Point<float> ModularRackComponent::getPinCentreInRack (te::EditItemID pluginID,
+                                                             int pinIndex,
+                                                             bool isInput) const
+{
+    juce::ignoreUnused (isInput);
+
+    const int index = findNodeIndex (pluginID);
+
+    if (index < 0)
+        return {};
+
+    const auto pinRect = getPinRectInRack (index, pinIndex);
+
+    if (pinRect.isEmpty())
+        return {};
+
+    return pinRect.getCentre();
+}
+
+bool ModularRackComponent::verifyNonOverlappingLayoutForSmokeTest() const
+{
+    if (nodes.size() < 2)
+        return true;
+
+    for (int i = 0; i < nodes.size(); ++i)
+    {
+        // Regression for the original bug: normalised 0..1 coordinates used as
+        // pixels piled every card into the canvas top-left corner.
+        const auto& canvasRect = nodes.getReference (i).rect;
+
+        if (canvasRect.getX() <= 1.0f && canvasRect.getY() <= 1.0f)
+            return false;
+
+        const auto bi = getModuleBoundsInRack (i);
+
+        for (int j = i + 1; j < nodes.size(); ++j)
+            if (bi.intersects (getModuleBoundsInRack (j)))
+                return false;
+    }
+
+    // Every wire endpoint must be the exact pin centre, and the canvas->rack
+    // conversion used for cables must agree with getLocalPoint().
+    for (const auto& c : connections)
+    {
+        const auto [srcID, srcPin, dstID, dstPin] = c;
+        const te::EditItemID ids[2] = { srcID, dstID };
+        const int           pins[2] = { srcPin, dstPin };
+
+        for (int k = 0; k < 2; ++k)
+        {
+            const int index = findNodeIndex (ids[k]);
+
+            if (index < 0)
+                return false;
+
+            const auto canvasPin   = getPinRectInCanvas (index, pins[k]);
+            const auto rackPin     = getPinRectInRack (index, pins[k]);
+            const auto rackCentre  = getPinCentreInRack (ids[k], pins[k], false);
+
+            if (canvasPin.isEmpty() || rackPin.isEmpty() || rackCentre.isOrigin())
+                return false;
+
+            const auto expected = getLocalPoint (&nodesContainer, canvasPin.getCentre());
+
+            if (rackCentre.getDistanceFrom (expected) > 0.5f)
+                return false;
+        }
+    }
+
+    return true;
+}
+
+//==============================================================================
 void ModularRackComponent::resized()
 {
     auto area = getLocalBounds().reduced (4);
@@ -182,9 +359,8 @@ void ModularRackComponent::resized()
 
     nodesViewport.setBounds (area);
 
-    const auto viewArea = nodesViewport.getLocalBounds();
-    nodesContainer.setSize (juce::jmax (viewArea.getWidth(), 700),
-                            juce::jmax (viewArea.getHeight(), 500));
+    const auto canvasArea = getCanvasArea();
+    nodesContainer.setSize (canvasArea.getWidth(), canvasArea.getHeight());
 }
 
 void ModularRackComponent::paint (juce::Graphics& g)
@@ -211,8 +387,12 @@ void ModularRackComponent::paint (juce::Graphics& g)
         if (srcIdx < 0 || dstIdx < 0)
             continue;
 
-        auto srcPin = getPinRect (srcIdx, conn->sourcePin.get());
-        auto dstPin = getPinRect (dstIdx, conn->destPin.get());
+        // Cable endpoints and pin jacks share this component's coordinate space.
+        const auto srcPin = getPinRectInRack (srcIdx, conn->sourcePin.get());
+        const auto dstPin = getPinRectInRack (dstIdx, conn->destPin.get());
+
+        if (srcPin.isEmpty() || dstPin.isEmpty())
+            continue;
 
         g.setColour (wireColour);
         g.drawLine (juce::Line<float> (srcPin.getCentre(), dstPin.getCentre()), 2.0f);
@@ -220,8 +400,13 @@ void ModularRackComponent::paint (juce::Graphics& g)
 
     if (awaitingSecondNode && firstNodeIndex >= 0 && firstPinIndex >= 0)
     {
-        g.setColour (pendingColour);
-        g.drawEllipse (getPinRect (firstNodeIndex, firstPinIndex).expanded (4.0f), 2.0f);
+        const auto pending = getPinRectInRack (firstNodeIndex, firstPinIndex);
+
+        if (! pending.isEmpty())
+        {
+            g.setColour (pendingColour);
+            g.drawEllipse (pending.expanded (4.0f), 2.0f);
+        }
     }
 }
 
@@ -240,25 +425,77 @@ void ModularRackComponent::rebuildFromRack()
     }
 
     const auto plugins = selectedRack->getPlugins();
+    const auto canvasArea = getCanvasArea();
+
+    nodesContainer.setSize (canvasArea.getWidth(), canvasArea.getHeight());
+
+    juce::Array<juce::Rectangle<int>> placed;
 
     for (int i = 0; i < plugins.size(); ++i)
     {
         auto* plugin = plugins.getUnchecked (i);
-        const auto pos = selectedRack->getPluginPosition (i);
+        const auto storedPos = selectedRack->getPluginPosition (i);
+
+        auto slot = computeModuleSlotBounds (i, plugins.size(), storedPos, canvasArea);
+
+        // Normalised positions can collide; never stack two modules. If the
+        // converted slot hits an already-placed card, walk the grid until a
+        // free slot is found.
+        bool overlaps = false;
+
+        for (auto& r : placed)
+            if (r.intersects (slot))
+            {
+                overlaps = true;
+                break;
+            }
+
+        if (overlaps)
+        {
+            const int cols = juce::jmax (1, canvasArea.getWidth() / (nodeWidth + padX));
+
+            for (int candidate = 0; candidate < cols * 256; ++candidate)
+            {
+                auto gridSlot = computeGridSlot (candidate, canvasArea);
+                bool hit = false;
+
+                for (auto& r : placed)
+                    if (r.intersects (gridSlot))
+                    {
+                        hit = true;
+                        break;
+                    }
+
+                if (! hit)
+                {
+                    slot = gridSlot;
+                    break;
+                }
+            }
+        }
+
+        placed.add (slot);
 
         RackNode node;
         node.plugin = plugin;
-        node.rect = juce::Rectangle<float> (pos.x, pos.y, (float) nodeWidth, (float) nodeHeight);
+        node.rect = slot.toFloat();
         node.name = plugin->getName();
         node.isCvSource = dynamic_cast<CvLfoPlugin*> (plugin) != nullptr;
         nodes.add (node);
 
         auto view = std::make_unique<NodeView> (*plugin, node.name, node.isCvSource);
-        view->setBounds (node.rect.toNearestInt());
-        view->onClick = [this, i] (NodeView& nv, const juce::MouseEvent& e)
+        view->setBounds (slot);
+
+        // Capture the stable plugin id, not the array index: rebuilds reorder.
+        const auto itemID = plugin->itemID;
+        view->onClick = [this, itemID] (NodeView& nv, const juce::MouseEvent& e)
         {
-            handleNodeClick (i, nv, e);
+            const int idx = findNodeIndex (itemID);
+
+            if (idx >= 0)
+                handleNodeClick (idx, nv, e);
         };
+
         nodesContainer.addAndMakeVisible (view.release());
     }
 
@@ -328,16 +565,6 @@ void ModularRackComponent::removeConnection (te::EditItemID source, int sourcePi
     selectedRack->removeConnection (source, sourcePin, dest, destPin);
     rebuildFromRack();
     repaint();
-}
-
-juce::Rectangle<float> ModularRackComponent::getPinRect (int nodeIndex, int pinIndex) const
-{
-    if (nodeIndex < 0 || nodeIndex >= nodes.size())
-        return {};
-
-    const auto& n = nodes.getReference (nodeIndex);
-    const float px = n.rect.getX() + (pinIndex == 0 ? 6.0f : (float) nodeWidth - 14.0f);
-    return juce::Rectangle<float> (px, n.rect.getY() + 26.0f, (float) pinSize, (float) pinSize);
 }
 
 void ModularRackComponent::handleNodeClick (int nodeIndex, NodeView& view, const juce::MouseEvent& e)
@@ -428,8 +655,8 @@ void ModularRackComponent::NodeView::paint (juce::Graphics& g)
     g.drawText (name, getLocalBounds().reduced (6), juce::Justification::topLeft);
 
     g.setColour (pinColour);
-    g.fillEllipse ((float) getPinRect (0).getX(), 26.0f, (float) pinSize, (float) pinSize);
-    g.fillEllipse ((float) getPinRect (1).getX(), 26.0f, (float) pinSize, (float) pinSize);
+    g.fillEllipse ((float) getPinRect (0).getX(), (float) pinY, (float) pinSize, (float) pinSize);
+    g.fillEllipse ((float) getPinRect (1).getX(), (float) pinY, (float) pinSize, (float) pinSize);
 }
 
 void ModularRackComponent::NodeView::mouseDown (const juce::MouseEvent& e)
@@ -441,5 +668,5 @@ void ModularRackComponent::NodeView::mouseDown (const juce::MouseEvent& e)
 juce::Rectangle<float> ModularRackComponent::NodeView::getPinRect (int pinIndex) const
 {
     const float px = (pinIndex == 0) ? 6.0f : (float) getWidth() - 14.0f;
-    return juce::Rectangle<float> (px, 26.0f, (float) pinSize, (float) pinSize);
+    return juce::Rectangle<float> (px, (float) pinY, (float) pinSize, (float) pinSize);
 }

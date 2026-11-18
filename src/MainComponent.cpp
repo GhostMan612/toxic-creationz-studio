@@ -241,7 +241,13 @@ MainComponent::MainComponent()
         if (edit == nullptr)
             return;
 
-        edit->getUndoManager().undo();
+        // Guarded: a bare undo() on an empty stack is a silent no-op at best.
+        auto& undoManager = edit->getUndoManager();
+
+        if (! undoManager.canUndo())
+            return;
+
+        undoManager.undo();
         bpmSlider.setValue (edit->tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
         arrangementView.repaint();
         pianoRoll.repaint();
@@ -255,7 +261,14 @@ MainComponent::MainComponent()
         if (edit == nullptr)
             return;
 
-        edit->getUndoManager().redo();
+        // Guarded so clicking Redo with an empty redo stack is a guaranteed
+        // no-op (it must never fall through to an undo).
+        auto& undoManager = edit->getUndoManager();
+
+        if (! undoManager.canRedo())
+            return;
+
+        undoManager.redo();
         bpmSlider.setValue (edit->tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
         arrangementView.repaint();
         pianoRoll.repaint();

@@ -437,6 +437,41 @@ int MainComponent::runHeadlessSmokeTest()
         app.sessionUntitled = false;
         app.saveSession();
 
+        //--- Regression (Muse finding 1): syncFromEdit() must be read-only ---
+        {
+            auto smokeTracks = te::getAudioTracks (*app.edit);
+
+            if (! smokeTracks.isEmpty())
+            {
+                auto* vol = smokeTracks[0]->getVolumePlugin();
+
+                if (vol != nullptr)
+                {
+                    app.edit->getUndoManager().beginNewTransaction ("Smoke Fader Move");
+                    vol->setVolumeDb (-4.2f);
+
+                    app.modularRackComponent.syncFromEdit();
+
+                    if (std::abs (vol->getVolumeDb() - (-4.2f)) > 0.05f)
+                    {
+                        std::cerr << "[SMOKE_TEST] FAIL: syncFromEdit() reverted the last edit!" << std::endl;
+                        return 1;
+                    }
+                }
+            }
+        }
+
+        //--- Regression (Muse finding 2): no stacked nodes, aligned cables ---
+        app.modularRackComponent.setSize (640, 320);
+        app.modularRackComponent.resized();
+        app.modularRackComponent.syncFromEdit();
+
+        if (! app.modularRackComponent.verifyNonOverlappingLayoutForSmokeTest())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: ModularRackComponent nodes stacked or pin/cable coordinates misaligned!" << std::endl;
+            return 1;
+        }
+
         // Release every RackType/Plugin reference BEFORE the reload destroys the
         // Edit. ~RackType walks Edit-owned state, so a Ptr held past
         // edit.reset() is a use-after-free (ASAN: heap-use-after-free in
