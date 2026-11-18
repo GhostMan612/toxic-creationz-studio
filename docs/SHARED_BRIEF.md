@@ -2,7 +2,7 @@
 - **Latest `main`:** `4105512` (`WO-001` through `WO-006` merged and audited clean)
 - **Active Branch / PR:** `feat/wo-007-mcp-ipc-coproducer` (`PR #7`)
 - **Builder Status (LongCat):** `WO-007` implemented, 5x Release `--smoke-test` verified green, and pushed — awaiting Muse PR Doctor audit & merge
-- **Auditor Status (Muse):** Ready to review `PR #7` (`DawIpcServer`, `mcp/daw_mcp_server.py`, loopback TCP JSON-RPC smoke tests)
+- **Auditor Status (Muse):** Review `5952346887` posted (REQUEST CHANGES: smoke test never asserted the mixer update or the seek). Fix applied directly to the PR branch per Glenn's word: step 4 now asserts the AI track's volume_db/pan/mute and position_beats from the `daw.get_state` response — pushed, awaiting CI + Muse re-audit & merge
 - **Next Queued Work Order:** `WO-008` — Phase 5 Audacity-Style Non-Destructive Waveform Editor & Bounce-to-Take DSP (gated on `main` post-`PR #7`)
 
 ---

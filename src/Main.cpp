@@ -852,10 +852,25 @@ int MainComponent::runHeadlessSmokeTest()
 
         const double stateBpm = static_cast<double> (stateResp["result"]["bpm"]);
         const auto* stateTracks = stateResp["result"]["tracks"].getArray();
+        const double statePositionBeats = static_cast<double> (stateResp["result"]["position_beats"]);
 
         app.ipcServer.stopListening();
 
-        if (std::abs (stateBpm - 132.0) > 0.01 || stateTracks == nullptr || stateTracks->size() <= aiTrackIdx)
+        // Read the AI track's entry back: the mixer update (volume -3.5 dB,
+        // pan -0.25, mute true) and the beat-4 seek must be visible in the
+        // state response, not merely sent. A missing property reads as 0/false
+        // through var conversion, so a dropped update fails loudly here.
+        const auto aiTrackState = (stateTracks != nullptr && stateTracks->size() > aiTrackIdx)
+                                      ? stateTracks->getUnchecked (aiTrackIdx)
+                                      : juce::var();
+
+        const double stateVolumeDb = static_cast<double> (aiTrackState["volume_db"]);
+        const double statePan      = static_cast<double> (aiTrackState["pan"]);
+        const bool stateMute       = static_cast<bool> (aiTrackState["mute"]);
+
+        if (std::abs (stateBpm - 132.0) > 0.01 || stateTracks == nullptr || stateTracks->size() <= aiTrackIdx
+            || std::abs (stateVolumeDb - (-3.5)) > 0.01 || std::abs (statePan - (-0.25)) > 0.01
+            || ! stateMute || std::abs (statePositionBeats - 4.0) > 0.01)
         {
             std::cerr << "[SMOKE_TEST] FAIL: daw.get_state did not reflect RPC mutations" << std::endl;
             return 1;
