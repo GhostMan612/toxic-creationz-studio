@@ -12,6 +12,10 @@
 - Verification (WO-009): Release build clean, 5/5 Release `--smoke-test` PASS,
   isolated ASAN Release `--smoke-test` PASS, Python MCP script syntax verified;
   awaiting Muse PR Doctor audit & retarget to `main` after PR #8 merges.
+- Auditor (Muse): review `5987762952` REQUEST CHANGES (no CI on the stacked
+  base; global 30 s RPC timeout). Fix applied directly to the PR branch per
+  Glenn's word: per-method wait — 30 s only for `audio.export_wav`, 2.5 s for
+  everything else. CI still awaits the retarget to `main` after PR #8 merges.
 - Next Queued Work Order: WO-010 - Phase 7 Live MIDI & Audio Input Recording,
   Metronome Count-In & Release Packaging (gated on `main` post-PR #9).
 - Current `main`: `074feb9` (post PR #7 merge).

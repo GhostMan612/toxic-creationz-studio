@@ -140,7 +140,25 @@ juce::String DawIpcServer::enqueueAndWaitForMessageThread (const juce::String& r
         servicePendingRequestsOnMessageThread();
     });
 
-    if (future.wait_for (std::chrono::milliseconds (30000)) == std::future_status::ready)
+    // Per-method wait: only a master mixdown renders synchronously on the
+    // message thread, so only audio.export_wav gets the long budget. Every
+    // other method keeps the 2.5 s budget, so a hung message thread fails
+    // fast instead of blocking the reader thread (and the client) for 30 s.
+    // The method name is read from the frame up front — the request itself
+    // is still only dispatched on the message thread.
+    int timeoutMs = 2500;
+
+    {
+        juce::var parsed;
+
+        if (juce::JSON::parse (rawJson, parsed).wasOk()
+            && parsed.getProperty ("method", "").toString() == "audio.export_wav")
+        {
+            timeoutMs = 30000;
+        }
+    }
+
+    if (future.wait_for (std::chrono::milliseconds (timeoutMs)) == std::future_status::ready)
         return future.get();
 
     return makeErrorResponse (juce::var(), -32000, "DAW message thread timeout");
