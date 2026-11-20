@@ -46,6 +46,12 @@ public:
 
     std::function<void (const juce::String& /*summary*/)> onEditMutatedByRpc;
 
+    // Where bounce-to-take files go for RPC processing. MainComponent sets
+    // this to the session's Takes directory (same as the waveform editor's
+    // own callback); unset, takes fall back to Documents. Set by the owner,
+    // read only on the message thread inside dispatchMethod.
+    std::function<juce::File()> getTakesDirectoryCallback;
+
 private:
     struct PendingRpcRequest
     {

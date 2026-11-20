@@ -131,11 +131,6 @@ void WaveformEditorComponent::reloadWaveformSummary()
     cachedTotalSamples = reader->lengthInSamples;
     cachedChannels     = static_cast<int> (reader->numChannels);
 
-    const int numSamples = static_cast<int> (std::min<juce::int64> (reader->lengthInSamples, 44100 * 60));
-    juce::AudioBuffer<float> buffer (std::max (1, cachedChannels), numSamples);
-
-    reader->read (&buffer, 0, numSamples, 0, true, true);
-
     constexpr int numBuckets = 512;
 
     peakMinL.assign (numBuckets, 0.0f);
@@ -143,28 +138,38 @@ void WaveformEditorComponent::reloadWaveformSummary()
     peakMinR.assign (numBuckets, 0.0f);
     peakMaxR.assign (numBuckets, 0.0f);
 
-    const float* left  = buffer.getReadPointer (0);
-    const float* right = buffer.getNumChannels() > 1 ? buffer.getReadPointer (1) : left;
+    // Stride across the WHOLE file in bounded chunks. The old code read only
+    // the first 60 s (44100 * 60 samples), so for longer clips the displayed
+    // waveform was a stretched view of the first minute while the DSP
+    // selection mapped onto the full file — the region shown was not the
+    // region processed. Bucket b covers [b * total / 512, (b + 1) * total / 512).
+    constexpr int chunkSize = 65536;
+    juce::AudioBuffer<float> chunk (std::max (1, cachedChannels), chunkSize);
 
-    for (int b = 0; b < numBuckets; ++b)
+    juce::int64 samplesRead = 0;
+
+    while (samplesRead < reader->lengthInSamples)
     {
-        const int s0 = (b * numSamples) / numBuckets;
-        const int s1 = std::max (s0 + 1, ((b + 1) * numSamples) / numBuckets);
+        const int toRead = static_cast<int> (std::min<juce::int64> (chunkSize, reader->lengthInSamples - samplesRead));
 
-        float minL = 0.0f, maxL = 0.0f, minR = 0.0f, maxR = 0.0f;
+        if (! reader->read (&chunk, 0, toRead, samplesRead, true, true))
+            break;
 
-        for (int s = s0; s < s1 && s < numSamples; ++s)
+        const float* left  = chunk.getReadPointer (0);
+        const float* right = chunk.getNumChannels() > 1 ? chunk.getReadPointer (1) : left;
+
+        for (int i = 0; i < toRead; ++i)
         {
-            minL = std::min (minL, left[s]);
-            maxL = std::max (maxL, left[s]);
-            minR = std::min (minR, right[s]);
-            maxR = std::max (maxR, right[s]);
+            const int b = static_cast<int> (((samplesRead + i) * numBuckets) / reader->lengthInSamples);
+            const auto bucket = static_cast<size_t> (juce::jlimit (0, numBuckets - 1, b));
+
+            peakMinL[bucket] = std::min (peakMinL[bucket], left[i]);
+            peakMaxL[bucket] = std::max (peakMaxL[bucket], left[i]);
+            peakMinR[bucket] = std::min (peakMinR[bucket], right[i]);
+            peakMaxR[bucket] = std::max (peakMaxR[bucket], right[i]);
         }
 
-        peakMinL[static_cast<size_t> (b)] = minL;
-        peakMaxL[static_cast<size_t> (b)] = maxL;
-        peakMinR[static_cast<size_t> (b)] = minR;
-        peakMaxR[static_cast<size_t> (b)] = maxR;
+        samplesRead += toRead;
     }
 }
 

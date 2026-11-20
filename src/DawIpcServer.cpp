@@ -617,9 +617,15 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
 
         juce::File bouncedFile;
 
+        // Takes go next to the session when the owner wired the callback
+        // (MainComponent does); otherwise the Documents fallback applies.
+        const juce::File takesDir = getTakesDirectoryCallback
+                                      ? getTakesDirectoryCallback()
+                                      : WaveformEditorComponent::getDefaultTakesDirectory (juce::File());
+
         if (! WaveformEditorComponent::applyBounceToTakeDsp (
                 *edit, target->itemID, op, n0, n1,
-                WaveformEditorComponent::getDefaultTakesDirectory (juce::File()),
+                takesDir,
                 &bouncedFile))
         {
             return makeErrorResponse (id, -32603, "Bounce-to-take DSP failed");

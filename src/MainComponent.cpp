@@ -153,6 +153,12 @@ MainComponent::MainComponent()
         return WaveformEditorComponent::getDefaultTakesDirectory (currentEditFile);
     };
 
+    // RPC bounces land in the same session Takes directory as UI bounces.
+    ipcServer.getTakesDirectoryCallback = [this]
+    {
+        return WaveformEditorComponent::getDefaultTakesDirectory (currentEditFile);
+    };
+
     waveformEditorComponent.onWaveformBounced = [this] (const juce::String& msg)
     {
         arrangementView.repaint();
