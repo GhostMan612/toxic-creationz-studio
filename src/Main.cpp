@@ -1,6 +1,8 @@
 #include "MainComponent.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <future>
 #include <iostream>
 
@@ -1120,6 +1122,312 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-008 non-destructive waveform bounce-to-take & Undo/Redo PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-009 Regression: filePathResolver, MCP rack.patch/import/export & Mixdown WAV
+    //===========================================================================
+    {
+        const auto wo009TempDir = tempDir.getChildFile ("tcs_wo009_smoke");
+        wo009TempDir.deleteRecursively();
+        wo009TempDir.createDirectory();
+
+        // 1. Verify edit->filePathResolver resolves a relative audio path across save/reload
+        const auto audioSubDir = wo009TempDir.getChildFile ("Audio");
+        audioSubDir.createDirectory();
+        const auto relWavFile = audioSubDir.getChildFile ("RelativeStem.wav");
+
+        {
+            constexpr int sr = 44100;
+            juce::AudioBuffer<float> tone (2, sr);
+
+            for (int i = 0; i < sr; ++i)
+            {
+                const float s = static_cast<float> (
+                    0.35 * std::sin (2.0 * juce::MathConstants<double>::pi * 440.0 * i / sr));
+                tone.setSample (0, i, s);
+                tone.setSample (1, i, s);
+            }
+
+            auto fs = std::make_unique<juce::FileOutputStream> (relWavFile);
+            fs->setPosition (0);
+            fs->truncate();
+            std::unique_ptr<juce::OutputStream> os (fs.release());
+
+            juce::WavAudioFormat fmt;
+            std::unique_ptr<juce::AudioFormatWriter> writer (
+                fmt.createWriterFor (os, juce::AudioFormatWriterOptions{}
+                                             .withSampleRate (sr)
+                                             .withNumChannels (2)
+                                             .withBitsPerSample (16)));
+
+            if (writer == nullptr || ! writer->writeFromAudioSampleBuffer (tone, 0, sr))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-009 could not write RelativeStem.wav" << std::endl;
+                return 1;
+            }
+        }
+
+        const auto relSessionFile = wo009TempDir.getChildFile ("PortableProject.tracktionedit");
+        {
+            auto tracks = te::getAudioTracks (*app.edit);
+
+            if (tracks.isEmpty())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-009 expected audio tracks" << std::endl;
+                return 1;
+            }
+
+            // Pick a clean unmuted track without the unconnected WO-005 RackInstance.
+            auto* targetTrack = tracks.size() >= 3 ? tracks[2] : tracks[0];
+            targetTrack->setMute (false);
+
+            const tracktion::TimeRange r {
+                tracktion::TimePosition::fromSeconds (0.0),
+                tracktion::TimePosition::fromSeconds (1.0)
+            };
+
+            if (auto wc = targetTrack->insertWaveClip ("RelClip", relWavFile, te::ClipPosition { r, {} }, false))
+                wc->state.setProperty (te::IDs::source, "Audio/RelativeStem.wav", nullptr);
+        }
+
+        app.currentEditFile = relSessionFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        if (! app.loadSessionFromFileSafely (relSessionFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-009 portable project reload failed" << std::endl;
+            return 1;
+        }
+
+        bool resolvedRelativeClip = false;
+        {
+            for (auto* t : te::getAudioTracks (*app.edit))
+            {
+                for (auto* c : t->getClips())
+                {
+                    if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+                    {
+                        if (wc->getName() == "RelClip")
+                        {
+                            const auto resolved = wc->getSourceFileReference().getFile();
+
+                            if (resolved.getFullPathName() == relWavFile.getFullPathName()
+                                && resolved.existsAsFile())
+                            {
+                                resolvedRelativeClip = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (! resolvedRelativeClip)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-009 filePathResolver failed to resolve Audio/RelativeStem.wav" << std::endl;
+            return 1;
+        }
+
+        // 2. Verify MCP rack.get_state, rack.patch, audio.import_file & audio.export_wav over loopback TCP
+        {
+            if (app.edit->getRackList().getTypes().isEmpty())
+            {
+                auto rack = app.edit->getRackList().addNewRack();
+                rack->rackName = "WO-009 Smoke Rack";
+                auto lfoPtr    = app.edit->getPluginCache().createNewPlugin (CvLfoPlugin::xmlTypeName, {});
+                auto wobblePtr = app.edit->getPluginCache().createNewPlugin (CvWobbleFilterPlugin::xmlTypeName, {});
+
+                if (lfoPtr != nullptr && wobblePtr != nullptr)
+                {
+                    const auto lfoId    = lfoPtr->itemID;
+                    const auto wobbleId = wobblePtr->itemID;
+                    rack->addPlugin (lfoPtr,    { 0.2f, 0.25f }, false);
+                    rack->addPlugin (wobblePtr, { 0.6f, 0.25f }, false);
+                    rack->addConnection (lfoId, 0, wobbleId, 0);
+                }
+            }
+
+            int boundTestPort = 0;
+
+            for (int candidatePort = 19466; candidatePort <= 19485; ++candidatePort)
+            {
+                if (app.ipcServer.startListening (candidatePort))
+                {
+                    boundTestPort = candidatePort;
+                    break;
+                }
+            }
+
+            if (boundTestPort == 0 || ! app.ipcServer.isListening())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-009 DawIpcServer could not bind loopback test port" << std::endl;
+                return 1;
+            }
+
+            struct IpcListenGuard
+            {
+                DawIpcServer& server;
+                ~IpcListenGuard() { server.stopListening(); }
+            } ipcGuard { app.ipcServer };
+
+            auto sendTcpRpc = [&app, boundTestPort] (const juce::String& jsonLine) -> juce::var
+            {
+                auto clientFuture = std::async (std::launch::async, [boundTestPort, jsonLine]() -> juce::String
+                {
+                    juce::StreamingSocket sock;
+
+                    if (! sock.connect ("127.0.0.1", boundTestPort, 1500))
+                        return {};
+
+                    const juce::String payload = jsonLine + "\n";
+
+                    if (sock.write (payload.toRawUTF8(),
+                                    static_cast<int> (payload.getNumBytesAsUTF8())) <= 0)
+                        return {};
+
+                    juce::MemoryBlock respBuf;
+                    char ch = 0;
+
+                    while (sock.waitUntilReady (true, 10000) == 1 && sock.read (&ch, 1, false) == 1)
+                    {
+                        if (ch == '\n')
+                            break;
+
+                        if (ch != '\r')
+                            respBuf.append (&ch, 1);
+                    }
+
+                    return juce::String::fromUTF8 (static_cast<const char*> (respBuf.getData()),
+                                                  static_cast<int> (respBuf.getSize()));
+                });
+
+                while (clientFuture.wait_for (std::chrono::milliseconds (5)) != std::future_status::ready)
+                    app.ipcServer.servicePendingRequestsOnMessageThread();
+
+                app.ipcServer.servicePendingRequestsOnMessageThread();
+
+                return juce::JSON::parse (clientFuture.get());
+            };
+
+            const auto rackState = sendTcpRpc (
+                R"({"jsonrpc":"2.0","id":90,"method":"rack.get_state","params":{}})");
+            const auto* racksArr = rackState["result"]["racks"].getArray();
+
+            if (racksArr == nullptr || racksArr->isEmpty())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-009 rack.get_state returned no racks" << std::endl;
+                return 1;
+            }
+
+            const auto* conns = (*racksArr)[0]["connections"].getArray();
+
+            if (conns == nullptr || conns->isEmpty())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-009 rack.get_state returned no connections" << std::endl;
+                return 1;
+            }
+
+            const int initialConnCount = conns->size();
+            const auto c0 = (*conns)[0];
+            const juce::String patchArgs =
+                R"("rack_index":0,"source_id":)" + c0["source_id"].toString()
+                + R"(,"source_pin":)" + c0["source_pin"].toString()
+                + R"(,"dest_id":)" + c0["dest_id"].toString()
+                + R"(,"dest_pin":)" + c0["dest_pin"].toString();
+
+            const auto disconnResp = sendTcpRpc (
+                R"({"jsonrpc":"2.0","id":91,"method":"rack.patch","params":{"action":"disconnect",)" + patchArgs + "}}");
+
+            if (static_cast<int> (disconnResp["result"]["connection_count"]) != initialConnCount - 1)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-009 rack.patch disconnect did not decrement connection_count" << std::endl;
+                return 1;
+            }
+
+            const auto reconnResp = sendTcpRpc (
+                R"({"jsonrpc":"2.0","id":92,"method":"rack.patch","params":{"action":"connect",)" + patchArgs + "}}");
+
+            if (static_cast<int> (reconnResp["result"]["connection_count"]) != initialConnCount)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-009 rack.patch connect did not restore connection_count" << std::endl;
+                return 1;
+            }
+
+            auto importTracks = te::getAudioTracks (*app.edit);
+            const int importTrackIdx = importTracks.size() >= 4 ? 3 : 0;
+            importTracks[importTrackIdx]->setMute (false);
+
+            const juce::String escapedWavPath = relWavFile.getFullPathName().replace ("\\", "\\\\");
+            const auto importResp = sendTcpRpc (
+                juce::String (R"({"jsonrpc":"2.0","id":93,"method":"audio.import_file","params":{"track_index":)")
+                + juce::String (importTrackIdx)
+                + R"(,"file_path":")" + escapedWavPath + R"(","start_beat":0.0,"clip_name":"AriosoImportedStem"}})");
+
+            if (importResp["result"]["clip_name"].toString() != "AriosoImportedStem"
+                || static_cast<juce::int64> (importResp["result"]["clip_id"]) <= 0)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-009 audio.import_file failed" << std::endl;
+                return 1;
+            }
+
+            const auto rpcMixdownFile = wo009TempDir.getChildFile ("RpcMixdown.wav");
+            const juce::String escapedOutPath = rpcMixdownFile.getFullPathName().replace ("\\", "\\\\");
+            const auto exportRpcResp = sendTcpRpc (
+                juce::String (R"({"jsonrpc":"2.0","id":94,"method":"audio.export_wav","params":{"output_path":")")
+                + escapedOutPath + R"(","start_beat":0.0,"end_beat":4.0}})");
+
+            if (static_cast<juce::int64> (exportRpcResp["result"]["file_size_bytes"]) <= 44
+                || ! rpcMixdownFile.existsAsFile())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-009 audio.export_wav RPC failed: "
+                          << juce::JSON::toString (exportRpcResp, true) << std::endl;
+                return 1;
+            }
+        }
+
+        // 3. Verify direct MixdownExporter::exportEditToWav renders 2 bars of non-silent stereo 44.1 kHz WAV
+        const auto mixdownFile = wo009TempDir.getChildFile ("MasterMixdown.wav");
+        const tracktion::TimeRange renderRange {
+            tracktion::TimePosition::fromSeconds (0.0),
+            app.edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (8.0))
+        };
+
+        if (! MixdownExporter::exportEditToWav (*app.edit, mixdownFile, renderRange, 44100.0, 16))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-009 MixdownExporter::exportEditToWav returned false" << std::endl;
+            return 1;
+        }
+
+        {
+            juce::WavAudioFormat fmt;
+            std::unique_ptr<juce::AudioFormatReader> reader (
+                fmt.createReaderFor (mixdownFile.createInputStream().release(), true));
+
+            if (reader == nullptr
+                || reader->numChannels != 2
+                || std::abs (reader->sampleRate - 44100.0) > 0.1
+                || reader->lengthInSamples < 44100)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-009 rendered MasterMixdown.wav is invalid or truncated" << std::endl;
+                return 1;
+            }
+
+            const int checkLen = static_cast<int> (std::min<juce::int64> (reader->lengthInSamples, 44100));
+            juce::AudioBuffer<float> mixBuf (2, checkLen);
+            reader->read (&mixBuf, 0, checkLen, 0, true, true);
+
+            if (mixBuf.getMagnitude (0, checkLen) <= 1e-4f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-009 MasterMixdown.wav rendered pure silence" << std::endl;
+                return 1;
+            }
+        }
+
+        wo009TempDir.deleteRecursively();
+
+        std::cout << "[SMOKE_TEST] WO-009 filePathResolver, MCP rack.patch/import_file & Master Mixdown WAV PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -1150,7 +1458,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "persistence & insert order, CV rack plugin/connection persistence, "
                  "BGM riff-layering WaveAudioClip time-stretch/pitch persistence, "
                  "native TCP JSON-RPC IPC round-trip, non-destructive waveform "
-                 "bounce-to-take DSP, and VST3 scanner lifecycle verified." << std::endl;
+                 "bounce-to-take DSP, portable filePathResolver, MCP rack.patch/import_file, "
+                 "master WAV mixdown export, and VST3 scanner lifecycle verified." << std::endl;
     return 0;
 }
 

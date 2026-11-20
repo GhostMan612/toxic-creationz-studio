@@ -176,6 +176,7 @@ MainComponent::MainComponent()
     addAndMakeVisible (openButton);
     addAndMakeVisible (saveButton);
     addAndMakeVisible (saveAsButton);
+    addAndMakeVisible (exportWavButton);
     addAndMakeVisible (addTrackButton);
     addAndMakeVisible (undoButton);
     addAndMakeVisible (redoButton);
@@ -191,7 +192,7 @@ MainComponent::MainComponent()
     addAndMakeVisible (statusLabel);
 
     bpmSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-    bpmSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 52, 18);
+    bpmSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 44, 18);
     bpmSlider.setRange (40.0, 240.0, 1.0);
     bpmSlider.setValue (124.0, juce::dontSendNotification);
 
@@ -256,6 +257,7 @@ MainComponent::MainComponent()
 
     saveButton.onClick   = [this] { saveSession(); };
     saveAsButton.onClick = [this] { saveSessionAsDialog(); };
+    exportWavButton.onClick = [this] { exportMixdownDialog(); };
 
     addTrackButton.onClick = [this]
     {
@@ -413,7 +415,7 @@ MainComponent::MainComponent()
             edit->tempoSequence.getTempo (0)->setBpm (bpmSlider.getValue());
     };
 
-    setSize (1240, 820);
+    setSize (1280, 820);
     startTimerHz (30);
     updateWindowTitle();
 }
@@ -454,6 +456,7 @@ MainComponent::~MainComponent()
 
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
+        edit->filePathResolver = nullptr;
         edit.reset();
     }
 }
@@ -683,8 +686,52 @@ bool MainComponent::isVst3ScanRunning() const
 //==============================================================================
 // Session management
 //==============================================================================
+void MainComponent::installEditFilePathResolver (te::Edit& targetEdit)
+{
+    juce::Component::SafePointer<MainComponent> safeThis (this);
+
+    targetEdit.filePathResolver = [safeThis] (const juce::String& path) -> juce::File
+    {
+        if (path.isEmpty())
+            return {};
+
+        if (juce::File::isAbsolutePath (path))
+            return juce::File (path);
+
+        if (safeThis != nullptr)
+        {
+            const auto editDir = safeThis->currentEditFile.getParentDirectory();
+
+            if (editDir.isDirectory())
+            {
+                const auto relativeToEdit = editDir.getChildFile (path);
+
+                if (relativeToEdit.existsAsFile())
+                    return relativeToEdit;
+            }
+
+            const auto takesDir = WaveformEditorComponent::getDefaultTakesDirectory (safeThis->currentEditFile);
+            const auto relativeToTakes = takesDir.getChildFile (path);
+
+            if (relativeToTakes.existsAsFile())
+                return relativeToTakes;
+
+            const auto relativeToRiffs = RiffLibrary::getDefaultLibraryDirectory().getChildFile (path);
+
+            if (relativeToRiffs.existsAsFile())
+                return relativeToRiffs;
+
+            if (editDir.isDirectory())
+                return editDir.getChildFile (path);
+        }
+
+        return juce::File::getCurrentWorkingDirectory().getChildFile (path);
+    };
+}
+
 void MainComponent::attachEdit (te::Edit& editToAttach)
 {
+    installEditFilePathResolver (editToAttach);
     arrangementView.setEdit (&editToAttach);
     pianoRoll.setTarget (&editToAttach, arrangementView.getSelectedClipID());
     mixerComponent.setEdit (&editToAttach);
@@ -756,6 +803,7 @@ void MainComponent::createNewSession (const juce::File& targetFile, bool seedDef
 
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
+        edit->filePathResolver = nullptr;
         edit.reset();
     }
 
@@ -851,6 +899,7 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
 
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
+        edit->filePathResolver = nullptr;
         edit.reset();
     }
 
@@ -963,6 +1012,8 @@ void MainComponent::saveSessionAsDialog (std::function<void (bool)> completion)
 
             safeThis->currentEditFile = target;
             safeThis->sessionUntitled = false;
+            if (safeThis->edit != nullptr)
+                safeThis->installEditFilePathResolver (*safeThis->edit);
             safeThis->saveSession (completion);
         });
 }
@@ -995,6 +1046,48 @@ void MainComponent::openSessionDialog()
             }
 
             safeThis->statusLabel.setText ("Opened: " + chosen.getFileName(), juce::dontSendNotification);
+        });
+}
+
+void MainComponent::exportMixdownDialog()
+{
+    if (edit == nullptr)
+        return;
+
+    const auto startDir = currentEditFile.getParentDirectory().isDirectory()
+                              ? currentEditFile.getParentDirectory()
+                              : getProjectsDir();
+
+    activeFileChooser = std::make_unique<juce::FileChooser> (
+        "Export Master Mixdown WAV...",
+        startDir.getChildFile ("MasterMixdown.wav"),
+        "*.wav");
+
+    juce::Component::SafePointer<MainComponent> safeThis (this);
+
+    activeFileChooser->launchAsync (
+        juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+            | juce::FileBrowserComponent::warnAboutOverwriting,
+        [safeThis] (const juce::FileChooser& chooser)
+        {
+            if (safeThis == nullptr || safeThis->edit == nullptr)
+                return;
+
+            auto target = chooser.getResult();
+
+            if (target == juce::File())
+                return;
+
+            if (! target.hasFileExtension (".wav"))
+                target = target.withFileExtension (".wav");
+
+            const auto range = MixdownExporter::getDefaultExportRange (*safeThis->edit);
+            const bool ok = MixdownExporter::exportEditToWav (*safeThis->edit, target, range);
+
+            safeThis->statusLabel.setText (
+                ok ? ("Exported WAV: " + target.getFileName())
+                   : ("Export WAV failed: " + target.getFileName()),
+                juce::dontSendNotification);
         });
 }
 
@@ -1032,43 +1125,44 @@ void MainComponent::resized()
     auto topBar = area.removeFromTop (36);
 
     // Compact toolbar: gaps 4px, section separators 4px, and trimmed button
-    // widths so the whole row (buttons + BPM slider + status label) fits
-    // inside a 1280px window with room to spare (1084px before statusLabel).
+    // widths so the whole row (including Export WAV, BPM slider, and statusLabel)
+    // fits cleanly inside a 1280px window (1112px before statusLabel).
     auto addToolbarItem = [&topBar] (juce::Component& comp, int width)
     {
         comp.setBounds (topBar.removeFromLeft (width));
         topBar.removeFromLeft (4);
     };
 
-    addToolbarItem (newButton, 56);
-    addToolbarItem (openButton, 64);
-    addToolbarItem (saveButton, 56);
-    addToolbarItem (saveAsButton, 72);
-    addToolbarItem (addTrackButton, 68);
-    addToolbarItem (undoButton, 48);
-    addToolbarItem (redoButton, 48);
+    addToolbarItem (newButton, 44);
+    addToolbarItem (openButton, 54);
+    addToolbarItem (saveButton, 46);
+    addToolbarItem (saveAsButton, 64);
+    addToolbarItem (exportWavButton, 76);
+    addToolbarItem (addTrackButton, 60);
+    addToolbarItem (undoButton, 44);
+    addToolbarItem (redoButton, 44);
 
     topBar.removeFromLeft (4);
 
-    addToolbarItem (playButton, 60);
-    addToolbarItem (stopButton, 60);
+    addToolbarItem (playButton, 46);
+    addToolbarItem (stopButton, 46);
 
     topBar.removeFromLeft (4);
 
-    addToolbarItem (scanPluginsButton, 88);
+    addToolbarItem (scanPluginsButton, 74);
 
     topBar.removeFromLeft (4);
 
-    addToolbarItem (mixerToggleButton, 52);
-    addToolbarItem (rackToggleButton, 46);
-    addToolbarItem (bgmToggleButton, 70);
-    addToolbarItem (waveEditorToggleButton, 78);
-    addToolbarItem (audioSettingsButton, 110);
+    addToolbarItem (mixerToggleButton, 48);
+    addToolbarItem (rackToggleButton, 44);
+    addToolbarItem (bgmToggleButton, 64);
+    addToolbarItem (waveEditorToggleButton, 70);
+    addToolbarItem (audioSettingsButton, 92);
 
     topBar.removeFromLeft (4);
 
-    bpmSlider.setBounds (topBar.removeFromLeft (120));
-    topBar.removeFromLeft (10);
+    bpmSlider.setBounds (topBar.removeFromLeft (108));
+    topBar.removeFromLeft (8);
 
     statusLabel.setBounds (topBar);
 

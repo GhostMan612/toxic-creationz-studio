@@ -11,6 +11,7 @@
 #include "BgmGeneratorComponent.h"
 #include "DawIpcServer.h"
 #include "WaveformEditorComponent.h"
+#include "MixdownExporter.h"
 
 #include <atomic>
 #include <functional>
@@ -73,6 +74,7 @@ private:
     void refreshDirtyFromSavedState();
     static juce::ValueTree getContentState (const juce::ValueTree& state);
 
+    void installEditFilePathResolver (te::Edit& targetEdit);
     void attachEdit (te::Edit& editToAttach);
     static bool isTransientEditSubtree (juce::ValueTree tree);
 
@@ -83,6 +85,7 @@ private:
     void openSessionDialog();
     void saveSession (std::function<void (bool)> completion = nullptr);
     void saveSessionAsDialog (std::function<void (bool)> completion = nullptr);
+    void exportMixdownDialog();
     void updateWindowTitle();
 
     te::Engine engine { "AI DAW" };
@@ -115,6 +118,7 @@ private:
     juce::TextButton openButton        { "Open..." };
     juce::TextButton saveButton        { "Save" };
     juce::TextButton saveAsButton      { "Save As..." };
+    juce::TextButton exportWavButton   { "Export WAV" };
     juce::TextButton addTrackButton    { "+ Track" };
     juce::TextButton undoButton        { "Undo" };
     juce::TextButton redoButton        { "Redo" };
