@@ -4,6 +4,11 @@
 - In review: WO-008 (PR #8) - Phase 5, Audacity-style non-destructive waveform
   editor + bounce-to-take DSP, authored by LongCat on
   `feat/wo-008-audacity-waveform-editor`.
+- Auditor (Muse): review `5987713244` REQUEST CHANGES (60 s waveform cap; RPC
+  takes to Documents). Fix applied directly to the PR branch per Glenn's word:
+  peak summary now strides the whole file in bounded chunks; `DawIpcServer`
+  takes a `getTakesDirectoryCallback` wired to the session Takes dir — pushed,
+  awaiting CI + Muse re-audit & merge.
 - Next: WO-009 (spec not yet delivered; `docs/TO_HERMES.md` currently holds the
   WO-008 work order), gated on PR #8 merging.
 - Current `main`: `074feb9` (post PR #7 merge).
