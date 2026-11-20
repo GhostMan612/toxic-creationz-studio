@@ -913,6 +913,213 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-007 native TCP JSON-RPC IPC server & persistence PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-008 Regression: Non-Destructive Bounce-to-Take Waveform Editor & Undo
+    //===========================================================================
+    {
+        const auto waveTempDir = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                   .getChildFile ("tcs_wo008_wave_smoke");
+
+        waveTempDir.deleteRecursively();
+        waveTempDir.createDirectory();
+
+        const auto takesDir = waveTempDir.getChildFile ("Takes");
+
+        tracktion::EditItemID targetWaveClipID;
+        juce::File originalWavFile;
+        juce::int64 originalWavSize = 0;
+
+        // 1. Provision a source .wav in the temp dir, insert a WaveAudioClip
+        //    referencing it, and capture that clip as the bounce target. The
+        //    WO-006 riff clips point into a temp dir that block deletes, so
+        //    WO-008 must own its source material.
+        const auto sourceWav = waveTempDir.getChildFile ("source_take.wav");
+
+        {
+            juce::WavAudioFormat wavFormat;
+            auto fileStream = std::make_unique<juce::FileOutputStream> (sourceWav);
+
+            fileStream->setPosition (0);
+            fileStream->truncate();
+
+            std::unique_ptr<juce::OutputStream> outStream (fileStream.release());
+
+            std::unique_ptr<juce::AudioFormatWriter> writer (
+                wavFormat.createWriterFor (outStream,
+                                           juce::AudioFormatWriterOptions{}
+                                               .withSampleRate (44100.0)
+                                               .withNumChannels (2)
+                                               .withBitsPerSample (16)));
+
+            if (writer == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-008 could not create the source writer" << std::endl;
+                return 1;
+            }
+
+            juce::AudioBuffer<float> sourceBuffer (2, 44100); // 1 second
+
+            for (int ch = 0; ch < sourceBuffer.getNumChannels(); ++ch)
+                for (int i = 0; i < sourceBuffer.getNumSamples(); ++i)
+                    sourceBuffer.setSample (ch, i,
+                        static_cast<float> (0.4 * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / 44100.0)));
+
+            if (! writer->writeFromAudioSampleBuffer (sourceBuffer, 0, sourceBuffer.getNumSamples()))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-008 could not write the source WAV" << std::endl;
+                return 1;
+            }
+        }
+
+        auto waveTracks = te::getAudioTracks (*app.edit);
+
+        if (waveTracks.isEmpty())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-008 no audio track to insert into" << std::endl;
+            return 1;
+        }
+
+        const tracktion::TimeRange waveClipRange {
+            tracktion::TimePosition::fromSeconds (0.0),
+            tracktion::TimePosition::fromSeconds (1.0)
+        };
+
+        auto insertedClip = waveTracks.getFirst()->insertWaveClip (
+            "WO-008 Source", sourceWav,
+            te::ClipPosition { waveClipRange, tracktion::TimeDuration::fromSeconds (0.0) }, false);
+
+        if (insertedClip == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-008 insertWaveClip failed" << std::endl;
+            return 1;
+        }
+
+        // Pin the source to an absolute path. insertWaveClip stores a path
+        // relative to the edit file when the engine's heuristics allow it,
+        // but relative sources only resolve through a project/filePathResolver
+        // (neither exists here, and WO-007 deleted its session dir), so the
+        // test anchors its source material the same way the bounce pins takes.
+        insertedClip->getSourceFileReference().setToFile (
+            sourceWav, te::SourceFileReference::PathStyle::alwaysAbsolute, false);
+
+        targetWaveClipID = insertedClip->itemID;
+        originalWavFile  = insertedClip->getSourceFileReference().getFile();
+        originalWavSize  = originalWavFile.getSize();
+
+        if (! targetWaveClipID.isValid() || originalWavSize <= 0)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-008 could not bind a WaveAudioClip source" << std::endl;
+            return 1;
+        }
+
+        // 2. Bounce-to-take: silence the first 25% [0.0, 0.25] of the clip.
+        juce::File bouncedTakeFile;
+
+        if (! WaveformEditorComponent::applyBounceToTakeDsp (
+                *app.edit,
+                targetWaveClipID,
+                WaveformEditorComponent::DspOperation::silence,
+                0.0,
+                0.25,
+                takesDir,
+                &bouncedTakeFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-008 applyBounceToTakeDsp returned false" << std::endl;
+            return 1;
+        }
+
+        // 3. Original .wav untouched, bounced take exists and is silenced up front.
+        if (! originalWavFile.existsAsFile()
+            || originalWavFile.getSize() != originalWavSize
+            || ! bouncedTakeFile.existsAsFile()
+            || bouncedTakeFile == originalWavFile)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-008 non-destructive file invariant violated" << std::endl;
+            return 1;
+        }
+
+        {
+            juce::WavAudioFormat wavFormat;
+
+            std::unique_ptr<juce::AudioFormatReader> reader (
+                wavFormat.createReaderFor (bouncedTakeFile.createInputStream().release(), true));
+
+            if (reader == nullptr || reader->lengthInSamples < 100)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-008 could not read bounced take WAV" << std::endl;
+                return 1;
+            }
+
+            const int checkSamples = static_cast<int> (reader->lengthInSamples / 5); // inside first 20%
+            juce::AudioBuffer<float> checkBuf (1, checkSamples);
+
+            reader->read (&checkBuf, 0, checkSamples, 0, true, false);
+
+            if (checkBuf.getMagnitude (0, 0, checkSamples) > 1e-4f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-008 silence DSP did not zero leading samples" << std::endl;
+                return 1;
+            }
+        }
+
+        // 4. Undo restores the original .wav reference, redo restores the take.
+        app.edit->getUndoManager().undo();
+
+        {
+            app.waveformEditorComponent.setTarget (app.edit.get(), targetWaveClipID);
+
+            juce::File afterUndoFile;
+
+            for (auto* t : te::getAudioTracks (*app.edit))
+                for (auto* c : t->getClips())
+                    if (c->itemID == targetWaveClipID)
+                        if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+                            afterUndoFile = wc->getSourceFileReference().getFile();
+
+            if (afterUndoFile != originalWavFile)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-008 Undo did not restore the original WAV reference" << std::endl;
+                return 1;
+            }
+        }
+
+        app.edit->getUndoManager().redo();
+
+        // 5. The bounced take reference survives a save/load round-trip.
+        const auto waveSessionFile = waveTempDir.getChildFile ("WaveBounceRoundTrip.tracktionedit");
+
+        // Release the clip smart pointer before the reload destroys its Edit.
+        insertedClip = nullptr;
+
+        app.currentEditFile = waveSessionFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        if (! waveSessionFile.existsAsFile() || ! app.loadSessionFromFileSafely (waveSessionFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-008 session save/load round-trip failed" << std::endl;
+            return 1;
+        }
+
+        bool foundPersistedBounce = false;
+
+        for (auto* t : te::getAudioTracks (*app.edit))
+            for (auto* c : t->getClips())
+                if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+                    if (wc->getSourceFileReference().getFile() == bouncedTakeFile)
+                        foundPersistedBounce = true;
+
+        if (! foundPersistedBounce)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-008 bounced take reference did not persist across reload" << std::endl;
+            return 1;
+        }
+
+        waveTempDir.deleteRecursively();
+
+        std::cout << "[SMOKE_TEST] WO-008 non-destructive waveform bounce-to-take & Undo/Redo PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -942,7 +1149,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "Undo/Redo note editing, dirty-state isolation, mixer gain/pan + instrument "
                  "persistence & insert order, CV rack plugin/connection persistence, "
                  "BGM riff-layering WaveAudioClip time-stretch/pitch persistence, "
-                 "native TCP JSON-RPC IPC round-trip, and VST3 scanner lifecycle verified." << std::endl;
+                 "native TCP JSON-RPC IPC round-trip, non-destructive waveform "
+                 "bounce-to-take DSP, and VST3 scanner lifecycle verified." << std::endl;
     return 0;
 }
 

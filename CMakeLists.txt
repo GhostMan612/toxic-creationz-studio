@@ -45,6 +45,8 @@ target_sources(AIDAW PRIVATE
     src/BgmGeneratorComponent.cpp
     src/DawIpcServer.h
     src/DawIpcServer.cpp
+    src/WaveformEditorComponent.h
+    src/WaveformEditorComponent.cpp
 )
 
 # 4. Preprocessor flags: enable VST3 hosting, disable unused bloat

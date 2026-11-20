@@ -1,5 +1,7 @@
 #include "DawIpcServer.h"
 
+#include "WaveformEditorComponent.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -546,6 +548,77 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         res->setProperty ("clips_created", clipsCreated);
         res->setProperty ("genre", req.genre);
         res->setProperty ("key", req.targetKeyLabel);
+
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // 8. audio.process_clip (non-destructive bounce-to-take DSP)
+    if (method == "audio.process_clip")
+    {
+        const int trackIdx = static_cast<int> (params.getProperty ("track_index", 0));
+        const int clipIdx  = static_cast<int> (params.getProperty ("clip_index", 0));
+
+        auto tracks = te::getAudioTracks (*edit);
+
+        if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "Invalid track_index");
+
+        int waveSeen = 0;
+        te::WaveAudioClip* target = nullptr;
+
+        for (auto* c : tracks[trackIdx]->getClips())
+        {
+            if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+            {
+                if (waveSeen == clipIdx)
+                {
+                    target = wc;
+                    break;
+                }
+
+                ++waveSeen;
+            }
+        }
+
+        if (target == nullptr)
+            return makeErrorResponse (id, -32602, "Invalid clip_index (no such WaveAudioClip)");
+
+        const juce::String opName = params.getProperty ("operation", "silence").toString().toLowerCase();
+        WaveformEditorComponent::DspOperation op {};
+
+        if      (opName == "normalize") op = WaveformEditorComponent::DspOperation::normalize;
+        else if (opName == "reverse")   op = WaveformEditorComponent::DspOperation::reverse;
+        else if (opName == "fade_in")   op = WaveformEditorComponent::DspOperation::fadeIn;
+        else if (opName == "fade_out")  op = WaveformEditorComponent::DspOperation::fadeOut;
+        else if (opName == "silence")   op = WaveformEditorComponent::DspOperation::silence;
+        else return makeErrorResponse (id, -32602, "Invalid operation: " + opName);
+
+        const double n0 = static_cast<double> (params.getProperty ("start_norm", 0.0));
+        const double n1 = static_cast<double> (params.getProperty ("end_norm", 1.0));
+
+        juce::File bouncedFile;
+
+        // Takes go next to the session when the owner wired the callback
+        // (MainComponent does); otherwise the Documents fallback applies.
+        const juce::File takesDir = getTakesDirectoryCallback
+                                      ? getTakesDirectoryCallback()
+                                      : WaveformEditorComponent::getDefaultTakesDirectory (juce::File());
+
+        if (! WaveformEditorComponent::applyBounceToTakeDsp (
+                *edit, target->itemID, op, n0, n1,
+                takesDir,
+                &bouncedFile))
+        {
+            return makeErrorResponse (id, -32603, "Bounce-to-take DSP failed");
+        }
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP processed audio clip: " + opName);
+
+        auto* res = new juce::DynamicObject();
+
+        res->setProperty ("bounced_file", bouncedFile.getFullPathName());
+        res->setProperty ("file_name", bouncedFile.getFileName());
 
         return makeResultResponse (id, juce::var (res));
     }

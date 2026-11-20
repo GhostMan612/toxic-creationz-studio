@@ -10,6 +10,7 @@
 #include "ModularRackComponent.h"
 #include "BgmGeneratorComponent.h"
 #include "DawIpcServer.h"
+#include "WaveformEditorComponent.h"
 
 #include <atomic>
 #include <functional>
@@ -92,6 +93,8 @@ private:
     BgmGeneratorComponent bgmGeneratorComponent { riffLibrary };
     DawIpcServer ipcServer { riffLibrary };
 
+    WaveformEditorComponent waveformEditorComponent;
+
     juce::File currentEditFile;
     bool sessionUntitled = false;
     bool sessionDirty = false;
@@ -121,6 +124,7 @@ private:
     juce::TextButton mixerToggleButton   { "Mixer" };
     juce::TextButton rackToggleButton     { "Rack" };
     juce::TextButton bgmToggleButton       { "BGM Gen" };
+    juce::TextButton waveEditorToggleButton { "Wave Edit" };
     juce::TextButton audioSettingsButton { "Audio Settings" };
     juce::Slider bpmSlider;
     juce::Label statusLabel            { {}, "Ready" };
