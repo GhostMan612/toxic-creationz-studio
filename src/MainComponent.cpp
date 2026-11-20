@@ -130,6 +130,8 @@ MainComponent::MainComponent()
         mixerComponent.rebuildStrips();
         modularRackComponent.syncFromEdit();
         waveformEditorComponent.syncFromEdit();
+        midiKeyboardDock.syncFromEdit();
+        syncTransportControlsFromEdit();
         statusLabel.setText (summary, juce::dontSendNotification);
     };
 
@@ -141,11 +143,30 @@ MainComponent::MainComponent()
     addAndMakeVisible (bgmGeneratorComponent);
     addAndMakeVisible (waveformEditorComponent);
     waveformEditorComponent.setVisible (false);
+    addAndMakeVisible (midiKeyboardDock);
+    midiKeyboardDock.setVisible (false);
+
+    midiKeyboardDock.getStepBeatsCallback = [this]
+    {
+        return pianoRoll.getSnapDivision();
+    };
+
+    midiKeyboardDock.onNotesRecorded = [this]
+    {
+        arrangementView.repaint();
+        pianoRoll.repaint();
+        updateTransportPositionReadout();
+    };
 
     arrangementView.onClipSelected = [this] (tracktion::EditItemID clipID)
     {
         pianoRoll.setTarget (edit.get(), clipID);
         waveformEditorComponent.setTarget (edit.get(), clipID);
+    };
+
+    arrangementView.onLoopChanged = [this]
+    {
+        syncTransportControlsFromEdit();
     };
 
     waveformEditorComponent.getTakesDirectoryCallback = [this]
@@ -182,17 +203,25 @@ MainComponent::MainComponent()
     addAndMakeVisible (redoButton);
     addAndMakeVisible (playButton);
     addAndMakeVisible (stopButton);
+    addAndMakeVisible (loopToggleButton);
+    addAndMakeVisible (clickToggleButton);
     addAndMakeVisible (scanPluginsButton);
     addAndMakeVisible (mixerToggleButton);
     addAndMakeVisible (rackToggleButton);
+    addAndMakeVisible (keysToggleButton);
     addAndMakeVisible (bgmToggleButton);
     addAndMakeVisible (waveEditorToggleButton);
     addAndMakeVisible (audioSettingsButton);
     addAndMakeVisible (bpmSlider);
+    addAndMakeVisible (transportPosLabel);
     addAndMakeVisible (statusLabel);
 
+    transportPosLabel.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::bold)));
+    transportPosLabel.setColour (juce::Label::textColourId, juce::Colour (0xff38bdf8));
+    transportPosLabel.setJustificationType (juce::Justification::centred);
+
     bpmSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-    bpmSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 44, 18);
+    bpmSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 48, 18);
     bpmSlider.setRange (40.0, 240.0, 1.0);
     bpmSlider.setValue (124.0, juce::dontSendNotification);
 
@@ -283,6 +312,7 @@ MainComponent::MainComponent()
 
         markSessionDirty();
         mixerComponent.rebuildStrips();
+        midiKeyboardDock.syncFromEdit();
     };
 
     undoButton.onClick = [this]
@@ -303,6 +333,8 @@ MainComponent::MainComponent()
         mixerComponent.rebuildStrips();
         modularRackComponent.syncFromEdit();
         waveformEditorComponent.syncFromEdit();
+        midiKeyboardDock.syncFromEdit();
+        syncTransportControlsFromEdit();
         refreshDirtyFromSavedState();
     };
 
@@ -325,6 +357,8 @@ MainComponent::MainComponent()
         mixerComponent.rebuildStrips();
         modularRackComponent.syncFromEdit();
         waveformEditorComponent.syncFromEdit();
+        midiKeyboardDock.syncFromEdit();
+        syncTransportControlsFromEdit();
         refreshDirtyFromSavedState();
     };
 
@@ -338,6 +372,43 @@ MainComponent::MainComponent()
     {
         if (edit != nullptr)
             edit->getTransport().stop (false, false);
+    };
+
+    loopToggleButton.setClickingTogglesState (true);
+    loopToggleButton.setToggleState (false, juce::dontSendNotification);
+    loopToggleButton.onClick = [this]
+    {
+        if (edit == nullptr)
+            return;
+
+        const bool enabled = loopToggleButton.getToggleState();
+        auto& transport = edit->getTransport();
+
+        if (enabled && transport.getLoopRange().isEmpty())
+        {
+            transport.setLoopRange ({
+                tracktion::TimePosition::fromSeconds (0.0),
+                edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (16.0))
+            });
+        }
+
+        transport.looping = enabled;
+        arrangementView.repaint();
+        statusLabel.setText (enabled ? "Loop enabled" : "Loop disabled", juce::dontSendNotification);
+    };
+
+    clickToggleButton.setClickingTogglesState (true);
+    clickToggleButton.setToggleState (false, juce::dontSendNotification);
+    clickToggleButton.onClick = [this]
+    {
+        if (edit == nullptr)
+            return;
+
+        const bool enabled = clickToggleButton.getToggleState();
+        edit->clickTrackGain = 0.7f;
+        edit->clickTrackEmphasiseBars = true;
+        edit->clickTrackEnabled = enabled;
+        statusLabel.setText (enabled ? "Metronome Click: ON" : "Metronome Click: OFF", juce::dontSendNotification);
     };
 
     scanPluginsButton.onClick = [this] { startVst3Scan(); };
@@ -373,8 +444,21 @@ MainComponent::MainComponent()
         arrangementView.repaint();
         mixerComponent.rebuildStrips();
         waveformEditorComponent.syncFromEdit();
+        midiKeyboardDock.syncFromEdit();
         statusLabel.setText ("BGM Generated (" + juce::String (clipsCreated) + " riff clips)",
                              juce::dontSendNotification);
+    };
+
+    keysToggleButton.setClickingTogglesState (true);
+    keysToggleButton.setToggleState (false, juce::dontSendNotification);
+    keysToggleButton.onClick = [this]
+    {
+        const bool on = keysToggleButton.getToggleState();
+        midiKeyboardDock.setVisible (on);
+        resized();
+
+        if (on && midiKeyboardDock.isShowing())
+            midiKeyboardDock.grabKeyboardFocus();
     };
 
     waveEditorToggleButton.setClickingTogglesState (true);
@@ -453,6 +537,7 @@ MainComponent::~MainComponent()
         bgmGeneratorComponent.setEdit (nullptr);
         ipcServer.setEdit (nullptr);
         waveformEditorComponent.setTarget (nullptr, {});
+        midiKeyboardDock.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
@@ -739,7 +824,31 @@ void MainComponent::attachEdit (te::Edit& editToAttach)
     bgmGeneratorComponent.setEdit (&editToAttach);
     ipcServer.setEdit (&editToAttach);
     waveformEditorComponent.setTarget (&editToAttach, arrangementView.getSelectedClipID());
+    midiKeyboardDock.setEdit (&editToAttach);
     bpmSlider.setValue (editToAttach.tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
+    syncTransportControlsFromEdit();
+}
+
+void MainComponent::syncTransportControlsFromEdit()
+{
+    if (edit == nullptr)
+        return;
+
+    clickToggleButton.setToggleState (edit->clickTrackEnabled.get(), juce::dontSendNotification);
+    loopToggleButton.setToggleState (edit->getTransport().looping.get(), juce::dontSendNotification);
+    updateTransportPositionReadout();
+}
+
+void MainComponent::updateTransportPositionReadout()
+{
+    if (edit == nullptr)
+        return;
+
+    const auto bb = edit->tempoSequence.toBarsAndBeats (edit->getTransport().getPosition());
+    const juce::String posText = "Bar " + juce::String (bb.bars + 1) + "." + juce::String (bb.getWholeBeats() + 1);
+
+    if (transportPosLabel.getText() != posText)
+        transportPosLabel.setText (posText, juce::dontSendNotification);
 }
 
 void MainComponent::guardUnsavedChanges (std::function<void (bool)> onProceed)
@@ -800,6 +909,7 @@ void MainComponent::createNewSession (const juce::File& targetFile, bool seedDef
         bgmGeneratorComponent.setEdit (nullptr);
         ipcServer.setEdit (nullptr);
         waveformEditorComponent.setTarget (nullptr, {});
+        midiKeyboardDock.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
@@ -896,6 +1006,7 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
         bgmGeneratorComponent.setEdit (nullptr);
         ipcServer.setEdit (nullptr);
         waveformEditorComponent.setTarget (nullptr, {});
+        midiKeyboardDock.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
@@ -1105,6 +1216,7 @@ void MainComponent::updateWindowTitle()
 void MainComponent::timerCallback()
 {
     reapRetiredScanThreads();
+    updateTransportPositionReadout();
 
     if (edit != nullptr && edit->getTransport().isPlaying())
     {
@@ -1122,54 +1234,64 @@ void MainComponent::paint (juce::Graphics& g)
 void MainComponent::resized()
 {
     auto area = getLocalBounds().reduced (12);
-    auto topBar = area.removeFromTop (36);
+    auto row1 = area.removeFromTop (30);
+    area.removeFromTop (4);
+    auto row2 = area.removeFromTop (30);
+    area.removeFromTop (6);
 
-    // Compact toolbar: gaps 4px, section separators 4px, and trimmed button
-    // widths so the whole row (including Export WAV, BPM slider, and statusLabel)
-    // fits cleanly inside a 1280px window (1112px before statusLabel).
-    auto addToolbarItem = [&topBar] (juce::Component& comp, int width)
+    auto addRowItem = [] (juce::Rectangle<int>& row, juce::Component& comp, int width, int gap = 4)
     {
-        comp.setBounds (topBar.removeFromLeft (width));
-        topBar.removeFromLeft (4);
+        comp.setBounds (row.removeFromLeft (width));
+        row.removeFromLeft (gap);
     };
 
-    addToolbarItem (newButton, 44);
-    addToolbarItem (openButton, 54);
-    addToolbarItem (saveButton, 46);
-    addToolbarItem (saveAsButton, 64);
-    addToolbarItem (exportWavButton, 76);
-    addToolbarItem (addTrackButton, 60);
-    addToolbarItem (undoButton, 44);
-    addToolbarItem (redoButton, 44);
+    // Row 1 Left: Session, Export, Scanner & Device Settings
+    addRowItem (row1, newButton, 52);
+    addRowItem (row1, openButton, 64);
+    addRowItem (row1, saveButton, 54);
+    addRowItem (row1, saveAsButton, 74);
+    addRowItem (row1, exportWavButton, 84);
+    row1.removeFromLeft (8);
+    addRowItem (row1, scanPluginsButton, 84);
+    addRowItem (row1, audioSettingsButton, 106);
 
-    topBar.removeFromLeft (4);
+    // Row 1 Right (left-to-right visual order: BGM Gen, Wave Edit, Keys, Rack, Mixer)
+    mixerToggleButton.setBounds (row1.removeFromRight (56));
+    row1.removeFromRight (4);
+    rackToggleButton.setBounds (row1.removeFromRight (52));
+    row1.removeFromRight (4);
+    keysToggleButton.setBounds (row1.removeFromRight (52));
+    row1.removeFromRight (4);
+    waveEditorToggleButton.setBounds (row1.removeFromRight (78));
+    row1.removeFromRight (4);
+    bgmToggleButton.setBounds (row1.removeFromRight (74));
 
-    addToolbarItem (playButton, 46);
-    addToolbarItem (stopButton, 46);
-
-    topBar.removeFromLeft (4);
-
-    addToolbarItem (scanPluginsButton, 74);
-
-    topBar.removeFromLeft (4);
-
-    addToolbarItem (mixerToggleButton, 48);
-    addToolbarItem (rackToggleButton, 44);
-    addToolbarItem (bgmToggleButton, 64);
-    addToolbarItem (waveEditorToggleButton, 70);
-    addToolbarItem (audioSettingsButton, 92);
-
-    topBar.removeFromLeft (4);
-
-    bpmSlider.setBounds (topBar.removeFromLeft (108));
-    topBar.removeFromLeft (8);
-
-    statusLabel.setBounds (topBar);
+    // Row 2: Transport, Loop/Click, Edit actions, BPM, Bar:Beat & Status
+    addRowItem (row2, playButton, 52);
+    addRowItem (row2, stopButton, 52);
+    addRowItem (row2, loopToggleButton, 54);
+    addRowItem (row2, clickToggleButton, 54);
+    row2.removeFromLeft (6);
+    addRowItem (row2, addTrackButton, 68);
+    addRowItem (row2, undoButton, 52);
+    addRowItem (row2, redoButton, 52);
+    row2.removeFromLeft (6);
+    bpmSlider.setBounds (row2.removeFromLeft (128));
+    row2.removeFromLeft (6);
+    transportPosLabel.setBounds (row2.removeFromLeft (78));
+    row2.removeFromLeft (8);
+    statusLabel.setBounds (row2);
 
     if (bgmGeneratorComponent.isVisible())
     {
         bgmGeneratorComponent.setBounds (area.removeFromTop (34));
         area.removeFromTop (4);
+    }
+
+    if (midiKeyboardDock.isVisible())
+    {
+        midiKeyboardDock.setBounds (area.removeFromBottom (74));
+        area.removeFromBottom (4);
     }
 
     const bool showMixer = mixerComponent.isVisible();

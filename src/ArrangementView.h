@@ -19,6 +19,7 @@ public:
     te::MidiClip* resolveSelectedClip() const;
 
     std::function<void (tracktion::EditItemID)> onClipSelected;
+    std::function<void()> onLoopChanged;
 
     void paint (juce::Graphics& g) override;
     void mouseDown (const juce::MouseEvent& e) override;
