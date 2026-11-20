@@ -161,5 +161,26 @@ async def generate_bgm_arrangement(
     )
 
 
+@mcp.tool()
+async def process_audio_clip(
+    track_index: int,
+    operation: str = "silence",
+    clip_index: int = 0,
+    start_norm: float = 0.0,
+    end_norm: float = 1.0,
+) -> dict[str, Any]:
+    """Apply non-destructive bounce-to-take DSP (normalize/reverse/fade_in/fade_out/silence) to a clip."""
+    return await send_daw_rpc(
+        "audio.process_clip",
+        {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "operation": operation,
+            "start_norm": max(0.0, min(1.0, start_norm)),
+            "end_norm": max(0.0, min(1.0, end_norm)),
+        },
+    )
+
+
 if __name__ == "__main__":
     mcp.run()

@@ -276,11 +276,10 @@ void ArrangementView::mouseDown (const juce::MouseEvent& e)
     {
         if (clip->getPosition().time.contains (timeAtClick))
         {
-            if (auto* mc = dynamic_cast<te::MidiClip*> (clip))
-            {
-                setSelectedClipID (mc->itemID);
-                return;
-            }
+            // Any clip type is selectable: MidiClip for the piano roll,
+            // WaveAudioClip for the waveform editor.
+            setSelectedClipID (clip->itemID);
+            return;
         }
     }
 }

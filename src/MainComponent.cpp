@@ -129,6 +129,7 @@ MainComponent::MainComponent()
         pianoRoll.repaint();
         mixerComponent.rebuildStrips();
         modularRackComponent.syncFromEdit();
+        waveformEditorComponent.syncFromEdit();
         statusLabel.setText (summary, juce::dontSendNotification);
     };
 
@@ -138,10 +139,24 @@ MainComponent::MainComponent()
     addAndMakeVisible (mixerComponent);
     addAndMakeVisible (modularRackComponent);
     addAndMakeVisible (bgmGeneratorComponent);
+    addAndMakeVisible (waveformEditorComponent);
+    waveformEditorComponent.setVisible (false);
 
     arrangementView.onClipSelected = [this] (tracktion::EditItemID clipID)
     {
         pianoRoll.setTarget (edit.get(), clipID);
+        waveformEditorComponent.setTarget (edit.get(), clipID);
+    };
+
+    waveformEditorComponent.getTakesDirectoryCallback = [this]
+    {
+        return WaveformEditorComponent::getDefaultTakesDirectory (currentEditFile);
+    };
+
+    waveformEditorComponent.onWaveformBounced = [this] (const juce::String& msg)
+    {
+        arrangementView.repaint();
+        statusLabel.setText (msg, juce::dontSendNotification);
     };
 
     pianoRoll.onSequenceChanged = [this]
@@ -164,6 +179,7 @@ MainComponent::MainComponent()
     addAndMakeVisible (mixerToggleButton);
     addAndMakeVisible (rackToggleButton);
     addAndMakeVisible (bgmToggleButton);
+    addAndMakeVisible (waveEditorToggleButton);
     addAndMakeVisible (audioSettingsButton);
     addAndMakeVisible (bpmSlider);
     addAndMakeVisible (statusLabel);
@@ -278,6 +294,7 @@ MainComponent::MainComponent()
         pianoRoll.repaint();
         mixerComponent.rebuildStrips();
         modularRackComponent.syncFromEdit();
+        waveformEditorComponent.syncFromEdit();
         refreshDirtyFromSavedState();
     };
 
@@ -299,6 +316,7 @@ MainComponent::MainComponent()
         pianoRoll.repaint();
         mixerComponent.rebuildStrips();
         modularRackComponent.syncFromEdit();
+        waveformEditorComponent.syncFromEdit();
         refreshDirtyFromSavedState();
     };
 
@@ -346,8 +364,24 @@ MainComponent::MainComponent()
     {
         arrangementView.repaint();
         mixerComponent.rebuildStrips();
+        waveformEditorComponent.syncFromEdit();
         statusLabel.setText ("BGM Generated (" + juce::String (clipsCreated) + " riff clips)",
                              juce::dontSendNotification);
+    };
+
+    waveEditorToggleButton.setClickingTogglesState (true);
+    waveEditorToggleButton.setToggleState (false, juce::dontSendNotification);
+    waveEditorToggleButton.onClick = [this]
+    {
+        const bool on = waveEditorToggleButton.getToggleState();
+
+        waveformEditorComponent.setVisible (on);
+        pianoRoll.setVisible (! on);
+
+        if (on && edit != nullptr)
+            waveformEditorComponent.setTarget (edit.get(), arrangementView.getSelectedClipID());
+
+        resized();
     };
 
     audioSettingsButton.onClick = [this]
@@ -410,6 +444,7 @@ MainComponent::~MainComponent()
         modularRackComponent.setEdit (nullptr);
         bgmGeneratorComponent.setEdit (nullptr);
         ipcServer.setEdit (nullptr);
+        waveformEditorComponent.setTarget (nullptr, {});
 
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
@@ -650,6 +685,7 @@ void MainComponent::attachEdit (te::Edit& editToAttach)
     modularRackComponent.setEdit (&editToAttach);
     bgmGeneratorComponent.setEdit (&editToAttach);
     ipcServer.setEdit (&editToAttach);
+    waveformEditorComponent.setTarget (&editToAttach, arrangementView.getSelectedClipID());
     bpmSlider.setValue (editToAttach.tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
 }
 
@@ -710,6 +746,7 @@ void MainComponent::createNewSession (const juce::File& targetFile, bool seedDef
         modularRackComponent.setEdit (nullptr);
         bgmGeneratorComponent.setEdit (nullptr);
         ipcServer.setEdit (nullptr);
+        waveformEditorComponent.setTarget (nullptr, {});
 
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
@@ -804,6 +841,7 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
         modularRackComponent.setEdit (nullptr);
         bgmGeneratorComponent.setEdit (nullptr);
         ipcServer.setEdit (nullptr);
+        waveformEditorComponent.setTarget (nullptr, {});
 
         edit->getTransport().stop (false, false);
         detachStateListener (*edit);
@@ -1017,8 +1055,9 @@ void MainComponent::resized()
 
     addToolbarItem (mixerToggleButton, 52);
     addToolbarItem (rackToggleButton, 46);
-    addToolbarItem (bgmToggleButton, 60);
-    addToolbarItem (audioSettingsButton, 104);
+    addToolbarItem (bgmToggleButton, 70);
+    addToolbarItem (waveEditorToggleButton, 78);
+    addToolbarItem (audioSettingsButton, 110);
 
     topBar.removeFromLeft (4);
 
@@ -1036,6 +1075,15 @@ void MainComponent::resized()
     const bool showMixer = mixerComponent.isVisible();
     const bool showRack   = modularRackComponent.isVisible();
 
+    // Middle pane: the waveform editor replaces the piano roll while Wave Edit
+    // is enabled.
+    juce::Component* const middlePane = waveformEditorComponent.isVisible()
+                                          ? static_cast<juce::Component*> (&waveformEditorComponent)
+                                          : static_cast<juce::Component*> (&pianoRoll);
+
+    pianoRoll.setVisible (! waveformEditorComponent.isVisible());
+    waveformEditorComponent.setVisible (waveEditorToggleButton.getToggleState());
+
     if (showMixer || showRack)
     {
         const int available = area.getHeight();
@@ -1044,7 +1092,7 @@ void MainComponent::resized()
 
         arrangementView.setBounds (area.removeFromTop (arrangementHeight));
         area.removeFromTop (4);
-        pianoRoll.setBounds (area.removeFromTop (pianoHeight));
+        middlePane->setBounds (area.removeFromTop (pianoHeight));
         area.removeFromTop (4);
 
         const int panelCount = (showMixer ? 1 : 0) + (showRack ? 1 : 0);
@@ -1064,6 +1112,6 @@ void MainComponent::resized()
         const int arrangementHeight = juce::roundToInt (area.getHeight() * 0.44f);
         arrangementView.setBounds (area.removeFromTop (arrangementHeight));
         area.removeFromTop (4);
-        pianoRoll.setBounds (area);
+        middlePane->setBounds (area);
     }
 }

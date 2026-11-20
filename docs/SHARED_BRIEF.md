@@ -1,13 +1,24 @@
 ## Pipeline State
-- **Latest `main`:** `4105512` (`WO-001` through `WO-006` merged and audited clean)
-- **Active Branch / PR:** `feat/wo-007-mcp-ipc-coproducer` (`PR #7`)
-- **Builder Status (LongCat):** `WO-007` implemented, 5x Release `--smoke-test` verified green, and pushed — awaiting Muse PR Doctor audit & merge
-- **Auditor Status (Muse):** Review `5952346887` posted (REQUEST CHANGES: smoke test never asserted the mixer update or the seek). Fix applied directly to the PR branch per Glenn's word: step 4 now asserts the AI track's volume_db/pan/mute and position_beats from the `daw.get_state` response — pushed, awaiting CI + Muse re-audit & merge
-- **Next Queued Work Order:** `WO-008` — Phase 5 Audacity-Style Non-Destructive Waveform Editor & Bounce-to-Take DSP (gated on `main` post-`PR #7`)
 
----
+- Merged: WO-001, WO-002, WO-003, WO-004, WO-005, WO-006, WO-007 (PRs #1-#7).
+- In review: WO-008 (PR #8) - Phase 5, Audacity-style non-destructive waveform
+  editor + bounce-to-take DSP, authored by LongCat on
+  `feat/wo-008-audacity-waveform-editor`.
+- Next: WO-009 (spec not yet delivered; `docs/TO_HERMES.md` currently holds the
+  WO-008 work order), gated on PR #8 merging.
+- Current `main`: `074feb9` (post PR #7 merge).
+- Workflow: Gemini (docs/BRIEFING.md) -> LongCat (local build, smoke, PR) ->
+  Muse PR-Doctor audit -> ChatGPT audit -> Glenn merge. LongCat never merges.
+- Smoke convention: Release build + `--smoke-test`; all temp dirs under
+  `%TEMP%`, never `%LOCALAPPDATA%\hermes`.
+- Engine quirk surfaced by WO-008: `insertWaveClip` can store a clip source as
+  a path relative to the edit file, but relative sources only resolve through
+  a project or `Edit::filePathResolver` (this app sets neither). Bounce-to-take
+  pins absolute paths (`PathStyle::alwaysAbsolute`) and the WO-008 smoke test
+  pins its source the same way. Future-WO candidate: set `filePathResolver`
+  on attach so imported relative sources resolve after reload.
 
-### Work Order Index (LongCat <-> Muse)
+## Work Order Index (LongCat <-> Muse)
 
 | Work Order | Title | State |
 | --- | --- | --- |
@@ -17,7 +28,8 @@
 | WO-004 | Interactive Channel Mixer, VST3 Plugin Rack & Audio Device Settings | Merged to `main` (`757e8cc`, PR #4) |
 | WO-005 | Reason-Style `RackType` Modular Audio, MIDI & CV Patchbay | Merged to `main` (`5e36347`, PR #5) |
 | WO-006 | Phase 3 Riff-Layering BGM Solver, Starter WAV Provisioner & Time-Stretched Audio Clips | Merged to `main` (`4105512`, PR #6) |
-| WO-007 | Phase 4 Native JSON-RPC 2.0 IPC Server (`DawIpcServer`) & Python FastMCP Co-Producer Bridge | In review (`feat/wo-007-mcp-ipc-coproducer`, PR #7) |
+| WO-007 | Phase 4 Native JSON-RPC 2.0 IPC Server (`DawIpcServer`) & Python FastMCP Co-Producer Bridge | Merged to `main` (`074feb9`, PR #7) |
+| WO-008 | Phase 5 Audacity-Style Non-Destructive Waveform Editor & Bounce-to-Take DSP | In review (`feat/wo-008-audacity-waveform-editor`, PR #8) |
 
 ---
 
