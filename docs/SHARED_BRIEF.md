@@ -1,22 +1,29 @@
 ## Pipeline State
 
 - Merged: WO-001, WO-002, WO-003, WO-004, WO-005, WO-006, WO-007 (PRs #1-#7).
-- In review: WO-008 (PR #8) - Phase 5, Audacity-style non-destructive waveform
-  editor + bounce-to-take DSP, authored by LongCat on
-  `feat/wo-008-audacity-waveform-editor`.
-- Next: WO-009 (spec not yet delivered; `docs/TO_HERMES.md` currently holds the
-  WO-008 work order), gated on PR #8 merging.
+- In review:
+  - WO-008 (PR #8) - Phase 5, Audacity-style non-destructive waveform editor +
+    bounce-to-take DSP on `feat/wo-008-audacity-waveform-editor` (`c938016`).
+  - WO-009 (PR #9) - Phase 6, portable `filePathResolver`, `MixdownExporter`
+    + `Export WAV` via synchronous Tracktion `Renderer::RenderTask`, and MCP
+    `rack.get_state` / `rack.patch` / `audio.import_file` / `audio.export_wav`
+    on `feat/wo-009-resolver-mixdown-mcp-rack` (stacked on
+    `feat/wo-008-audacity-waveform-editor` pending PR #8 merge).
+- Verification (WO-009): Release build clean, 5/5 Release `--smoke-test` PASS,
+  isolated ASAN Release `--smoke-test` PASS, Python MCP script syntax verified;
+  awaiting Muse PR Doctor audit & retarget to `main` after PR #8 merges.
+- Next Queued Work Order: WO-010 - Phase 7 Live MIDI & Audio Input Recording,
+  Metronome Count-In & Release Packaging (gated on `main` post-PR #9).
 - Current `main`: `074feb9` (post PR #7 merge).
-- Workflow: Gemini (docs/BRIEFING.md) -> LongCat (local build, smoke, PR) ->
-  Muse PR-Doctor audit -> ChatGPT audit -> Glenn merge. LongCat never merges.
+- Workflow: Gemini (docs/BRIEFING.md) -> Local Executor (build, smoke, PR) ->
+  Muse PR-Doctor audit -> ChatGPT audit -> Glenn merge. Never self-merge.
 - Smoke convention: Release build + `--smoke-test`; all temp dirs under
   `%TEMP%`, never `%LOCALAPPDATA%\hermes`.
-- Engine quirk surfaced by WO-008: `insertWaveClip` can store a clip source as
-  a path relative to the edit file, but relative sources only resolve through
-  a project or `Edit::filePathResolver` (this app sets neither). Bounce-to-take
-  pins absolute paths (`PathStyle::alwaysAbsolute`) and the WO-008 smoke test
-  pins its source the same way. Future-WO candidate: set `filePathResolver`
-  on attach so imported relative sources resolve after reload.
+- Engine quirk surfaced by WO-008 (resolved in WO-009): `insertWaveClip` can
+  store a clip source as a path relative to the edit file, which previously
+  did not resolve without a project or `Edit::filePathResolver`. `WO-009`
+  installs a `SafePointer`-guarded `Edit::filePathResolver` on `attachEdit`
+  and after `Save As` (cleared on all 3 teardown paths before `edit.reset()`).
 
 ## Work Order Index (LongCat <-> Muse)
 
@@ -30,6 +37,7 @@
 | WO-006 | Phase 3 Riff-Layering BGM Solver, Starter WAV Provisioner & Time-Stretched Audio Clips | Merged to `main` (`4105512`, PR #6) |
 | WO-007 | Phase 4 Native JSON-RPC 2.0 IPC Server (`DawIpcServer`) & Python FastMCP Co-Producer Bridge | Merged to `main` (`074feb9`, PR #7) |
 | WO-008 | Phase 5 Audacity-Style Non-Destructive Waveform Editor & Bounce-to-Take DSP | In review (`feat/wo-008-audacity-waveform-editor`, PR #8) |
+| WO-009 | Phase 6 Session Portability (`filePathResolver`), Master Mixdown Export (`Export WAV`) & MCP Rack/Stem RPCs | In review (`feat/wo-009-resolver-mixdown-mcp-rack`, PR #9, stacked on PR #8) |
 
 ---
 

@@ -1,5 +1,6 @@
 #include "DawIpcServer.h"
 
+#include "MixdownExporter.h"
 #include "WaveformEditorComponent.h"
 
 #include <algorithm>
@@ -139,7 +140,7 @@ juce::String DawIpcServer::enqueueAndWaitForMessageThread (const juce::String& r
         servicePendingRequestsOnMessageThread();
     });
 
-    if (future.wait_for (std::chrono::milliseconds (2500)) == std::future_status::ready)
+    if (future.wait_for (std::chrono::milliseconds (30000)) == std::future_status::ready)
         return future.get();
 
     return makeErrorResponse (juce::var(), -32000, "DAW message thread timeout");
@@ -614,6 +615,228 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         res->setProperty ("bounced_file", bouncedFile.getFullPathName());
         res->setProperty ("file_name", bouncedFile.getFileName());
 
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // 9. rack.get_state (read-only)
+    if (method == "rack.get_state")
+    {
+        juce::Array<juce::var> racksOut;
+        const auto& racks = edit->getRackList().getTypes();
+
+        for (int r = 0; r < racks.size(); ++r)
+        {
+            auto* rack = racks[r];
+            auto* rObj = new juce::DynamicObject();
+            rObj->setProperty ("index", r);
+            rObj->setProperty ("name", rack->rackName.get());
+
+            juce::Array<juce::var> pluginsOut;
+
+            for (auto* p : rack->getPlugins())
+            {
+                juce::StringArray ins, outs;
+                p->getChannelNames (&ins, &outs);
+
+                auto* pObj = new juce::DynamicObject();
+                pObj->setProperty ("id", static_cast<juce::int64> (p->itemID.getRawID()));
+                pObj->setProperty ("name", p->getName());
+                pObj->setProperty ("type", p->getPluginType());
+
+                juce::Array<juce::var> inArr, outArr;
+                for (const auto& s : ins)  inArr.add (s);
+                for (const auto& s : outs) outArr.add (s);
+                pObj->setProperty ("inputs", inArr);
+                pObj->setProperty ("outputs", outArr);
+                pluginsOut.add (juce::var (pObj));
+            }
+
+            rObj->setProperty ("plugins", pluginsOut);
+
+            juce::Array<juce::var> connsOut;
+
+            for (auto* conn : rack->getConnections())
+            {
+                auto* cObj = new juce::DynamicObject();
+                cObj->setProperty ("source_id",  static_cast<juce::int64> (conn->sourceID.get().getRawID()));
+                cObj->setProperty ("source_pin", conn->sourcePin.get());
+                cObj->setProperty ("dest_id",    static_cast<juce::int64> (conn->destID.get().getRawID()));
+                cObj->setProperty ("dest_pin",   conn->destPin.get());
+                connsOut.add (juce::var (cObj));
+            }
+
+            rObj->setProperty ("connections", connsOut);
+            racksOut.add (juce::var (rObj));
+        }
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("racks", racksOut);
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // 10. rack.patch (connect / disconnect virtual Audio, MIDI & CV cables)
+    if (method == "rack.patch")
+    {
+        const int rackIdx = static_cast<int> (params.getProperty ("rack_index", 0));
+        const juce::String action = params.getProperty ("action", "connect").toString().toLowerCase();
+
+        if (action != "connect" && action != "disconnect")
+            return makeErrorResponse (id, -32602, "Invalid rack.patch action: " + action);
+
+        const auto& racks = edit->getRackList().getTypes();
+        if (! juce::isPositiveAndBelow (rackIdx, racks.size()))
+            return makeErrorResponse (id, -32602, "Invalid rack_index");
+
+        const juce::int64 rawSrc = static_cast<juce::int64> (params.getProperty ("source_id", 0));
+        const juce::int64 rawDst = static_cast<juce::int64> (params.getProperty ("dest_id", 0));
+        const int srcPin = static_cast<int> (params.getProperty ("source_pin", 0));
+        const int dstPin = static_cast<int> (params.getProperty ("dest_pin", 0));
+
+        if (rawSrc < 0 || rawDst < 0 || srcPin < 0 || dstPin < 0)
+            return makeErrorResponse (id, -32602, "Invalid negative ID or pin index");
+
+        auto* rack = racks[rackIdx];
+        const tracktion::EditItemID srcId = rawSrc > 0
+                                               ? tracktion::EditItemID::fromRawID (static_cast<uint64_t> (rawSrc))
+                                               : tracktion::EditItemID{};
+        const tracktion::EditItemID dstId = rawDst > 0
+                                               ? tracktion::EditItemID::fromRawID (static_cast<uint64_t> (rawDst))
+                                               : tracktion::EditItemID{};
+
+        edit->getUndoManager().beginNewTransaction ("MCP Rack Patch");
+
+        const bool patched = (action == "disconnect")
+                                 ? rack->removeConnection (srcId, srcPin, dstId, dstPin)
+                                 : rack->addConnection (srcId, srcPin, dstId, dstPin);
+
+        if (! patched)
+            return makeErrorResponse (id, -32602, "Rack patch failed or connection was illegal/missing");
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP rack " + action + " complete");
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("rack_index", rackIdx);
+        res->setProperty ("action", action);
+        res->setProperty ("connection_count", rack->getConnections().size());
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // 11. audio.import_file (for external Arioso / Suno / ElevenLabs Python AI workers)
+    if (method == "audio.import_file")
+    {
+        const int trackIdx = static_cast<int> (params.getProperty ("track_index", 0));
+        auto tracks = te::getAudioTracks (*edit);
+
+        if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "Invalid track_index");
+
+        const juce::String rawPath = params.getProperty ("file_path", "").toString().trim();
+        if (rawPath.isEmpty())
+            return makeErrorResponse (id, -32602, "Missing file_path");
+
+        const juce::File wavFile = juce::File::isAbsolutePath (rawPath)
+                                       ? juce::File (rawPath)
+                                       : juce::File::getCurrentWorkingDirectory().getChildFile (rawPath);
+
+        if (! wavFile.existsAsFile())
+            return makeErrorResponse (id, -32602, "Audio file does not exist: " + wavFile.getFullPathName());
+
+        const double startBeat = std::max (0.0, static_cast<double> (params.getProperty ("start_beat", 0.0)));
+        double lengthBeats = static_cast<double> (params.getProperty ("length_beats", 0.0));
+
+        if (lengthBeats <= 0.0)
+        {
+            juce::AudioFormatManager fm;
+            fm.registerBasicFormats();
+
+            std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (wavFile));
+
+            if (reader != nullptr)
+            {
+                if (reader->sampleRate > 0.0 && reader->lengthInSamples > 0)
+                {
+                    const double sec = static_cast<double> (reader->lengthInSamples) / reader->sampleRate;
+                    const double bpm = edit->tempoSequence.getTempo (0)->getBpm();
+                    lengthBeats = std::max (1.0, sec * (bpm / 60.0));
+                }
+            }
+
+            if (lengthBeats <= 0.0)
+                lengthBeats = 4.0;
+        }
+
+        juce::String clipName = params.getProperty ("clip_name", "").toString().trim();
+        if (clipName.isEmpty())
+            clipName = wavFile.getFileNameWithoutExtension();
+
+        const bool autoTempo   = static_cast<bool> (params.getProperty ("auto_tempo", false));
+        const float pitchShift = static_cast<float> (static_cast<double> (params.getProperty ("pitch_shift", 0.0)));
+
+        const tracktion::TimeRange clipRange {
+            edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (startBeat)),
+            edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (startBeat + lengthBeats))
+        };
+        const te::ClipPosition clipPos { clipRange, tracktion::TimeDuration::fromSeconds (0.0) };
+
+        edit->getUndoManager().beginNewTransaction ("MCP Import Audio Stem");
+        tracktion::EditItemID createdId;
+        {
+            if (auto waveClip = tracks[trackIdx]->insertWaveClip (clipName, wavFile, clipPos, false))
+            {
+                waveClip->getSourceFileReference().setToFile (
+                    wavFile, te::SourceFileReference::PathStyle::alwaysAbsolute, false);
+                waveClip->setAutoTempo (autoTempo);
+                waveClip->setPitchChange (pitchShift);
+                createdId = waveClip->itemID;
+            }
+        }
+
+        if (! createdId.isValid())
+            return makeErrorResponse (id, -32603, "Failed to insert WaveAudioClip");
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP imported stem: " + clipName);
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("track_index", trackIdx);
+        res->setProperty ("clip_id", static_cast<juce::int64> (createdId.getRawID()));
+        res->setProperty ("clip_name", clipName);
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // 12. audio.export_wav (master stereo mixdown via Tracktion Renderer)
+    if (method == "audio.export_wav")
+    {
+        const juce::String rawOut = params.getProperty ("output_path", "").toString().trim();
+        if (rawOut.isEmpty())
+            return makeErrorResponse (id, -32602, "Missing output_path");
+
+        const juce::File outFile = juce::File::isAbsolutePath (rawOut)
+                                       ? juce::File (rawOut)
+                                       : juce::File::getCurrentWorkingDirectory().getChildFile (rawOut);
+
+        if (outFile == juce::File() || outFile.isDirectory())
+            return makeErrorResponse (id, -32602, "Invalid output_path");
+
+        auto range = MixdownExporter::getDefaultExportRange (*edit);
+        if (params.hasProperty ("start_beat") || params.hasProperty ("end_beat"))
+        {
+            const double startB = std::max (0.0, static_cast<double> (params.getProperty ("start_beat", 0.0)));
+            const double endB   = std::max (startB + 1.0, static_cast<double> (params.getProperty ("end_beat", startB + 8.0)));
+            range = tracktion::TimeRange {
+                edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (startB)),
+                edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (endB))
+            };
+        }
+
+        if (! MixdownExporter::exportEditToWav (*edit, outFile, range))
+            return makeErrorResponse (id, -32603, "Failed to render master WAV");
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("output_path", outFile.getFullPathName());
+        res->setProperty ("file_size_bytes", outFile.getSize());
+        res->setProperty ("duration_seconds", range.getLength().inSeconds());
         return makeResultResponse (id, juce::var (res));
     }
 

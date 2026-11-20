@@ -29,7 +29,9 @@ class MidiNote(BaseModel):
     velocity: int = Field(100, ge=1, le=127, description="Note velocity (1-127)")
 
 
-async def send_daw_rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+async def send_daw_rpc(
+    method: str, params: dict[str, Any] | None = None, timeout: float = 5.0
+) -> dict[str, Any]:
     global _rpc_counter
 
     _rpc_counter += 1
@@ -48,7 +50,7 @@ async def send_daw_rpc(method: str, params: dict[str, Any] | None = None) -> dic
         writer.write((json.dumps(payload) + "\n").encode("utf-8"))
         await writer.drain()
 
-        raw_line = await asyncio.wait_for(reader.readline(), timeout=3.0)
+        raw_line = await asyncio.wait_for(reader.readline(), timeout=timeout)
 
         if not raw_line:
             raise RuntimeError("DAW closed IPC connection unexpectedly.")
@@ -180,6 +182,75 @@ async def process_audio_clip(
             "end_norm": max(0.0, min(1.0, end_norm)),
         },
     )
+
+
+@mcp.tool()
+async def get_modular_racks() -> dict[str, Any]:
+    """Inspect all Reason-style modular racks, their plugin nodes/pins, and active Audio/MIDI/CV patch cables."""
+    return await send_daw_rpc("rack.get_state")
+
+
+@mcp.tool()
+async def patch_modular_rack(
+    action: str,
+    source_id: int,
+    source_pin: int,
+    dest_id: int,
+    dest_pin: int,
+    rack_index: int = 0,
+) -> dict[str, Any]:
+    """Connect ('connect') or unplug ('disconnect') a virtual Audio/MIDI/CV cable in a modular rack (use ID 0 for Rack I/O)."""
+    return await send_daw_rpc(
+        "rack.patch",
+        {
+            "rack_index": rack_index,
+            "action": action,
+            "source_id": source_id,
+            "source_pin": source_pin,
+            "dest_id": dest_id,
+            "dest_pin": dest_pin,
+        },
+    )
+
+
+@mcp.tool()
+async def import_audio_stem(
+    track_index: int,
+    file_path: str,
+    start_beat: float = 0.0,
+    length_beats: float = 0.0,
+    clip_name: str = "",
+    auto_tempo: bool = False,
+    pitch_shift: float = 0.0,
+) -> dict[str, Any]:
+    """Import an external WAV stem (e.g. from Arioso/Suno/Lyria) onto a timeline track without blocking playback."""
+    params: dict[str, Any] = {
+        "track_index": track_index,
+        "file_path": file_path,
+        "start_beat": max(0.0, start_beat),
+        "auto_tempo": auto_tempo,
+        "pitch_shift": pitch_shift,
+    }
+    if length_beats > 0.0:
+        params["length_beats"] = length_beats
+    if clip_name:
+        params["clip_name"] = clip_name
+    return await send_daw_rpc("audio.import_file", params)
+
+
+@mcp.tool()
+async def export_master_wav(
+    output_path: str,
+    start_beat: float | None = None,
+    end_beat: float | None = None,
+) -> dict[str, Any]:
+    """Render a stereo master mixdown WAV of the current DAW session."""
+    params: dict[str, Any] = {"output_path": output_path}
+    if start_beat is not None:
+        params["start_beat"] = max(0.0, start_beat)
+    if end_beat is not None:
+        params["end_beat"] = max(0.0, end_beat)
+    return await send_daw_rpc("audio.export_wav", params, timeout=60.0)
 
 
 if __name__ == "__main__":
