@@ -44,6 +44,12 @@ class MidiNote(BaseModel):
     velocity: int = Field(100, ge=1, le=127, description="Note velocity (1-127)")
 
 
+class AutomationPoint(BaseModel):
+    beat: float = Field(..., ge=0.0, description="Timeline position in beats")
+    value: float = Field(..., description="Parameter domain value (dB for volume/EQ, -1..1 for pan)")
+    curve: float = Field(0.0, ge=-1.0, le=1.0, description="Tracktion curve curvature (-1..1, 0 = linear)")
+
+
 async def send_daw_rpc(
     method: str, params: dict[str, Any] | None = None, timeout: float = 5.0
 ) -> dict[str, Any]:
@@ -358,6 +364,58 @@ async def generate_ai_audio_stem(
     }
     import_res = await send_daw_rpc("audio.import_file", import_params, timeout=15.0)
     return {"generation": gen_meta, "import": import_res}
+
+
+@mcp.tool()
+async def write_track_automation(
+    track_index: int,
+    parameter: str,
+    points: list[AutomationPoint],
+    clear_existing: bool = True,
+) -> dict[str, Any]:
+    """Write automation curve points ('volume', 'pan', 'eq_low', 'eq_mid', 'eq_high') on a track."""
+    return await send_daw_rpc(
+        "automation.set_points",
+        {
+            "track_index": track_index,
+            "parameter": parameter,
+            "points": [p.model_dump() for p in points],
+            "clear_existing": clear_existing,
+        },
+    )
+
+
+@mcp.tool()
+async def get_track_automation(
+    track_index: int,
+    parameter: str = "volume",
+) -> dict[str, Any]:
+    """Read automation curve points for a track parameter ('volume', 'pan', 'eq_low', 'eq_mid', 'eq_high')."""
+    return await send_daw_rpc(
+        "automation.get_points",
+        {"track_index": track_index, "parameter": parameter},
+    )
+
+
+@mcp.tool()
+async def configure_fx_send(
+    track_index: int,
+    send_db: float = -6.0,
+    bus_index: int = 0,
+    effect: str = "reverb",
+    wet_level: float = 0.35,
+) -> dict[str, Any]:
+    """Route a track via Aux Send to an FX Return bus hosting built-in Reverb or Delay."""
+    return await send_daw_rpc(
+        "mixer.set_fx_send",
+        {
+            "track_index": track_index,
+            "bus_index": max(0, min(7, bus_index)),
+            "send_db": max(-60.0, min(6.0, send_db)),
+            "effect": effect.lower().strip(),
+            "wet_level": max(0.0, min(1.0, wet_level)),
+        },
+    )
 
 
 if __name__ == "__main__":

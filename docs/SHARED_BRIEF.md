@@ -2,13 +2,14 @@
 
 - Merged (PRs #1-#10): WO-001 through WO-010 on `main` (`377c51c`).
 - Open PR (#11): WO-011 (`feat/wo-011-v1-rc-eq-cv-worker-docs`, `918625a`) — v1.0 RC.
-- Continuous Dev (`dev/v1-complete`, branched from `918625a`): WO-012 implemented
-  — `RecordingManager` (Wave/MIDI + `"Virtual MIDI"` routing, `te::InputDeviceInstance`
-  sync, 1-bar count-in via `te::Edit::CountIn::oneBar`, live virtual MIDI capture,
-  16-bit WAV take commit), `ArrangementView` `R` pills, `MixerComponent` `R` + input
-  selector, `MainComponent` `Rec` + `Count-In` row-2 controls & `initialise(2, 2)`,
-  `MidiKeyboardDock` live capture hook, `recording.list_inputs` + extended
-  `daw.get_state` / `mixer.set_track` / `transport.control` RPCs & MCP unit tests.
+- Continuous Dev (`dev/v1-complete`, branched from `918625a`): WO-013 implemented
+  — `StudioLookAndFeel` dark studio theme (explicitly detached via `setLookAndFeel(nullptr)`),
+  `AutomationManager` (`te::AutomationCurve` volume/pan/EQ read/write + `te::AuxSendPlugin`
+  / `te::AuxReturnPlugin` + Reverb/Delay FX bus), interactive automation overlay & `Auto`
+  Row-2 toggle in `ArrangementView`, `Ctrl/Shift + Wheel` horizontal zoom & scroll on
+  `ArrangementView` + `PianoRollComponent`, studio keyboard shortcuts (`Space`, `Ctrl+Z/Y/S/=/-`),
+  built-in `Reverb`/`Delay` mixer inserts, and `automation.set_points` / `automation.get_points` /
+  `mixer.set_fx_send` MCP RPCs & unit tests (10/10 OK). Prior `WO-012` at `4268ada`.
 - Workflow: Local development on `dev/v1-complete` (no PRs opened during continuous build).
 - Smoke convention: Release build + `--smoke-test`; all temp dirs under
   `%TEMP%`, never `%LOCALAPPDATA%\hermes`.
@@ -33,7 +34,8 @@
 | WO-009 | Phase 6 Session Portability (`filePathResolver`), Master Mixdown Export (`Export WAV`) & MCP Rack/Stem RPCs | Merged to `main` (`e9fe611`, PR #9) |
 | WO-010 | Phase 7 Two-Row Studio Header, Metronome/Loop Transport, Virtual MIDI Step-Rec & Windows Packaging | Merged to `main` (`377c51c`, PR #10) |
 | WO-011 | v1.0 Release Candidate: 1-to-4 CV Splitter, Track 3-Band EQ & Metering, Hybrid AI Worker & Production Docs | In review (`feat/wo-011-v1-rc-eq-cv-worker-docs`, `918625a`, PR #11) |
-| WO-012 | Live Audio & MIDI Recording, Per-Track Record Arming & 1-Bar Count-In | Locally implemented (`dev/v1-complete`) |
+| WO-012 | Live Audio & MIDI Recording, Per-Track Record Arming & 1-Bar Count-In | Committed locally (`dev/v1-complete`, `4268ada`) |
+| WO-013 | Automation Lanes, Aux Send/Return FX Bus, Zoomable Views & Studio Ergonomics | Locally implemented (`dev/v1-complete`) |
 
 ---
 

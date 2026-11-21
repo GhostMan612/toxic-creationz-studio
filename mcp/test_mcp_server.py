@@ -195,6 +195,60 @@ class McpWorkerTests(unittest.TestCase):
             {"action": "record", "count_in_bars": 1},
         )
 
+    def test_write_track_automation_rpc(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"track_index": 0, "parameter": "volume", "point_count": 2})
+
+        pts = [srv.AutomationPoint(beat=0.0, value=-12.0, curve=0.0), srv.AutomationPoint(beat=4.0, value=0.0, curve=0.2)]
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.write_track_automation(0, "volume", pts, clear_existing=True))
+
+        self.assertEqual(res["point_count"], 2)
+        mock_rpc.assert_awaited_once_with(
+            "automation.set_points",
+            {
+                "track_index": 0,
+                "parameter": "volume",
+                "points": [
+                    {"beat": 0.0, "value": -12.0, "curve": 0.0},
+                    {"beat": 4.0, "value": 0.0, "curve": 0.2},
+                ],
+                "clear_existing": True,
+            },
+        )
+
+    def test_get_track_automation_rpc(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"track_index": 0, "parameter": "pan", "points": []})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.get_track_automation(0, parameter="pan"))
+
+        self.assertEqual(res["parameter"], "pan")
+        mock_rpc.assert_awaited_once_with(
+            "automation.get_points",
+            {"track_index": 0, "parameter": "pan"},
+        )
+
+    def test_configure_fx_send_clamps_and_sends_rpc(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"track_index": 1, "bus_index": 7, "send_db": -9.0, "wet_level": 1.0})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.configure_fx_send(1, send_db=-9.0, bus_index=12, effect="REVERB", wet_level=1.5))
+
+        self.assertEqual(res["bus_index"], 7)
+        mock_rpc.assert_awaited_once_with(
+            "mixer.set_fx_send",
+            {
+                "track_index": 1,
+                "bus_index": 7,
+                "send_db": -9.0,
+                "effect": "reverb",
+                "wet_level": 1.0,
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

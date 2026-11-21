@@ -14,6 +14,7 @@
 #include "MixdownExporter.h"
 #include "MidiKeyboardDock.h"
 #include "RecordingManager.h"
+#include "StudioLookAndFeel.h"
 
 #include <atomic>
 #include <functional>
@@ -31,6 +32,7 @@ public:
 
     void paint (juce::Graphics& g) override;
     void resized() override;
+    bool keyPressed (const juce::KeyPress& key) override;
 
     bool hasUnsavedChanges() const noexcept { return sessionDirty; }
     bool isVst3ScanRunning() const;
@@ -92,6 +94,7 @@ private:
     void exportMixdownDialog();
     void updateWindowTitle();
 
+    StudioLookAndFeel studioLookAndFeel;
     te::Engine engine { "AI DAW" };
     std::unique_ptr<te::Edit> edit;
     RecordingManager recordingManager { engine };
@@ -134,6 +137,7 @@ private:
     juce::TextButton loopToggleButton  { "Loop" };
     juce::TextButton clickToggleButton { "Click" };
     juce::TextButton countInButton     { "Count-In" };
+    juce::TextButton autoToggleButton  { "Auto" };
     juce::TextButton scanPluginsButton { "Scan VST3" };
     juce::TextButton mixerToggleButton   { "Mixer" };
     juce::TextButton rackToggleButton     { "Rack" };

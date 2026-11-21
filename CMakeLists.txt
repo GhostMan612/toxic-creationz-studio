@@ -53,6 +53,9 @@ target_sources(AIDAW PRIVATE
     src/MidiKeyboardDock.cpp
     src/RecordingManager.h
     src/RecordingManager.cpp
+    src/StudioLookAndFeel.h
+    src/AutomationManager.h
+    src/AutomationManager.cpp
 )
 
 # 4. Preprocessor flags: enable VST3 hosting, disable unused bloat

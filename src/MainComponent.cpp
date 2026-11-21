@@ -96,6 +96,9 @@ private:
 //==============================================================================
 MainComponent::MainComponent()
 {
+    setLookAndFeel (&studioLookAndFeel);
+    setWantsKeyboardFocus (true);
+
     // A live WASAPI real-time callback thread races the rapid headless
     // Edit/RackType teardown that --smoke-test performs, so don't open audio
     // devices on that path.
@@ -225,6 +228,7 @@ MainComponent::MainComponent()
     addAndMakeVisible (loopToggleButton);
     addAndMakeVisible (clickToggleButton);
     addAndMakeVisible (countInButton);
+    addAndMakeVisible (autoToggleButton);
     addAndMakeVisible (scanPluginsButton);
     addAndMakeVisible (mixerToggleButton);
     addAndMakeVisible (rackToggleButton);
@@ -464,6 +468,16 @@ MainComponent::MainComponent()
         statusLabel.setText (bars > 0 ? "Count-In: 1 Bar" : "Count-In: OFF", juce::dontSendNotification);
     };
 
+    autoToggleButton.setClickingTogglesState (true);
+    autoToggleButton.setToggleState (false, juce::dontSendNotification);
+    autoToggleButton.setTooltip ("Show drawable track automation curves on timeline");
+    autoToggleButton.onClick = [this]
+    {
+        const bool on = autoToggleButton.getToggleState();
+        arrangementView.setAutomationOverlayEnabled (on);
+        statusLabel.setText (on ? "Automation Overlay: ON" : "Automation Overlay: OFF", juce::dontSendNotification);
+    };
+
     scanPluginsButton.onClick = [this] { startVst3Scan(); };
 
     mixerToggleButton.setClickingTogglesState (true);
@@ -559,6 +573,7 @@ MainComponent::MainComponent()
 
 MainComponent::~MainComponent()
 {
+    setLookAndFeel (nullptr);
     stopTimer();
     stopVst3Scan (3000);
     reapRetiredScanThreads();
@@ -1291,7 +1306,65 @@ void MainComponent::timerCallback()
 
 void MainComponent::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xff181a1f));
+    g.fillAll (juce::Colour (0xff12151c));
+}
+
+bool MainComponent::keyPressed (const juce::KeyPress& key)
+{
+    if (key == juce::KeyPress::spaceKey)
+    {
+        if (edit != nullptr)
+        {
+            if (recordingManager.isRecording())
+                recordingManager.stopRecording();
+            else if (edit->getTransport().isPlaying())
+                edit->getTransport().stop (false, false);
+            else
+                edit->getTransport().play (false);
+        }
+
+        return true;
+    }
+
+    if (key.getModifiers().isCommandDown())
+    {
+        const int code = juce::CharacterFunctions::toLowerCase (static_cast<juce::juce_wchar> (key.getKeyCode()));
+
+        if (code == 'z' && ! key.getModifiers().isShiftDown())
+        {
+            undoButton.triggerClick();
+            return true;
+        }
+
+        if (code == 'y' || (code == 'z' && key.getModifiers().isShiftDown()))
+        {
+            redoButton.triggerClick();
+            return true;
+        }
+
+        if (code == 's')
+        {
+            saveSession();
+            return true;
+        }
+
+        const auto ch = key.getTextCharacter();
+        if (ch == '=' || ch == '+' || code == '=')
+        {
+            arrangementView.zoomIn();
+            pianoRoll.zoomIn();
+            return true;
+        }
+
+        if (ch == '-' || code == '-')
+        {
+            arrangementView.zoomOut();
+            pianoRoll.zoomOut();
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void MainComponent::resized()
@@ -1336,6 +1409,7 @@ void MainComponent::resized()
     addRowItem (row2, loopToggleButton, 46);
     addRowItem (row2, clickToggleButton, 46);
     addRowItem (row2, countInButton, 64);
+    addRowItem (row2, autoToggleButton, 44);
     row2.removeFromLeft (4);
     addRowItem (row2, addTrackButton, 58);
     addRowItem (row2, undoButton, 46);

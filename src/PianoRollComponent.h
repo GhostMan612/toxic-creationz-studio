@@ -16,6 +16,11 @@ public:
     void setSnapDivision (double beatsPerStep); // 0.25 == 1/16th note
     double getSnapDivision() const noexcept { return snapBeats; }
 
+    void setPixelsPerBeat (float newPixelsPerBeat);
+    float getPixelsPerBeat() const noexcept { return pixelsPerBeat; }
+    void zoomIn();
+    void zoomOut();
+
     std::function<void()> onSequenceChanged;
 
     void paint (juce::Graphics& g) override;
@@ -23,6 +28,7 @@ public:
     void mouseDown (const juce::MouseEvent& e) override;
     void mouseDrag (const juce::MouseEvent& e) override;
     void mouseUp (const juce::MouseEvent& e) override;
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
 
 private:
     enum class DragMode
@@ -45,10 +51,12 @@ private:
     static constexpr int pianoKeyWidth  = 58;
     static constexpr int lowestPitch    = 36;  // C2
     static constexpr int highestPitch   = 84;  // C6
-    static constexpr float pixelsPerBeat = 76.0f;
 
     te::Edit* edit = nullptr;
     tracktion::EditItemID targetClipID;
+
+    float pixelsPerBeat = 76.0f;
+    double horizontalScrollBeats = 0.0;
 
     double snapBeats = 0.25;          // 1/16th default
     double lastNoteLengthBeats = 0.5; // FL-style remembered note length

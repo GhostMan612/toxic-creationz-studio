@@ -1,5 +1,6 @@
 #include "DawIpcServer.h"
 
+#include "AutomationManager.h"
 #include "MixdownExporter.h"
 #include "WaveformEditorComponent.h"
 
@@ -1022,6 +1023,128 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         auto* res = new juce::DynamicObject();
         res->setProperty ("audio_inputs", audioIns);
         res->setProperty ("midi_inputs", midiIns);
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // 15. automation.set_points (write track automation curve points)
+    if (method == "automation.set_points")
+    {
+        const int trackIdx = static_cast<int> (params.getProperty ("track_index", 0));
+        auto tracks = te::getAudioTracks (*edit);
+
+        if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "Invalid track_index");
+
+        const juce::String paramName = params.getProperty ("parameter", "volume").toString().trim();
+        const auto* ptsArray = params.getProperty ("points", juce::var()).getArray();
+
+        if (ptsArray == nullptr)
+            return makeErrorResponse (id, -32602, "Missing points array");
+
+        auto* track = tracks[trackIdx];
+        const juce::String lowerParam = paramName.toLowerCase();
+
+        if ((lowerParam == "eq_low" || lowerParam == "eq_mid" || lowerParam == "eq_high")
+            && track->getEqualiserPlugin() == nullptr)
+        {
+            edit->getUndoManager().beginNewTransaction ("Edit Track Automation");
+            if (auto eqPlugin = edit->getPluginCache().createNewPlugin (te::EqualiserPlugin::xmlTypeName, {}))
+                track->pluginList.insertPlugin (eqPlugin, getInsertIndexBeforeTerminalPlugins (*track), nullptr);
+        }
+
+        std::vector<AutomationPointSpec> specs;
+        specs.reserve (static_cast<size_t> (ptsArray->size()));
+
+        for (const auto& item : *ptsArray)
+        {
+            AutomationPointSpec pt;
+            pt.beat  = std::max (0.0, static_cast<double> (item.getProperty ("beat", 0.0)));
+            pt.value = static_cast<float> (static_cast<double> (item.getProperty ("value", 0.0)));
+            pt.curve = juce::jlimit (-1.0f, 1.0f,
+                                     static_cast<float> (static_cast<double> (item.getProperty ("curve", 0.0))));
+            specs.push_back (pt);
+        }
+
+        const bool clearExisting = static_cast<bool> (params.getProperty ("clear_existing", true));
+
+        if (! AutomationManager::setAutomationPoints (*edit, *track, paramName, specs, clearExisting))
+            return makeErrorResponse (id, -32602, "Unsupported or unavailable automation parameter: " + paramName);
+
+        const auto updated = AutomationManager::getAutomationPoints (*edit, *track, paramName);
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP edited " + paramName + " automation on track " + juce::String (trackIdx + 1));
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("track_index", trackIdx);
+        res->setProperty ("parameter", lowerParam);
+        res->setProperty ("point_count", static_cast<int> (updated.size()));
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // 16. automation.get_points (read-only)
+    if (method == "automation.get_points")
+    {
+        const int trackIdx = static_cast<int> (params.getProperty ("track_index", 0));
+        auto tracks = te::getAudioTracks (*edit);
+
+        if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "Invalid track_index");
+
+        const juce::String paramName = params.getProperty ("parameter", "volume").toString().trim();
+
+        if (AutomationManager::resolveTrackParameter (*tracks[trackIdx], paramName) == nullptr)
+            return makeErrorResponse (id, -32602, "Unsupported or unavailable automation parameter: " + paramName);
+
+        const auto pts = AutomationManager::getAutomationPoints (*edit, *tracks[trackIdx], paramName);
+        juce::Array<juce::var> outArr;
+
+        for (const auto& pt : pts)
+        {
+            auto* pObj = new juce::DynamicObject();
+            pObj->setProperty ("beat", pt.beat);
+            pObj->setProperty ("value", pt.value);
+            pObj->setProperty ("curve", pt.curve);
+            outArr.add (juce::var (pObj));
+        }
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("track_index", trackIdx);
+        res->setProperty ("parameter", paramName.toLowerCase());
+        res->setProperty ("points", outArr);
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // 17. mixer.set_fx_send (configure Aux Send + shared FX Return Reverb/Delay bus)
+    if (method == "mixer.set_fx_send")
+    {
+        const int trackIdx = static_cast<int> (params.getProperty ("track_index", 0));
+        auto tracks = te::getAudioTracks (*edit);
+
+        if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "Invalid track_index");
+
+        const int busIdx       = juce::jlimit (0, 7, static_cast<int> (params.getProperty ("bus_index", 0)));
+        const float sendDb     = static_cast<float> (static_cast<double> (params.getProperty ("send_db", -6.0)));
+        const juce::String fx  = params.getProperty ("effect", "reverb").toString().trim().toLowerCase();
+        const float wetLevel   = static_cast<float> (static_cast<double> (params.getProperty ("wet_level", 0.35)));
+
+        const auto fxRes = AutomationManager::configureFxSend (
+            *edit, *tracks[trackIdx], busIdx, sendDb, fx, wetLevel);
+
+        if (! fxRes.success)
+            return makeErrorResponse (id, -32603, "Failed to configure Aux FX send");
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP routed track " + juce::String (trackIdx + 1) + " to FX bus " + juce::String (busIdx + 1));
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("track_index", trackIdx);
+        res->setProperty ("bus_index", fxRes.busIndex);
+        res->setProperty ("return_track_index", fxRes.returnTrackIndex);
+        res->setProperty ("send_db", fxRes.sendDb);
+        res->setProperty ("effect", fx == "delay" ? "delay" : "reverb");
+        res->setProperty ("wet_level", fxRes.wetLevel);
         return makeResultResponse (id, juce::var (res));
     }
 

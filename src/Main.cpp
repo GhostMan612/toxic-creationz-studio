@@ -1583,7 +1583,7 @@ int MainComponent::runHeadlessSmokeTest()
             const std::vector<juce::Component*> row2Items {
                 &app.playButton, &app.stopButton, &app.recordButton,
                 &app.loopToggleButton, &app.clickToggleButton, &app.countInButton,
-                &app.addTrackButton, &app.undoButton, &app.redoButton,
+                &app.autoToggleButton, &app.addTrackButton, &app.undoButton, &app.redoButton,
                 &app.bpmSlider, &app.transportPosLabel, &app.statusLabel
             };
 
@@ -2055,6 +2055,157 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-012 Live audio/MIDI recording, arming & count-in PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-013 Regression: Automation Curves, Aux FX Send Bus, Zoom & Theme
+    //===========================================================================
+    {
+        // 1. Write 3 volume automation points via automation.set_points, read back, Undo & Redo
+        const auto setAutoResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":130,"method":"automation.set_points","params":{"track_index":0,"parameter":"volume","clear_existing":true,"points":[{"beat":0.0,"value":-12.0,"curve":0.0},{"beat":4.0,"value":0.0,"curve":0.0},{"beat":8.0,"value":-6.0,"curve":0.0}]}})"));
+
+        if (static_cast<int> (setAutoResp["result"]["point_count"]) != 3)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 automation.set_points did not write 3 points" << std::endl;
+            return 1;
+        }
+
+        const auto getAutoResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":131,"method":"automation.get_points","params":{"track_index":0,"parameter":"volume"}})"));
+        const auto* autoPts = getAutoResp["result"]["points"].getArray();
+
+        if (autoPts == nullptr || autoPts->size() != 3)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 automation.get_points expected 3 points" << std::endl;
+            return 1;
+        }
+
+        app.edit->getUndoManager().undo();
+        const auto getAfterUndo = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":132,"method":"automation.get_points","params":{"track_index":0,"parameter":"volume"}})"));
+
+        if (getAfterUndo["result"]["points"].getArray() == nullptr
+            || getAfterUndo["result"]["points"].getArray()->size() != 0)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 Undo did not clear automation points" << std::endl;
+            return 1;
+        }
+
+        app.edit->getUndoManager().redo();
+
+        // 2. Configure Aux FX Send bus (Reverb) on Track 0 at -9.0 dB, wet 0.45
+        const auto fxResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":133,"method":"mixer.set_fx_send","params":{"track_index":0,"bus_index":0,"send_db":-9.0,"effect":"reverb","wet_level":0.45}})"));
+        const int fxReturnTrackIdx = static_cast<int> (fxResp["result"]["return_track_index"]);
+
+        if (fxReturnTrackIdx < 0 || std::abs (static_cast<double> (fxResp["result"]["send_db"]) - (-9.0)) > 0.2)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 mixer.set_fx_send did not configure bus 0 at -9.0 dB" << std::endl;
+            return 1;
+        }
+
+        // 3. Verify Arrangement + Piano Roll zoom & clamping, plus 1280x820 layout with Auto toggle
+        const float arrBaseZoom = app.arrangementView.getPixelsPerBeat();
+        app.arrangementView.zoomIn();
+        if (app.arrangementView.getPixelsPerBeat() <= arrBaseZoom)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 ArrangementView zoomIn did not increase pixelsPerBeat"
+                      << std::endl;
+            return 1;
+        }
+        app.arrangementView.zoomOut();
+        app.arrangementView.setPixelsPerBeat (1.0f);
+        if (std::abs (app.arrangementView.getPixelsPerBeat() - 16.0f) > 0.01f)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 ArrangementView min zoom clamp failed" << std::endl;
+            return 1;
+        }
+        app.arrangementView.setPixelsPerBeat (arrBaseZoom);
+
+        const float prBaseZoom = app.pianoRoll.getPixelsPerBeat();
+        app.pianoRoll.zoomIn();
+        if (app.pianoRoll.getPixelsPerBeat() <= prBaseZoom)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 PianoRollComponent zoomIn did not increase pixelsPerBeat"
+                      << std::endl;
+            return 1;
+        }
+        app.pianoRoll.zoomOut();
+        app.pianoRoll.setPixelsPerBeat (999.0f);
+        if (std::abs (app.pianoRoll.getPixelsPerBeat() - 160.0f) > 0.01f)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 PianoRollComponent max zoom clamp failed" << std::endl;
+            return 1;
+        }
+        app.pianoRoll.setPixelsPerBeat (prBaseZoom);
+
+        app.setSize (1280, 820);
+        app.resized();
+
+        if (app.statusLabel.getWidth() < 180)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 statusLabel too narrow at 1280x820 ("
+                      << app.statusLabel.getWidth() << "px)" << std::endl;
+            return 1;
+        }
+
+        // 4. Verify automation points and AuxSend/AuxReturn+Reverb survive save/reload
+        const auto wo013TempDir = tempDir.getChildFile ("tcs_wo013_smoke");
+        wo013TempDir.deleteRecursively();
+        wo013TempDir.createDirectory();
+        const auto wo013SessionFile = wo013TempDir.getChildFile ("AutoFxRoundTrip.tracktionedit");
+
+        app.currentEditFile = wo013SessionFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        if (! app.loadSessionFromFileSafely (wo013SessionFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 session reload failed" << std::endl;
+            return 1;
+        }
+
+        const auto reloadedAuto = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":134,"method":"automation.get_points","params":{"track_index":0,"parameter":"volume"}})"));
+
+        bool foundAuxSend = false;
+        bool foundAuxReturn = false;
+        bool foundWetReverb = false;
+
+        {
+            auto reloadedTracks = te::getAudioTracks (*app.edit);
+
+            for (auto* p : reloadedTracks[0]->pluginList)
+                if (auto* s = dynamic_cast<te::AuxSendPlugin*> (p))
+                    if (std::abs (s->getGainDb() - (-9.0f)) <= 0.2f)
+                        foundAuxSend = true;
+
+            if (juce::isPositiveAndBelow (fxReturnTrackIdx, reloadedTracks.size()))
+            {
+                for (auto* p : reloadedTracks[fxReturnTrackIdx]->pluginList)
+                {
+                    if (dynamic_cast<te::AuxReturnPlugin*> (p) != nullptr)
+                        foundAuxReturn = true;
+                    if (auto* r = dynamic_cast<te::ReverbPlugin*> (p))
+                        if (std::abs (r->wetValue.get() - 0.45f) <= 0.02f)
+                            foundWetReverb = true;
+                }
+            }
+        }
+
+        const auto* reloadedAutoPts = reloadedAuto["result"]["points"].getArray();
+
+        if (reloadedAutoPts == nullptr || reloadedAutoPts->size() != 3
+            || ! foundAuxSend || ! foundAuxReturn || ! foundWetReverb)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 automation curve or Aux Send/Return FX did not persist"
+                      << std::endl;
+            return 1;
+        }
+
+        wo013TempDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-013 Automation curves, Aux FX bus, zoom & studio theme PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -2088,8 +2239,9 @@ int MainComponent::runHeadlessSmokeTest()
                  "bounce-to-take DSP, portable filePathResolver, MCP rack.patch/import_file, "
                  "master WAV mixdown export, metronome click/loop transport, virtual MIDI Step Rec, "
                  "two-row layout, CvUtilityPlugin 1-to-4 splitter, 3-band EQ RPC/Undo/persistence, "
-                 "live mixer metering, live audio/MIDI recording, track arming, count-in, and VST3 "
-                 "scanner lifecycle verified." << std::endl;
+                 "live mixer metering, live audio/MIDI recording, track arming, count-in, automation curves, "
+                 "Aux FX send/return bus, zoomable views, dark studio theme, and VST3 scanner lifecycle verified."
+              << std::endl;
     return 0;
 }
 

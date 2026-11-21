@@ -414,6 +414,8 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
     menu.addSeparator();
     menu.addSectionHeader ("Built-In Effects");
     menu.addItem (2, "4-Band Equaliser (EQ)");
+    menu.addItem (3, "Reverb");
+    menu.addItem (4, "Delay");
 
     const auto vstTypes = engine.getPluginManager().knownPluginList.getTypes();
 
@@ -456,6 +458,18 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
                 if (auto eq = safeThis->edit.getPluginCache().createNewPlugin (te::EqualiserPlugin::xmlTypeName, {}))
                     tr->pluginList.insertPlugin (eq, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
             }
+        }
+        else if (chosenId == 3)
+        {
+            safeThis->edit.getUndoManager().beginNewTransaction ("Add Reverb");
+            if (auto rev = safeThis->edit.getPluginCache().createNewPlugin (te::ReverbPlugin::xmlTypeName, {}))
+                tr->pluginList.insertPlugin (rev, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
+        }
+        else if (chosenId == 4)
+        {
+            safeThis->edit.getUndoManager().beginNewTransaction ("Add Delay");
+            if (auto dly = safeThis->edit.getPluginCache().createNewPlugin (te::DelayPlugin::xmlTypeName, {}))
+                tr->pluginList.insertPlugin (dly, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
         }
         else if (chosenId >= 100)
         {

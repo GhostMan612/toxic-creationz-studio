@@ -1,5 +1,8 @@
 #include "PianoRollComponent.h"
 
+#include <algorithm>
+#include <cmath>
+
 PianoRollComponent::PianoRollComponent()
 {
     setOpaque (true);
@@ -34,6 +37,7 @@ void PianoRollComponent::setTarget (te::Edit* targetEdit, tracktion::EditItemID 
 {
     edit = targetEdit;
     targetClipID = clipID;
+    horizontalScrollBeats = 0.0;
     dragMode = DragMode::none;
     activeNoteState = {};
     repaint();
@@ -43,6 +47,22 @@ void PianoRollComponent::setSnapDivision (double beatsPerStep)
 {
     snapBeats = std::max (0.0625, beatsPerStep);
     repaint();
+}
+
+void PianoRollComponent::setPixelsPerBeat (float newPixelsPerBeat)
+{
+    pixelsPerBeat = juce::jlimit (36.0f, 160.0f, newPixelsPerBeat);
+    repaint();
+}
+
+void PianoRollComponent::zoomIn()
+{
+    setPixelsPerBeat (pixelsPerBeat * 1.25f);
+}
+
+void PianoRollComponent::zoomOut()
+{
+    setPixelsPerBeat (pixelsPerBeat / 1.25f);
 }
 
 te::MidiClip* PianoRollComponent::resolveClip() const
@@ -100,7 +120,7 @@ int PianoRollComponent::getPitchAtY (int y) const
 
 double PianoRollComponent::getBeatAtX (int x) const
 {
-    return std::max (0.0, static_cast<double> (x - pianoKeyWidth) / pixelsPerBeat);
+    return std::max (0.0, horizontalScrollBeats + static_cast<double> (x - pianoKeyWidth) / pixelsPerBeat);
 }
 
 juce::Rectangle<int> PianoRollComponent::getNoteRect (const te::MidiNote& note) const
@@ -112,8 +132,8 @@ juce::Rectangle<int> PianoRollComponent::getNoteRect (const te::MidiNote& note) 
     const int pitch = note.getNoteNumber();
     const int rowFromTop = highestPitch - pitch;
 
-    const int x = pianoKeyWidth + static_cast<int> (note.getStartBeat().inBeats() * pixelsPerBeat);
-    const int w = std::max (8, static_cast<int> (note.getLengthBeats().inBeats() * pixelsPerBeat));
+    const int x = pianoKeyWidth + static_cast<int> (std::round ((note.getStartBeat().inBeats() - horizontalScrollBeats) * pixelsPerBeat));
+    const int w = std::max (8, static_cast<int> (std::round (note.getLengthBeats().inBeats() * pixelsPerBeat)));
     const int y = topBarHeight + static_cast<int> (rowFromTop * rowHeight);
     const int h = std::max (4, static_cast<int> (std::ceil (rowHeight)) - 1);
 
@@ -176,7 +196,11 @@ void PianoRollComponent::paint (juce::Graphics& g)
         }
     }
 
-    // Vertical snap / beat grid
+    // Vertical snap / beat grid & MIDI notes clipped to note grid area
+    juce::Graphics::ScopedSaveState gridClip (g);
+    g.reduceClipRegion (pianoKeyWidth, topBarHeight,
+                        bounds.getWidth() - pianoKeyWidth, bounds.getHeight() - topBarHeight);
+
     const double clipStartBeat = edit->tempoSequence.toBeats (clip->getPosition().getStart()).inBeats();
     const double clipEndBeat   = edit->tempoSequence.toBeats (clip->getPosition().getEnd()).inBeats();
     const double clipBeats     = std::max (4.0, clipEndBeat - clipStartBeat);
@@ -185,9 +209,11 @@ void PianoRollComponent::paint (juce::Graphics& g)
     for (int step = 0; step <= totalSteps; ++step)
     {
         const double beat = step * snapBeats;
-        const int x = pianoKeyWidth + static_cast<int> (beat * pixelsPerBeat);
+        const int x = pianoKeyWidth + static_cast<int> (std::round ((beat - horizontalScrollBeats) * pixelsPerBeat));
         if (x > bounds.getWidth())
             break;
+        if (x < pianoKeyWidth)
+            continue;
 
         const bool isBar  = std::fmod (beat, 4.0) < 1e-4;
         const bool isBeat = std::fmod (beat, 1.0) < 1e-4;
@@ -356,4 +382,21 @@ void PianoRollComponent::mouseUp (const juce::MouseEvent&)
 {
     dragMode = DragMode::none;
     activeNoteState = {};
+}
+
+void PianoRollComponent::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
+{
+    if (e.mods.isCtrlDown())
+    {
+        if (wheel.deltaY > 0.0f) zoomIn();
+        else if (wheel.deltaY < 0.0f) zoomOut();
+        return;
+    }
+
+    if (e.mods.isShiftDown() || std::abs (wheel.deltaX) > 0.0f)
+    {
+        const double delta = (std::abs (wheel.deltaX) > 0.0f) ? -wheel.deltaX : -wheel.deltaY;
+        horizontalScrollBeats = juce::jlimit (0.0, 64.0, horizontalScrollBeats + delta * 1.5);
+        repaint();
+    }
 }
