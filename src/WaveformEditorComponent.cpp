@@ -1,4 +1,5 @@
 #include "WaveformEditorComponent.h"
+#include "AudioToMidiTranscriber.h"
 
 #include <algorithm>
 #include <cmath>
@@ -8,12 +9,12 @@ WaveformEditorComponent::WaveformEditorComponent()
     setOpaque (true);
 
     addAndMakeVisible (titleLabel);
-    titleLabel.setText ("WAVEFORM EDITOR (NON-DESTRUCTIVE BOUNCE-TO-TAKE)", juce::dontSendNotification);
+    titleLabel.setText ("WAVEFORM EDITOR", juce::dontSendNotification);
     titleLabel.setFont (juce::Font (juce::FontOptions (11.5f, juce::Font::bold)));
     titleLabel.setColour (juce::Label::textColourId, juce::Colour (0xff34d399));
 
     for (auto* btn : { &normalizeButton, &reverseButton, &fadeInButton,
-                       &fadeOutButton, &silenceButton, &selectAllButton })
+                       &fadeOutButton, &silenceButton, &selectAllButton, &toMidiButton })
     {
         addAndMakeVisible (btn);
     }
@@ -29,6 +30,19 @@ WaveformEditorComponent::WaveformEditorComponent()
         selStartNorm = 0.0;
         selEndNorm   = 1.0;
         repaint();
+    };
+
+    toMidiButton.onClick = [this]
+    {
+        if (edit == nullptr || ! targetClipID.isValid())
+            return;
+
+        const auto res = AudioToMidiTranscriber::transcribeClipToMidi (*edit, targetClipID, -1, {});
+
+        if (res.success && onTranscribedToMidi)
+            onTranscribedToMidi (res.targetTrackIndex, res.createdClipID, static_cast<int> (res.notes.size()));
+        else if (! res.success && onWaveformBounced && res.errorMessage.isNotEmpty())
+            onWaveformBounced ("Transcribe failed: " + res.errorMessage);
     };
 }
 
@@ -401,19 +415,22 @@ void WaveformEditorComponent::resized()
 {
     auto bar = getLocalBounds().removeFromTop (topBarHeight).reduced (8, 4);
 
-    titleLabel.setBounds (bar.removeFromLeft (270));
+    toMidiButton.setBounds (bar.removeFromRight (60));
+    bar.removeFromRight (4);
+    selectAllButton.setBounds (bar.removeFromRight (38));
+    bar.removeFromRight (4);
+    silenceButton.setBounds (bar.removeFromRight (54));
+    bar.removeFromRight (4);
+    fadeOutButton.setBounds (bar.removeFromRight (60));
+    bar.removeFromRight (4);
+    fadeInButton.setBounds (bar.removeFromRight (56));
+    bar.removeFromRight (4);
+    reverseButton.setBounds (bar.removeFromRight (46));
+    bar.removeFromRight (4);
+    normalizeButton.setBounds (bar.removeFromRight (54));
+    bar.removeFromRight (6);
 
-    selectAllButton.setBounds (bar.removeFromRight (72));
-    bar.removeFromRight (4);
-    silenceButton.setBounds (bar.removeFromRight (62));
-    bar.removeFromRight (4);
-    fadeOutButton.setBounds (bar.removeFromRight (66));
-    bar.removeFromRight (4);
-    fadeInButton.setBounds (bar.removeFromRight (62));
-    bar.removeFromRight (4);
-    reverseButton.setBounds (bar.removeFromRight (64));
-    bar.removeFromRight (4);
-    normalizeButton.setBounds (bar.removeFromRight (74));
+    titleLabel.setBounds (bar);
 }
 
 void WaveformEditorComponent::paint (juce::Graphics& g)

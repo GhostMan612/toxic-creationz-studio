@@ -249,6 +249,68 @@ class McpWorkerTests(unittest.TestCase):
             },
         )
 
+    def test_transcribe_audio_to_midi_clamps_and_uses_15s_timeout(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(
+            return_value={
+                "target_track_index": 3,
+                "clip_name": "Vocal MIDI",
+                "notes_transcribed": 4,
+                "notes": [],
+            }
+        )
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(
+                srv.transcribe_audio_to_midi(
+                    track_index=0,
+                    clip_index=-2,
+                    target_track_index=3,
+                    quantize_beats=5.0,
+                    min_note_beats=0.001,
+                )
+            )
+
+        self.assertEqual(res["target_track_index"], 3)
+        mock_rpc.assert_awaited_once_with(
+            "audio.transcribe_to_midi",
+            {
+                "track_index": 0,
+                "clip_index": 0,
+                "target_track_index": 3,
+                "quantize_beats": 2.0,
+                "min_note_beats": 0.03125,
+            },
+            timeout=15.0,
+        )
+
+    def test_transcribe_audio_to_midi_defaults(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(
+            return_value={
+                "target_track_index": 2,
+                "clip_name": "Bass MIDI",
+                "notes_transcribed": 2,
+                "notes": [],
+            }
+        )
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.transcribe_audio_to_midi(1))
+
+        self.assertEqual(res["notes_transcribed"], 2)
+        mock_rpc.assert_awaited_once_with(
+            "audio.transcribe_to_midi",
+            {
+                "track_index": 1,
+                "clip_index": 0,
+                "target_track_index": -1,
+                "quantize_beats": 0.25,
+                "min_note_beats": 0.125,
+            },
+            timeout=15.0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

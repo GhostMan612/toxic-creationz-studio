@@ -2206,6 +2206,161 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-013 Automation curves, Aux FX bus, zoom & studio theme PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-014 Regression Test: YIN Audio-to-MIDI Pitch Transcription, Undo & Reload
+    //===========================================================================
+    {
+        const auto wo014TempDir = tempDir.getChildFile ("tcs_wo014_smoke");
+        wo014TempDir.deleteRecursively();
+        wo014TempDir.createDirectory();
+        const auto melodyWavFile = wo014TempDir.getChildFile ("TestMelody_ACEA.wav");
+
+        // 1. Synthesize a 4-note monophonic melody (A4=69, C5=72, E5=76, A5=81), 1 beat each at session BPM
+        const double sessionBpm  = app.edit->tempoSequence.getTempo (0)->getBpm();
+        const double secPerBeat  = 60.0 / std::max (40.0, sessionBpm);
+        constexpr int sr         = 44100;
+        const int samplesPerNote = static_cast<int> (std::round (secPerBeat * sr));
+        const int gapSamples     = static_cast<int> (std::round (0.02 * sr)); // 20ms articulation gap
+        const int expectedMidi[4] = { 69, 72, 76, 81 };
+
+        {
+            juce::AudioBuffer<float> melBuf (2, samplesPerNote * 4);
+            melBuf.clear();
+
+            for (int n = 0; n < 4; ++n)
+            {
+                const double freq = 440.0 * std::pow (2.0, (static_cast<double> (expectedMidi[n]) - 69.0) / 12.0);
+                const int startS = n * samplesPerNote;
+                const int activeS = std::max (1, samplesPerNote - gapSamples);
+
+                for (int i = 0; i < activeS; ++i)
+                {
+                    const float env = std::min (1.0f, std::min (static_cast<float> (i) / 200.0f,
+                                                                static_cast<float> (activeS - 1 - i) / 200.0f));
+                    const float sample = static_cast<float> (
+                        0.5 * std::sin (2.0 * juce::MathConstants<double>::pi * freq * i / sr)) * env;
+                    melBuf.setSample (0, startS + i, sample);
+                    melBuf.setSample (1, startS + i, sample);
+                }
+            }
+
+            auto fs = std::make_unique<juce::FileOutputStream> (melodyWavFile);
+            fs->setPosition (0);
+            fs->truncate();
+            std::unique_ptr<juce::OutputStream> os (fs.release());
+            juce::WavAudioFormat fmt;
+            auto writer = fmt.createWriterFor (os, juce::AudioFormatWriterOptions{}
+                                                       .withSampleRate (sr)
+                                                       .withNumChannels (2)
+                                                       .withBitsPerSample (16));
+
+            if (writer == nullptr || ! writer->writeFromAudioSampleBuffer (melBuf, 0, melBuf.getNumSamples()))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-014 could not write TestMelody_ACEA.wav" << std::endl;
+                return 1;
+            }
+        }
+
+        // 2. Insert melody WAV onto a dedicated source track so clip_index 0 is deterministic
+        int sourceTrackIdx = -1;
+        {
+            auto tracks = te::getAudioTracks (*app.edit);
+            app.edit->ensureNumberOfAudioTracks (tracks.size() + 1);
+            tracks = te::getAudioTracks (*app.edit);
+            sourceTrackIdx = tracks.size() - 1;
+            auto* srcTrack = tracks[sourceTrackIdx];
+            srcTrack->setName ("Vocal Sketch");
+
+            const tracktion::TimeRange r {
+                tracktion::TimePosition::fromSeconds (0.0),
+                tracktion::TimePosition::fromSeconds (secPerBeat * 4.0)
+            };
+
+            if (auto wc = srcTrack->insertWaveClip ("MelodyTake", melodyWavFile, te::ClipPosition { r, {} }, false))
+            {
+                wc->getSourceFileReference().setToFile (
+                    melodyWavFile, te::SourceFileReference::PathStyle::alwaysAbsolute, false);
+            }
+        }
+
+        // 3. Transcribe via audio.transcribe_to_midi RPC into a new 4OSC track
+        const auto transResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            juce::String (R"({"jsonrpc":"2.0","id":140,"method":"audio.transcribe_to_midi","params":{"track_index":)")
+            + juce::String (sourceTrackIdx)
+            + R"(,"clip_index":0,"target_track_index":-1,"quantize_beats":0.25,"min_note_beats":0.25}})"));
+
+        const int transcribedTrackIdx = static_cast<int> (transResp["result"]["target_track_index"]);
+        const auto* transNotes = transResp["result"]["notes"].getArray();
+
+        if (transcribedTrackIdx < 0 || transNotes == nullptr || transNotes->size() != 4)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-014 expected 4 transcribed MIDI notes, got "
+                      << (transNotes != nullptr ? transNotes->size() : -1) << std::endl;
+            return 1;
+        }
+
+        for (int i = 0; i < 4; ++i)
+        {
+            const int gotPitch = static_cast<int> ((*transNotes)[i]["pitch"]);
+
+            if (gotPitch != expectedMidi[i])
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-014 note " << i << " pitch mismatch: expected "
+                          << expectedMidi[i] << ", got " << gotPitch << std::endl;
+                return 1;
+            }
+        }
+
+        // 4. Verify Undo removes transcribed MIDI notes and Redo restores them
+        app.edit->getUndoManager().undo();
+        {
+            auto tracks = te::getAudioTracks (*app.edit);
+
+            if (juce::isPositiveAndBelow (transcribedTrackIdx, tracks.size()))
+            {
+                int remaining = 0;
+
+                for (auto* c : tracks[transcribedTrackIdx]->getClips())
+                    if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                        remaining += mc->getSequence().getNumNotes();
+
+                if (remaining != 0)
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-014 Undo did not clear transcribed MIDI notes" << std::endl;
+                    return 1;
+                }
+            }
+        }
+
+        app.edit->getUndoManager().redo();
+
+        // 5. Verify transcribed MidiClip persists across save/load round-trip
+        const auto wo014SessionFile = wo014TempDir.getChildFile ("TranscribeRoundTrip.tracktionedit");
+        app.currentEditFile = wo014SessionFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        if (! app.loadSessionFromFileSafely (wo014SessionFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-014 session reload failed" << std::endl;
+            return 1;
+        }
+
+        const auto verifyNotesResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            juce::String (R"({"jsonrpc":"2.0","id":141,"method":"midi.get_notes","params":{"track_index":)")
+            + juce::String (transcribedTrackIdx) + R"(,"start_beat":0.0,"end_beat":8.0}})"));
+        const auto* reloadedTransNotes = verifyNotesResp["result"]["notes"].getArray();
+
+        if (reloadedTransNotes == nullptr || reloadedTransNotes->size() != 4)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-014 transcribed MIDI notes did not persist across reload" << std::endl;
+            return 1;
+        }
+
+        wo014TempDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-014 YIN Audio-to-MIDI transcription, Undo/Redo & persistence PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -2240,7 +2395,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "master WAV mixdown export, metronome click/loop transport, virtual MIDI Step Rec, "
                  "two-row layout, CvUtilityPlugin 1-to-4 splitter, 3-band EQ RPC/Undo/persistence, "
                  "live mixer metering, live audio/MIDI recording, track arming, count-in, automation curves, "
-                 "Aux FX send/return bus, zoomable views, dark studio theme, and VST3 scanner lifecycle verified."
+                 "Aux FX send/return bus, zoomable views, dark studio theme, YIN audio-to-MIDI pitch transcription, "
+                 "and VST3 scanner lifecycle verified."
               << std::endl;
     return 0;
 }

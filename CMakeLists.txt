@@ -56,6 +56,8 @@ target_sources(AIDAW PRIVATE
     src/StudioLookAndFeel.h
     src/AutomationManager.h
     src/AutomationManager.cpp
+    src/AudioToMidiTranscriber.h
+    src/AudioToMidiTranscriber.cpp
 )
 
 # 4. Preprocessor flags: enable VST3 hosting, disable unused bloat

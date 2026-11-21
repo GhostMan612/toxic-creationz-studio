@@ -418,5 +418,24 @@ async def configure_fx_send(
     )
 
 
+@mcp.tool()
+async def transcribe_audio_to_midi(
+    track_index: int,
+    clip_index: int = 0,
+    target_track_index: int = -1,
+    quantize_beats: float = 0.25,
+    min_note_beats: float = 0.125,
+) -> dict[str, Any]:
+    """Transcribe a monophonic audio clip (vocals, bass, lead) into an editable MIDI clip using YIN pitch tracking."""
+    params: dict[str, Any] = {
+        "track_index": track_index,
+        "clip_index": max(0, clip_index),
+        "target_track_index": target_track_index,
+        "quantize_beats": max(0.0, min(2.0, quantize_beats)),
+        "min_note_beats": max(0.03125, min(2.0, min_note_beats)),
+    }
+    return await send_daw_rpc("audio.transcribe_to_midi", params, timeout=15.0)
+
+
 if __name__ == "__main__":
     mcp.run()

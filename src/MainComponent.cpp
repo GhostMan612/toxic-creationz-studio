@@ -207,6 +207,17 @@ MainComponent::MainComponent()
         statusLabel.setText (msg, juce::dontSendNotification);
     };
 
+    waveformEditorComponent.onTranscribedToMidi = [this] (int /*trackIdx*/, tracktion::EditItemID clipID, int noteCount)
+    {
+        arrangementView.setSelectedClipID (clipID);
+        pianoRoll.setTarget (edit.get(), clipID);
+        mixerComponent.rebuildStrips();
+        midiKeyboardDock.syncFromEdit();
+        markSessionDirty();
+        statusLabel.setText ("Transcribed " + juce::String (noteCount) + " MIDI notes",
+                             juce::dontSendNotification);
+    };
+
     pianoRoll.onSequenceChanged = [this]
     {
         arrangementView.repaint();

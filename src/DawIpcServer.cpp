@@ -1,5 +1,6 @@
 #include "DawIpcServer.h"
 
+#include "AudioToMidiTranscriber.h"
 #include "AutomationManager.h"
 #include "MixdownExporter.h"
 #include "WaveformEditorComponent.h"
@@ -143,21 +144,23 @@ juce::String DawIpcServer::enqueueAndWaitForMessageThread (const juce::String& r
         servicePendingRequestsOnMessageThread();
     });
 
-    // Per-method wait: only a master mixdown renders synchronously on the
-    // message thread, so only audio.export_wav gets the long budget. Every
-    // other method keeps the 2.5 s budget, so a hung message thread fails
-    // fast instead of blocking the reader thread (and the client) for 30 s.
-    // The method name is read from the frame up front — the request itself
-    // is still only dispatched on the message thread.
+    // Per-method wait: long-running audio operations (mixdown rendering and
+    // synchronous YIN transcription on large stems) get extended budgets,
+    // while every other method keeps the 2.5 s budget so a hung message
+    // thread fails fast.
     int timeoutMs = 2500;
 
     {
         juce::var parsed;
 
-        if (juce::JSON::parse (rawJson, parsed).wasOk()
-            && parsed.getProperty ("method", "").toString() == "audio.export_wav")
+        if (juce::JSON::parse (rawJson, parsed).wasOk())
         {
-            timeoutMs = 30000;
+            const auto reqMethod = parsed.getProperty ("method", "").toString();
+
+            if (reqMethod == "audio.export_wav")
+                timeoutMs = 30000;
+            else if (reqMethod == "audio.transcribe_to_midi")
+                timeoutMs = 15000;
         }
     }
 
@@ -1146,6 +1149,74 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         res->setProperty ("effect", fx == "delay" ? "delay" : "reverb");
         res->setProperty ("wet_level", fxRes.wetLevel);
         return makeResultResponse (id, juce::var (res));
+    }
+
+    // 18. audio.transcribe_to_midi (YIN monophonic pitch tracking -> MidiClip)
+    if (method == "audio.transcribe_to_midi")
+    {
+        const int trackIdx       = static_cast<int> (params.getProperty ("track_index", 0));
+        const int clipIdx        = static_cast<int> (params.getProperty ("clip_index", 0));
+        const int targetTrackIdx = static_cast<int> (params.getProperty ("target_track_index", -1));
+
+        auto tracks = te::getAudioTracks (*edit);
+
+        if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "Invalid track_index");
+
+        tracktion::EditItemID waveClipID;
+        int waveIdx = 0;
+
+        for (auto* c : tracks[trackIdx]->getClips())
+        {
+            if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+            {
+                if (waveIdx == clipIdx)
+                {
+                    waveClipID = wc->itemID;
+                    break;
+                }
+
+                ++waveIdx;
+            }
+        }
+
+        if (! waveClipID.isValid())
+            return makeErrorResponse (id, -32602, "No WaveAudioClip found at track_index/clip_index");
+
+        TranscriptionOptions opts;
+
+        if (params.hasProperty ("quantize_beats"))
+            opts.quantizeBeats = std::clamp (static_cast<double> (params["quantize_beats"]), 0.0, 2.0);
+
+        if (params.hasProperty ("min_note_beats"))
+            opts.minNoteBeats = std::clamp (static_cast<double> (params["min_note_beats"]), 0.03125, 2.0);
+
+        const auto res = AudioToMidiTranscriber::transcribeClipToMidi (*edit, waveClipID, targetTrackIdx, opts);
+
+        if (! res.success)
+            return makeErrorResponse (id, -32603, res.errorMessage);
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP transcribed " + juce::String (res.notes.size()) + " MIDI notes");
+
+        juce::Array<juce::var> notesOut;
+
+        for (const auto& n : res.notes)
+        {
+            auto* nObj = new juce::DynamicObject();
+            nObj->setProperty ("pitch", n.pitch);
+            nObj->setProperty ("start_beat", n.startBeat);
+            nObj->setProperty ("length_beats", n.lengthBeats);
+            nObj->setProperty ("velocity", n.velocity);
+            notesOut.add (juce::var (nObj));
+        }
+
+        auto* out = new juce::DynamicObject();
+        out->setProperty ("target_track_index", res.targetTrackIndex);
+        out->setProperty ("clip_name", res.clipName);
+        out->setProperty ("notes_transcribed", static_cast<int> (res.notes.size()));
+        out->setProperty ("notes", notesOut);
+        return makeResultResponse (id, juce::var (out));
     }
 
     return makeErrorResponse (id, -32601, "Method not found: " + method);
