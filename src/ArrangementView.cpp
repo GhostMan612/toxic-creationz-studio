@@ -12,6 +12,8 @@ void ArrangementView::setEdit (te::Edit* newEdit)
 {
     edit = newEdit;
     selectedClipID = {};
+    horizontalScrollBeats = 0.0;
+    verticalScrollOffsetPx = 0;
 
     // Auto-select the first available MIDI clip in the Edit.
     if (edit != nullptr)
@@ -77,14 +79,78 @@ void ArrangementView::setAutomationParamName (const juce::String& paramName)
 
 void ArrangementView::setSelectedClipID (tracktion::EditItemID clipID)
 {
-    if (selectedClipID != clipID)
-    {
-        selectedClipID = clipID;
-        repaint();
+    const bool changed = (selectedClipID != clipID);
+    selectedClipID = clipID;
 
-        if (onClipSelected != nullptr)
-            onClipSelected (selectedClipID);
+    if (edit != nullptr && clipID.isValid())
+    {
+        auto tracks = te::getAudioTracks (*edit);
+
+        for (int i = 0; i < tracks.size(); ++i)
+        {
+            for (auto* clip : tracks[i]->getClips())
+            {
+                if (clip->itemID == clipID)
+                {
+                    ensureTrackVisible (i);
+                    break;
+                }
+            }
+        }
     }
+
+    repaint();
+
+    if (changed && onClipSelected != nullptr)
+        onClipSelected (selectedClipID);
+}
+
+void ArrangementView::scrollToTrack (int trackIndex)
+{
+    if (edit == nullptr)
+        return;
+
+    ensureTrackVisible (trackIndex);
+    repaint();
+}
+
+int ArrangementView::getMaxVerticalScrollPx() const
+{
+    if (edit == nullptr)
+        return 0;
+
+    const int trackCount = static_cast<int> (te::getAudioTracks (*edit).size());
+    const int contentHeight = trackCount * trackHeight;
+    const int viewportHeight = std::max (1, getHeight() - rulerHeight);
+    return std::max (0, contentHeight - viewportHeight);
+}
+
+void ArrangementView::clampVerticalScroll()
+{
+    verticalScrollOffsetPx = juce::jlimit (0, getMaxVerticalScrollPx(), verticalScrollOffsetPx);
+}
+
+void ArrangementView::ensureTrackVisible (int trackIdx)
+{
+    if (edit == nullptr)
+        return;
+
+    auto tracks = te::getAudioTracks (*edit);
+
+    if (tracks.isEmpty())
+        return;
+
+    const int safeIdx = juce::jlimit (0, tracks.size() - 1, trackIdx);
+    const int viewportHeight = std::max (trackHeight, getHeight() - rulerHeight);
+    const int trackTop = safeIdx * trackHeight;
+    const int trackBottom = trackTop + trackHeight;
+
+    if (trackTop < verticalScrollOffsetPx)
+        verticalScrollOffsetPx = trackTop;
+    else if (trackBottom > verticalScrollOffsetPx + viewportHeight)
+        verticalScrollOffsetPx = trackBottom - viewportHeight;
+
+    clampVerticalScroll();
 }
 
 te::MidiClip* ArrangementView::resolveSelectedClip() const
@@ -105,7 +171,7 @@ int ArrangementView::getTrackIndexAtY (int y) const
     if (y < rulerHeight)
         return -1;
 
-    return (y - rulerHeight) / trackHeight;
+    return (y - rulerHeight + verticalScrollOffsetPx) / trackHeight;
 }
 
 double ArrangementView::getBeatAtX (int x) const
@@ -120,7 +186,7 @@ int ArrangementView::getXForBeat (double beat) const
 
 int ArrangementView::getYForAutomationValue (float domainValue, int trackIdx) const
 {
-    const int top = rulerHeight + trackIdx * trackHeight;
+    const int top = getTrackTopY (trackIdx);
     const float norm = (automationParamName == "pan")
                            ? juce::jlimit (0.0f, 1.0f, (domainValue + 1.0f) * 0.5f)
                            : juce::jlimit (0.0f, 1.0f, (domainValue + 60.0f) / 66.0f);
@@ -129,7 +195,7 @@ int ArrangementView::getYForAutomationValue (float domainValue, int trackIdx) co
 
 float ArrangementView::getAutomationValueAtY (int y, int trackIdx) const
 {
-    const int top = rulerHeight + trackIdx * trackHeight;
+    const int top = getTrackTopY (trackIdx);
     const float norm = juce::jlimit (0.0f, 1.0f,
                                      static_cast<float> ((top + trackHeight - 5) - y)
                                          / static_cast<float> (trackHeight - 10));
@@ -201,14 +267,23 @@ void ArrangementView::paint (juce::Graphics& g)
     if (edit == nullptr)
         return;
 
+    clampVerticalScroll();
     auto tracks = te::getAudioTracks (*edit);
 
-    for (int i = 0; i < tracks.size(); ++i)
     {
-        auto* track = tracks[i];
-        const int top = rulerHeight + i * trackHeight;
-        if (top > bounds.getHeight())
-            break;
+        juce::Graphics::ScopedSaveState tracksClip (g);
+        g.reduceClipRegion (0, rulerHeight, bounds.getWidth(), std::max (0, bounds.getHeight() - rulerHeight));
+
+        for (int i = 0; i < tracks.size(); ++i)
+        {
+            auto* track = tracks[i];
+            const int top = getTrackTopY (i);
+
+            if (top + trackHeight <= rulerHeight)
+                continue;
+
+            if (top > bounds.getHeight())
+                break;
 
         // Track lane + header
         const bool armed = RecordingManager::isTrackArmed (*track);
@@ -354,6 +429,29 @@ void ArrangementView::paint (juce::Graphics& g)
                 }
             }
         }
+        }
+    }
+
+    const int maxVScroll = getMaxVerticalScrollPx();
+    if (maxVScroll > 0 && bounds.getHeight() > rulerHeight + 16)
+    {
+        const int sbTrackX = bounds.getWidth() - 6;
+        const int sbTrackY = rulerHeight + 2;
+        const int sbTrackH = bounds.getHeight() - rulerHeight - 4;
+        const int totalContentH = static_cast<int> (tracks.size()) * trackHeight;
+        const int thumbH = std::max (20, juce::roundToInt (
+            static_cast<float> (sbTrackH) * static_cast<float> (sbTrackH)
+            / static_cast<float> (std::max (1, totalContentH))));
+        const int thumbY = sbTrackY + juce::roundToInt (
+            (static_cast<float> (verticalScrollOffsetPx) / static_cast<float> (maxVScroll))
+            * static_cast<float> (std::max (0, sbTrackH - thumbH)));
+
+        g.setColour (juce::Colour (0xff1c212b));
+        g.fillRoundedRectangle (static_cast<float> (sbTrackX), static_cast<float> (sbTrackY),
+                                4.0f, static_cast<float> (sbTrackH), 2.0f);
+        g.setColour (juce::Colour (0xff64748b));
+        g.fillRoundedRectangle (static_cast<float> (sbTrackX), static_cast<float> (thumbY),
+                                4.0f, static_cast<float> (thumbH), 2.0f);
     }
 
     // Header / timeline divider
@@ -455,7 +553,7 @@ void ArrangementView::mouseDown (const juce::MouseEvent& e)
         return;
 
     auto* track = tracks[trackIdx];
-    const int top = rulerHeight + trackIdx * trackHeight;
+    const int top = getTrackTopY (trackIdx);
 
     // Header click -> Mute / Solo / Record Arm toggles
     if (e.x < headerWidth)
@@ -587,6 +685,18 @@ void ArrangementView::mouseWheelMove (const juce::MouseEvent& e, const juce::Mou
         horizontalScrollBeats = juce::jlimit (0.0, static_cast<double> (totalBars * 4),
                                               horizontalScrollBeats + delta * 2.0);
         repaint();
+        return;
+    }
+
+    if (std::abs (wheel.deltaY) > 0.0f)
+    {
+        const int maxScroll = getMaxVerticalScrollPx();
+        if (maxScroll > 0)
+        {
+            const int stepPx = juce::roundToInt (-wheel.deltaY * 120.0f);
+            verticalScrollOffsetPx = juce::jlimit (0, maxScroll, verticalScrollOffsetPx + stepPx);
+            repaint();
+        }
     }
 }
 

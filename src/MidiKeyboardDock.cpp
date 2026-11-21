@@ -6,10 +6,13 @@
 MidiKeyboardDock::MidiKeyboardDock()
 {
     setOpaque (true);
+    setWantsKeyboardFocus (true);
 
     keyboardState.addListener (this);
     keyboardComponent.setAvailableRange (36, 84); // C2..C6
     keyboardComponent.setKeyWidth (20.0f);
+    keyboardComponent.setWantsKeyboardFocus (true);
+    keyboardComponent.setKeyPressBaseOctave (4);
     addAndMakeVisible (keyboardComponent);
 
     addAndMakeVisible (titleLabel);
@@ -59,6 +62,17 @@ void MidiKeyboardDock::syncFromEdit()
     }
 
     repaint();
+}
+
+void MidiKeyboardDock::focusKeyboard()
+{
+    if (keyboardComponent.isShowing())
+        keyboardComponent.grabKeyboardFocus();
+}
+
+void MidiKeyboardDock::focusGained (FocusChangeType)
+{
+    focusKeyboard();
 }
 
 te::AudioTrack* MidiKeyboardDock::resolveTargetTrack() const

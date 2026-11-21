@@ -3,11 +3,13 @@
 - Merged (PRs #1-#10): WO-001 through WO-010 on `main` (`377c51c`).
 - Open PR (#11): WO-011 (`feat/wo-011-v1-rc-eq-cv-worker-docs`, `918625a`) — v1.0 RC.
 - Continuous Dev (`dev/v1-complete`, branched from `918625a`): `WO-012` (`4268ada`), `WO-013` (`cc59e83`),
-  and `WO-014` complete and locally verified — zero-dependency C++ YIN pitch transcription
-  (`AudioToMidiTranscriber`), Waveform Editor `To MIDI` button + compact top bar,
-  `audio.transcribe_to_midi` MCP RPC & `transcribe_audio_to_midi` tool (`12/12` Python `unittest` OK),
-  5x Release `--smoke-test` (`PASS`), isolated ASAN `RelWithDebInfo` `--smoke-test` (`exit 0`, clean),
-  updated v1.0 `README.md`, and portable Release zip `dist/ToxicCreationzStudio-win64.zip` (`9,836,033` bytes).
+  `WO-014` (`08a89a1`), and `WO-015` complete and locally verified — `StudioUIBehaviour` &
+  `StudioPluginWindow` (native VST3 UIs + scrollable generic parameter window for built-in/CV plugins),
+  `ArrangementView` vertical track scrolling & auto-scroll, `Wave Edit` -> `To MIDI` auto-switch &
+  `MainComponent::resized()` fix, `MidiKeyboardDock` QWERTY keyboard focus routing, Mixer `Aux FX Buses`
+  menu entries, 5x Release `--smoke-test` (`PASS`), isolated ASAN `RelWithDebInfo` `--smoke-test`
+  (`exit 0`, clean), `12/12` Python `unittest` (`OK`), and portable Release zip
+  `dist/ToxicCreationzStudio-win64.zip` (`9,846,643` bytes).
 - Workflow: Local development on `dev/v1-complete` (no PRs opened during continuous build).
 - Smoke convention: Release build + `--smoke-test`; all temp dirs under
   `%TEMP%`, never `%LOCALAPPDATA%\hermes`.
@@ -34,7 +36,8 @@
 | WO-011 | v1.0 Release Candidate: 1-to-4 CV Splitter, Track 3-Band EQ & Metering, Hybrid AI Worker & Production Docs | In review (`feat/wo-011-v1-rc-eq-cv-worker-docs`, `918625a`, PR #11) |
 | WO-012 | Live Audio & MIDI Recording, Per-Track Record Arming & 1-Bar Count-In | Committed locally (`dev/v1-complete`, `4268ada`) |
 | WO-013 | Automation Lanes, Aux Send/Return FX Bus, Zoomable Views & Studio Ergonomics | Committed locally (`dev/v1-complete`, `cc59e83`) |
-| WO-014 | YIN Audio-to-MIDI Pitch Transcription, Waveform Editor `To MIDI`, MCP Transcription Tool & Final v1.0 Packaging | Complete & verified locally (`dev/v1-complete`) |
+| WO-014 | YIN Audio-to-MIDI Pitch Transcription, Waveform Editor `To MIDI`, MCP Transcription Tool & Final v1.0 Packaging | Committed locally (`dev/v1-complete`, `08a89a1`) |
+| WO-015 | Live Studio QA Polish: Plugin Editor Windows, Timeline Vertical Scroll, Wave-to-MIDI Switch, QWERTY Focus & Mixer Aux Sends | Complete & verified locally (`dev/v1-complete`) |
 
 ---
 

@@ -20,6 +20,9 @@ public:
     void setSelectedClipID (tracktion::EditItemID clipID);
     tracktion::EditItemID getSelectedClipID() const noexcept { return selectedClipID; }
 
+    void scrollToTrack (int trackIndex);
+    int getVerticalScrollOffsetPx() const noexcept { return verticalScrollOffsetPx; }
+
     void setPixelsPerBeat (float newPixelsPerBeat);
     float getPixelsPerBeat() const noexcept { return pixelsPerBeat; }
     void zoomIn();
@@ -50,6 +53,10 @@ private:
     static constexpr int totalBars      = 16;
 
     int getTrackIndexAtY (int y) const;
+    int getMaxVerticalScrollPx() const;
+    void clampVerticalScroll();
+    int getTrackTopY (int trackIdx) const noexcept { return rulerHeight + trackIdx * trackHeight - verticalScrollOffsetPx; }
+    void ensureTrackVisible (int trackIdx);
     double getBeatAtX (int x) const;
     int getXForBeat (double beat) const;
     int getYForAutomationValue (float domainValue, int trackIdx) const;
@@ -61,6 +68,7 @@ private:
 
     float pixelsPerBeat = 34.0f;
     double horizontalScrollBeats = 0.0;
+    int verticalScrollOffsetPx = 0;
     bool automationOverlayEnabled = false;
     juce::String automationParamName { "volume" };
 

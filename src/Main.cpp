@@ -2361,6 +2361,109 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-014 YIN Audio-to-MIDI transcription, Undo/Redo & persistence PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-015 Regression Test: Plugin Windows, Timeline Vertical Scroll & Wave-to-MIDI UI
+    //===========================================================================
+    {
+        // 1. StudioUIBehaviour plugin window open/close lifecycle
+        {
+            auto wo015Tracks = te::getAudioTracks (*app.edit);
+            if (wo015Tracks.isEmpty())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 expected tracks in Edit" << std::endl;
+                return 1;
+            }
+
+            if (wo015Tracks[0]->pluginList.getPlugins().isEmpty())
+            {
+                if (auto synth = app.edit->getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {}))
+                    wo015Tracks[0]->pluginList.insertPlugin (synth, 0, nullptr);
+            }
+
+            auto* testPlugin = wo015Tracks[0]->pluginList.getPlugins().getFirst().get();
+            if (testPlugin == nullptr || testPlugin->windowState == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 missing testable plugin/windowState" << std::endl;
+                return 1;
+            }
+
+            testPlugin->showWindowExplicitly();
+            if (! testPlugin->windowState->isWindowShowing())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 StudioUIBehaviour failed to open plugin window" << std::endl;
+                return 1;
+            }
+
+            testPlugin->windowState->closeWindowExplicitly();
+            if (testPlugin->windowState->isWindowShowing())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 closeWindowExplicitly did not close plugin window" << std::endl;
+                return 1;
+            }
+        }
+
+        // 2. ArrangementView vertical track scroll & bounds clamping
+        {
+            auto wo015Tracks = te::getAudioTracks (*app.edit);
+            if (wo015Tracks.size() < 5)
+            {
+                app.edit->ensureNumberOfAudioTracks (5);
+                wo015Tracks = te::getAudioTracks (*app.edit);
+            }
+
+            app.arrangementView.setSize (800, 180);
+            app.arrangementView.scrollToTrack (wo015Tracks.size() - 1);
+            if (app.arrangementView.getVerticalScrollOffsetPx() <= 0)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 ArrangementView did not scroll vertically to last track"
+                          << std::endl;
+                return 1;
+            }
+
+            app.arrangementView.scrollToTrack (0);
+            if (app.arrangementView.getVerticalScrollOffsetPx() != 0)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 ArrangementView did not scroll back to top track"
+                          << std::endl;
+                return 1;
+            }
+        }
+
+        // 3. Wave Edit -> To MIDI callback auto-switches middle pane to Piano Roll
+        {
+            app.setSize (1280, 820);
+            app.waveEditorToggleButton.setToggleState (true, juce::dontSendNotification);
+            app.resized();
+
+            if (! app.waveformEditorComponent.isVisible() || app.pianoRoll.isVisible())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 Wave Edit toggle did not show WaveformEditorComponent"
+                          << std::endl;
+                return 1;
+            }
+
+            if (! app.waveformEditorComponent.onTranscribedToMidi)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 onTranscribedToMidi callback not wired" << std::endl;
+                return 1;
+            }
+
+            app.waveformEditorComponent.onTranscribedToMidi (0, {}, 4);
+
+            if (app.waveEditorToggleButton.getToggleState()
+                || app.waveformEditorComponent.isVisible()
+                || ! app.pianoRoll.isVisible())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 Wave-to-MIDI callback did not switch back to Piano Roll"
+                          << std::endl;
+                return 1;
+            }
+        }
+
+        std::cout << "[SMOKE_TEST] WO-015 Plugin windows, timeline vertical scroll & Wave-to-MIDI UI polish PASS"
+                  << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -2396,6 +2499,7 @@ int MainComponent::runHeadlessSmokeTest()
                  "two-row layout, CvUtilityPlugin 1-to-4 splitter, 3-band EQ RPC/Undo/persistence, "
                  "live mixer metering, live audio/MIDI recording, track arming, count-in, automation curves, "
                  "Aux FX send/return bus, zoomable views, dark studio theme, YIN audio-to-MIDI pitch transcription, "
+                 "plugin editor windows, timeline vertical scroll, Wave-to-MIDI switch, "
                  "and VST3 scanner lifecycle verified."
               << std::endl;
     return 0;

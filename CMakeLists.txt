@@ -54,6 +54,7 @@ target_sources(AIDAW PRIVATE
     src/RecordingManager.h
     src/RecordingManager.cpp
     src/StudioLookAndFeel.h
+    src/StudioPluginWindow.h
     src/AutomationManager.h
     src/AutomationManager.cpp
     src/AudioToMidiTranscriber.h

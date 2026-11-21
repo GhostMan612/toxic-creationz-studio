@@ -209,11 +209,16 @@ MainComponent::MainComponent()
 
     waveformEditorComponent.onTranscribedToMidi = [this] (int /*trackIdx*/, tracktion::EditItemID clipID, int noteCount)
     {
+        waveEditorToggleButton.setToggleState (false, juce::dontSendNotification);
+        waveformEditorComponent.setVisible (false);
+        pianoRoll.setVisible (true);
+
         arrangementView.setSelectedClipID (clipID);
         pianoRoll.setTarget (edit.get(), clipID);
         mixerComponent.rebuildStrips();
         midiKeyboardDock.syncFromEdit();
         markSessionDirty();
+        resized();
         statusLabel.setText ("Transcribed " + juce::String (noteCount) + " MIDI notes",
                              juce::dontSendNotification);
     };
@@ -536,7 +541,7 @@ MainComponent::MainComponent()
         resized();
 
         if (on && midiKeyboardDock.isShowing())
-            midiKeyboardDock.grabKeyboardFocus();
+            midiKeyboardDock.focusKeyboard();
     };
 
     waveEditorToggleButton.setClickingTogglesState (true);
@@ -1449,12 +1454,13 @@ void MainComponent::resized()
 
     // Middle pane: the waveform editor replaces the piano roll while Wave Edit
     // is enabled.
-    juce::Component* const middlePane = waveformEditorComponent.isVisible()
+    const bool showWaveEditor = waveEditorToggleButton.getToggleState();
+    waveformEditorComponent.setVisible (showWaveEditor);
+    pianoRoll.setVisible (! showWaveEditor);
+
+    juce::Component* const middlePane = showWaveEditor
                                           ? static_cast<juce::Component*> (&waveformEditorComponent)
                                           : static_cast<juce::Component*> (&pianoRoll);
-
-    pianoRoll.setVisible (! waveformEditorComponent.isVisible());
-    waveformEditorComponent.setVisible (waveEditorToggleButton.getToggleState());
 
     if (showMixer || showRack)
     {

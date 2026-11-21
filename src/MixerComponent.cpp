@@ -1,4 +1,5 @@
 #include "MixerComponent.h"
+#include "AutomationManager.h"
 
 //==============================================================================
 // ChannelStrip
@@ -416,6 +417,10 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
     menu.addItem (2, "4-Band Equaliser (EQ)");
     menu.addItem (3, "Reverb");
     menu.addItem (4, "Delay");
+    menu.addSeparator();
+    menu.addSectionHeader ("Aux FX Buses");
+    menu.addItem (5, "Aux Send -> FX Bus 1 (Reverb)");
+    menu.addItem (6, "Aux Send -> FX Bus 2 (Delay)");
 
     const auto vstTypes = engine.getPluginManager().knownPluginList.getTypes();
 
@@ -470,6 +475,21 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
             safeThis->edit.getUndoManager().beginNewTransaction ("Add Delay");
             if (auto dly = safeThis->edit.getPluginCache().createNewPlugin (te::DelayPlugin::xmlTypeName, {}))
                 tr->pluginList.insertPlugin (dly, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
+        }
+        else if (chosenId == 5 || chosenId == 6)
+        {
+            auto* ownerPtr = &safeThis->owner;
+            const int busIdx = (chosenId == 5) ? 0 : 1;
+            const juce::String fxType = (chosenId == 5) ? "reverb" : "delay";
+            const float wetLevel = (chosenId == 5) ? 0.35f : 0.30f;
+
+            AutomationManager::configureFxSend (safeThis->edit, *tr, busIdx, -6.0f, fxType, wetLevel);
+            ownerPtr->rebuildStrips();
+
+            if (ownerPtr->onMixerChanged != nullptr)
+                ownerPtr->onMixerChanged();
+
+            return;
         }
         else if (chosenId >= 100)
         {

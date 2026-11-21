@@ -15,6 +15,7 @@
 #include "MidiKeyboardDock.h"
 #include "RecordingManager.h"
 #include "StudioLookAndFeel.h"
+#include "StudioPluginWindow.h"
 
 #include <atomic>
 #include <functional>
@@ -95,7 +96,7 @@ private:
     void updateWindowTitle();
 
     StudioLookAndFeel studioLookAndFeel;
-    te::Engine engine { "AI DAW" };
+    te::Engine engine { "AI DAW", std::make_unique<StudioUIBehaviour>(), nullptr };
     std::unique_ptr<te::Edit> edit;
     RecordingManager recordingManager { engine };
     MixerComponent mixerComponent { engine };
