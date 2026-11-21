@@ -20,8 +20,9 @@ New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "mcp") | Out-Null
 
 Copy-Item $ExePath (Join-Path $StageDir "Toxic Creationz Studio.exe")
-Copy-Item "mcp\daw_mcp_server.py" (Join-Path $StageDir "mcp\daw_mcp_server.py")
-Copy-Item "mcp\requirements.txt"  (Join-Path $StageDir "mcp\requirements.txt")
+Copy-Item "mcp\daw_mcp_server.py"  (Join-Path $StageDir "mcp\daw_mcp_server.py")
+Copy-Item "mcp\ai_audio_worker.py" (Join-Path $StageDir "mcp\ai_audio_worker.py")
+Copy-Item "mcp\requirements.txt"   (Join-Path $StageDir "mcp\requirements.txt")
 if (Test-Path "README.md") {
     Copy-Item "README.md" (Join-Path $StageDir "README.md")
 }

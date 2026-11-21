@@ -1,24 +1,18 @@
 ## Pipeline State
 
-- Merged: WO-001, WO-002, WO-003, WO-004, WO-005, WO-006, WO-007, WO-008, WO-009 (PRs #1-#9).
-- In review: WO-010 (PR #10) - Phase 7, two-row studio header (`1280x820`),
-  metronome `Click` (`clickTrackEnabled`) & `Loop` transport + cyan ruler
-  highlight, `MidiKeyboardDock` (live synth auditioning + quantized `Step Rec`),
-  extended `daw.get_state` / `transport.control` RPCs & `control_transport` MCP
-  tool, and `scripts/package-windows.ps1` + CI release zip upload on
-  `feat/wo-010-metronome-loop-midi-packaging`.
-- Verification (WO-010): Release build clean (0 errors, 0 warnings), 5/5 Release
-  `--smoke-test` PASS (`8.09s`–`10.23s`), isolated ASAN Release `--smoke-test`
-  PASS (`ASAN_SMOKE_EXIT=0`), `dist/ToxicCreationzStudio-win64.zip` packaged
-  (`9,686,160` bytes), Python MCP syntax check (`PY_SYNTAX_OK`); awaiting Muse
-  PR Doctor audit & Glenn merge.
-- Auditor (Muse): review REQUEST CHANGES (Step Rec stretched an early clip
-  across the timeline instead of starting a fresh clip at the playhead's bar).
-  Fix applied directly to the PR branch per Glenn's word: `recordStepNote`
-  now targets the clip containing the playhead and starts a fresh clip at the
-  playhead's bar otherwise, with a smoke assertion recording at beat 32.
-  Awaiting CI on the fix commit.
-- Current `main`: `e9fe611` (post PR #9 merge).
+- Merged: WO-001, WO-002, WO-003, WO-004, WO-005, WO-006, WO-007, WO-008, WO-009, WO-010 (PRs #1-#10).
+- In review: WO-011 (PR #11) - `CvUtilityPlugin` 1-to-4 CV attenuverter /
+  splitter (`+ CV Splitter`), per-track `te::EqualiserPlugin` 3-band EQ & live L/R
+  `LevelMeterPlugin` mixer metering (`mixer.set_eq`, `set_track_eq`), out-of-process
+  `mcp/ai_audio_worker.py` (`generate_ai_audio_stem`), zero-dependency Python unit
+  tests (`mcp/test_mcp_server.py`), CI unittest step, and production `README.md` on
+  `feat/wo-011-v1-rc-eq-cv-worker-docs`.
+- Verification (WO-011): Release build clean (0 errors, 0 warnings), 5/5 Release
+  `--smoke-test` PASS (`13.12s`–`15.16s`), isolated ASAN Release `--smoke-test`
+  PASS (`ASAN_SMOKE_EXIT=0`), Python 4/4 `unittest` PASS + `PY_SYNTAX_OK`,
+  `dist/ToxicCreationzStudio-win64.zip` packaged (`9,713,762` bytes); rebased onto
+  `main` (`377c51c`) and re-verified before PR #11 audit.
+- Current `main`: `377c51c` (post PR #10 merge).
 - Workflow: Gemini (docs/BRIEFING.md) -> Local Executor (build, smoke, PR) ->
   Muse PR-Doctor audit -> ChatGPT audit -> Glenn merge. Never self-merge.
 - Smoke convention: Release build + `--smoke-test`; all temp dirs under
@@ -42,7 +36,8 @@
 | WO-007 | Phase 4 Native JSON-RPC 2.0 IPC Server (`DawIpcServer`) & Python FastMCP Co-Producer Bridge | Merged to `main` (`074feb9`, PR #7) |
 | WO-008 | Phase 5 Audacity-Style Non-Destructive Waveform Editor & Bounce-to-Take DSP | Merged to `main` (`2f1264f`, PR #8) |
 | WO-009 | Phase 6 Session Portability (`filePathResolver`), Master Mixdown Export (`Export WAV`) & MCP Rack/Stem RPCs | Merged to `main` (`e9fe611`, PR #9) |
-| WO-010 | Phase 7 Two-Row Studio Header, Metronome/Loop Transport, Virtual MIDI Step-Rec & Windows Packaging | In review (`feat/wo-010-metronome-loop-midi-packaging`, PR #10) |
+| WO-010 | Phase 7 Two-Row Studio Header, Metronome/Loop Transport, Virtual MIDI Step-Rec & Windows Packaging | Merged to `main` (`377c51c`, PR #10) |
+| WO-011 | v1.0 Release Candidate: 1-to-4 CV Splitter, Track 3-Band EQ & Metering, Hybrid AI Worker & Production Docs | In review (`feat/wo-011-v1-rc-eq-cv-worker-docs`, PR #11) |
 
 ---
 

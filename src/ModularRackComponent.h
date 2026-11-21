@@ -81,6 +81,7 @@ private:
     juce::ComboBox rackSelector;
     juce::TextButton addLfoButton      { "+ CV LFO" };
     juce::TextButton addWobbleButton   { "+ Wobble" };
+    juce::TextButton addSplitterButton { "+ CV Splitter" };
     juce::TextButton connectModeButton { "Connect: Off" };
     juce::TextButton clearRackButton   { "Clear Rack" };
     juce::Label rackInfoLabel          { {}, "No Rack" };

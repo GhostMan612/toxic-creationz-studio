@@ -29,6 +29,9 @@ jobs:
         & ".\build\AIDAW_artefacts\Release\AI DAW.exe" --smoke-test
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+    - name: Run Python MCP Unit Tests
+      run: python -B -m unittest discover -s mcp -p "test_*.py" -v
+
     - name: Package Windows Release Artifact
       shell: pwsh
       run: .\scripts\package-windows.ps1 -BuildConfig Release -OutputDir dist

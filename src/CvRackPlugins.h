@@ -3,6 +3,9 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <tracktion_engine/tracktion_engine.h>
 
+#include <algorithm>
+#include <array>
+
 namespace te = tracktion::engine;
 
 // Reason-style CV-over-audio modulation source. Emits a depth-scaled bipolar
@@ -181,3 +184,169 @@ private:
     juce::CachedValue<float> depthValue;
     te::AutomatableParameter::Ptr depthParam;
 };
+
+// Reason-style 1-to-4 CV attenuverter & polarity splitter. Captures the mono
+// CV input scalar before overwriting channels 0..3 so in-place processing
+// never aliases channel 0 onto channels 1..3.
+class CvUtilityPlugin : public te::Plugin
+{
+public:
+    static constexpr int numOutputs = 4;
+
+    explicit CvUtilityPlugin (te::PluginCreationInfo info) : te::Plugin (info)
+    {
+        for (int i = 0; i < numOutputs; ++i)
+        {
+            const auto idx = static_cast<size_t> (i);
+            const auto gainId   = "gain" + juce::String (i + 1);
+            const auto offsetId = "offset" + juce::String (i + 1);
+
+            gainValues[idx].referTo (state, juce::Identifier (gainId), getUndoManager(), 1.0f);
+            offsetValues[idx].referTo (state, juce::Identifier (offsetId), getUndoManager(), 0.0f);
+
+            gainParams[idx]   = addParam (gainId, "Out " + juce::String (i + 1) + " Gain", { -1.0f, 1.0f });
+            offsetParams[idx] = addParam (offsetId, "Out " + juce::String (i + 1) + " Offset", { -1.0f, 1.0f });
+            gainParams[idx]->attachToCurrentValue (gainValues[idx]);
+            offsetParams[idx]->attachToCurrentValue (offsetValues[idx]);
+        }
+    }
+
+    ~CvUtilityPlugin() override
+    {
+        for (size_t i = 0; i < static_cast<size_t> (numOutputs); ++i)
+        {
+            if (gainParams[i] != nullptr)   gainParams[i]->detachFromCurrentValue();
+            if (offsetParams[i] != nullptr) offsetParams[i]->detachFromCurrentValue();
+        }
+        notifyListenersOfDeletion();
+    }
+
+    juce::String getSelectableDescription() override { return getName(); }
+    bool takesAudioInput() override { return true; }
+    bool canBeAddedToRack() override { return true; }
+
+    void getChannelNames (juce::StringArray* ins, juce::StringArray* outs) override
+    {
+        if (ins != nullptr)
+            ins->add ("CV In");
+
+        if (outs != nullptr)
+        {
+            outs->add ("CV Out 1");
+            outs->add ("CV Out 2");
+            outs->add ("CV Out 3");
+            outs->add ("CV Out 4");
+        }
+    }
+
+    te::Plugin::BusLayout getBusses() const override
+    {
+        return te::Plugin::BusLayout::singleInOut (te::ChannelConfiguration::mono(),
+                                                   te::ChannelConfiguration::discreteChannels (numOutputs));
+    }
+
+    int getNumOutputChannelsGivenInputs (int) override { return numOutputs; }
+
+    void initialise (const te::PluginInitialisationInfo&) override {}
+    void deinitialise() override {}
+
+    void applyToBuffer (const te::PluginRenderContext& fc) override
+    {
+        if (fc.destBuffer == nullptr
+            || fc.destBuffer->getNumChannels() < 1
+            || fc.destBuffer->getNumSamples() <= 0
+            || fc.bufferNumSamples <= 0
+            || fc.bufferStartSample < 0
+            || fc.bufferStartSample + fc.bufferNumSamples > fc.destBuffer->getNumSamples())
+        {
+            return;
+        }
+
+        auto* buf = fc.destBuffer;
+        const int n = fc.bufferNumSamples;
+        const int base = fc.bufferStartSample;
+        const int outChans = std::min (numOutputs, buf->getNumChannels());
+
+        std::array<float, numOutputs> gains {};
+        std::array<float, numOutputs> offsets {};
+
+        for (int c = 0; c < outChans; ++c)
+        {
+            const auto idx = static_cast<size_t> (c);
+            gains[idx]   = static_cast<float> (gainParams[idx]->getCurrentValue());
+            offsets[idx] = static_cast<float> (offsetParams[idx]->getCurrentValue());
+        }
+
+        for (int i = 0; i < n; ++i)
+        {
+            // Capture channel 0 before writing so out 1..3 never read modified out 0.
+            const float inSample = buf->getSample (0, base + i);
+
+            for (int c = 0; c < outChans; ++c)
+            {
+                const auto idx = static_cast<size_t> (c);
+                buf->setSample (c, base + i, juce::jlimit (-1.0f, 1.0f, inSample * gains[idx] + offsets[idx]));
+            }
+        }
+    }
+
+    void restorePluginStateFromValueTree (const juce::ValueTree& v) override
+    {
+        te::copyPropertiesToCachedValues (v,
+                                          gainValues[0], gainValues[1], gainValues[2], gainValues[3],
+                                          offsetValues[0], offsetValues[1], offsetValues[2], offsetValues[3]);
+
+        for (auto* p : getAutomatableParameters())
+            p->updateFromAttachedValue();
+    }
+
+    void setOutputGain (int idx, float g)
+    {
+        if (idx >= 0 && idx < numOutputs)
+        {
+            const auto uIdx = static_cast<size_t> (idx);
+            gainValues[uIdx] = juce::jlimit (-1.0f, 1.0f, g);
+
+            if (gainParams[uIdx] != nullptr)
+                gainParams[uIdx]->updateFromAttachedValue();
+        }
+    }
+
+    void setOutputOffset (int idx, float o)
+    {
+        if (idx >= 0 && idx < numOutputs)
+        {
+            const auto uIdx = static_cast<size_t> (idx);
+            offsetValues[uIdx] = juce::jlimit (-1.0f, 1.0f, o);
+
+            if (offsetParams[uIdx] != nullptr)
+                offsetParams[uIdx]->updateFromAttachedValue();
+        }
+    }
+
+    float getOutputGain (int idx) const
+    {
+        return (idx >= 0 && idx < numOutputs) ? gainValues[static_cast<size_t> (idx)].get() : 0.0f;
+    }
+
+    float getOutputOffset (int idx) const
+    {
+        return (idx >= 0 && idx < numOutputs) ? offsetValues[static_cast<size_t> (idx)].get() : 0.0f;
+    }
+
+    static inline const char* xmlTypeName = "cv_utility_plugin";
+    juce::String getName() const override { return "CV Splitter / Attenuverter"; }
+    juce::String getPluginType() override { return xmlTypeName; }
+
+private:
+    std::array<juce::CachedValue<float>, numOutputs> gainValues, offsetValues;
+    std::array<te::AutomatableParameter::Ptr, numOutputs> gainParams, offsetParams;
+};
+
+inline void registerCvRackPlugins (te::Engine& engine)
+{
+    auto& pm = engine.getPluginManager();
+    pm.createBuiltInType<CvLfoPlugin>();
+    pm.createBuiltInType<CvWobbleFilterPlugin>();
+    pm.createBuiltInType<CvUtilityPlugin>();
+}
