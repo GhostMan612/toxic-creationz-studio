@@ -1628,6 +1628,252 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-010 Metronome click, loop transport, Step Rec & two-row layout PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-011 Regression: CvUtilityPlugin 1-to-4 Splitter, 3-Band EQ & Metering
+    //===========================================================================
+    {
+        const auto wo011TempDir = tempDir.getChildFile ("tcs_wo011_smoke");
+        wo011TempDir.deleteRecursively();
+        wo011TempDir.createDirectory();
+
+        // 1. Verify CvUtilityPlugin DSP (1-to-4 scalar capture, no ch-0 aliasing) & rack patching.
+        // Scoped tightly so no Plugin::Ptr / RackType::Ptr outlives the reload below.
+        {
+            auto utilTestPlugin = app.edit->getPluginCache().createNewPlugin (CvUtilityPlugin::xmlTypeName, {});
+            auto* util = dynamic_cast<CvUtilityPlugin*> (utilTestPlugin.get());
+
+            if (util == nullptr || util->getNumOutputChannelsGivenInputs (1) != 4)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-011 CvUtilityPlugin instantiation or output count mismatch"
+                          << std::endl;
+                return 1;
+            }
+
+            juce::StringArray ins, outs;
+            util->getChannelNames (&ins, &outs);
+
+            if (ins.size() != 1 || ins[0] != "CV In"
+                || outs.size() != 4 || outs[0] != "CV Out 1" || outs[3] != "CV Out 4")
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-011 CvUtilityPlugin pin names mismatch" << std::endl;
+                return 1;
+            }
+
+            util->setOutputGain (0, -0.5f);
+            util->setOutputOffset (0, 0.10f);
+            util->setOutputGain (1, 1.0f);
+            util->setOutputOffset (1, 0.30f);
+            util->setOutputGain (2, 0.5f);
+            util->setOutputOffset (2, -0.25f);
+            util->setOutputGain (3, -1.0f);
+            util->setOutputOffset (3, 0.0f);
+
+            juce::AudioBuffer<float> cvBuf (4, 16);
+            cvBuf.clear();
+
+            for (int s = 0; s < 16; ++s)
+                cvBuf.setSample (0, s, 0.5f);
+
+            const te::PluginInitialisationInfo initInfo { tracktion::TimePosition::fromSeconds (0.0), 44100.0, 16 };
+            util->initialise (initInfo);
+            const te::PluginRenderContext rc (&cvBuf, 0, 16, nullptr, 0.0, {}, false, false, false, false);
+            util->applyToBuffer (rc);
+            util->deinitialise();
+
+            // Input 0.5 -> Out0 = -0.15, Out1 = +0.80 (must NOT alias Out0!), Out2 = 0.00, Out3 = -0.50.
+            if (std::abs (cvBuf.getSample (0, 0) - (-0.15f)) > 1e-4f
+                || std::abs (cvBuf.getSample (1, 0) - 0.80f) > 1e-4f
+                || std::abs (cvBuf.getSample (2, 0) - 0.0f) > 1e-4f
+                || std::abs (cvBuf.getSample (3, 0) - (-0.50f)) > 1e-4f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-011 CvUtilityPlugin DSP aliasing or gain/offset mismatch"
+                          << std::endl;
+                return 1;
+            }
+
+            auto splitterRack = app.edit->getRackList().addNewRack();
+
+            if (splitterRack == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-011 could not create RackType" << std::endl;
+                return 1;
+            }
+
+            splitterRack->rackName = "WO-011 CV Splitter Rack";
+
+            auto lfoP    = app.edit->getPluginCache().createNewPlugin (CvLfoPlugin::xmlTypeName, {});
+            auto utilP   = app.edit->getPluginCache().createNewPlugin (CvUtilityPlugin::xmlTypeName, {});
+            auto wobbleP = app.edit->getPluginCache().createNewPlugin (CvWobbleFilterPlugin::xmlTypeName, {});
+
+            if (auto* rackUtil = dynamic_cast<CvUtilityPlugin*> (utilP.get()))
+            {
+                rackUtil->setOutputGain (0, -0.5f);
+                rackUtil->setOutputOffset (1, 0.30f);
+            }
+
+            if (! splitterRack->addPlugin (lfoP, { 0.15f, 0.25f }, false)
+                || ! splitterRack->addPlugin (utilP, { 0.45f, 0.25f }, false)
+                || ! splitterRack->addPlugin (wobbleP, { 0.75f, 0.25f }, false))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-011 failed to add CV rack modules" << std::endl;
+                return 1;
+            }
+
+            if (! splitterRack->addConnection (lfoP->itemID, 1, utilP->itemID, 1)
+                || ! splitterRack->addConnection (utilP->itemID, 2, wobbleP->itemID, 1)
+                || splitterRack->getConnections().size() != 2)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-011 failed to patch LFO -> Utility -> Wobble" << std::endl;
+                return 1;
+            }
+
+            const int rackIdx = app.edit->getRackList().getTypes().size() - 1;
+            app.modularRackComponent.syncFromEdit();
+            app.modularRackComponent.selectRack (rackIdx);
+            app.modularRackComponent.setSize (1000, 560);
+            app.modularRackComponent.resized();
+
+            if (! app.modularRackComponent.verifyNonOverlappingLayoutForSmokeTest())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-011 ModularRackComponent multi-pin layout check failed"
+                          << std::endl;
+                return 1;
+            }
+        }
+
+        // 2. Verify mixer.set_eq RPC, daw.get_state readback, plugin chain ordering & Undo/Redo
+        const auto eqResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":110,"method":"mixer.set_eq","params":{"track_index":0,"low_db":4.5,"mid_db":-3.0,"high_db":2.5}})"));
+
+        if (! eqResp["error"].isVoid()
+            || ! static_cast<bool> (eqResp["result"]["has_eq"])
+            || std::abs (static_cast<double> (eqResp["result"]["low_db"]) - 4.5) > 0.05)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-011 mixer.set_eq RPC failed" << std::endl;
+            return 1;
+        }
+
+        const auto stateAfterEq = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":111,"method":"daw.get_state","params":{}})"));
+
+        const auto* tracksArr = stateAfterEq["result"]["tracks"].getArray();
+        const auto t0State = (tracksArr != nullptr && ! tracksArr->isEmpty()) ? tracksArr->getUnchecked (0) : juce::var();
+
+        if (! static_cast<bool> (t0State["has_eq"])
+            || std::abs (static_cast<double> (t0State["eq_low_db"]) - 4.5) > 0.05
+            || std::abs (static_cast<double> (t0State["eq_mid_db"]) - (-3.0)) > 0.05
+            || std::abs (static_cast<double> (t0State["eq_high_db"]) - 2.5) > 0.05)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-011 daw.get_state did not report EQ bands" << std::endl;
+            return 1;
+        }
+
+        // Verify EqualiserPlugin sits before VolumeAndPan / LevelMeter
+        {
+            auto tracks = te::getAudioTracks (*app.edit);
+            int eqIdx = -1, volIdx = -1;
+            const auto& list = tracks[0]->pluginList;
+
+            for (int i = 0; i < list.size(); ++i)
+            {
+                if (dynamic_cast<te::EqualiserPlugin*> (list[i]) != nullptr)    eqIdx = i;
+                if (dynamic_cast<te::VolumeAndPanPlugin*> (list[i]) != nullptr) volIdx = i;
+            }
+
+            if (eqIdx < 0 || (volIdx >= 0 && eqIdx >= volIdx))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-011 EqualiserPlugin insert order invalid" << std::endl;
+                return 1;
+            }
+        }
+
+        app.edit->getUndoManager().undo();
+        const auto stateAfterUndo = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":112,"method":"daw.get_state","params":{}})"));
+        const auto t0Undo = stateAfterUndo["result"]["tracks"][0];
+
+        if (static_cast<bool> (t0Undo["has_eq"])
+            || std::abs (static_cast<double> (t0Undo["eq_low_db"])) > 0.01)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-011 Undo did not revert mixer.set_eq" << std::endl;
+            return 1;
+        }
+
+        app.edit->getUndoManager().redo();
+        const auto stateAfterRedo = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":113,"method":"daw.get_state","params":{}})"));
+        const auto t0Redo = stateAfterRedo["result"]["tracks"][0];
+
+        if (! static_cast<bool> (t0Redo["has_eq"])
+            || std::abs (static_cast<double> (t0Redo["eq_low_db"]) - 4.5) > 0.05
+            || std::abs (static_cast<double> (t0Redo["eq_mid_db"]) - (-3.0)) > 0.05
+            || std::abs (static_cast<double> (t0Redo["eq_high_db"]) - 2.5) > 0.05)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-011 Redo did not restore mixer.set_eq" << std::endl;
+            return 1;
+        }
+
+        // 3. Save/load round-trip persistence for both EQ & CvUtilityPlugin + read-only meter polling
+        const auto wo011SessionFile = wo011TempDir.getChildFile ("EqCvRoundTrip.tracktionedit");
+        app.currentEditFile = wo011SessionFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        if (! app.loadSessionFromFileSafely (wo011SessionFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-011 save/load round-trip failed" << std::endl;
+            return 1;
+        }
+
+        const auto stateReloaded = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":114,"method":"daw.get_state","params":{}})"));
+        const auto t0Reloaded = stateReloaded["result"]["tracks"][0];
+
+        if (! static_cast<bool> (t0Reloaded["has_eq"])
+            || std::abs (static_cast<double> (t0Reloaded["eq_low_db"]) - 4.5) > 0.05
+            || std::abs (static_cast<double> (t0Reloaded["eq_mid_db"]) - (-3.0)) > 0.05
+            || std::abs (static_cast<double> (t0Reloaded["eq_high_db"]) - 2.5) > 0.05)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-011 EQ settings did not persist after reload" << std::endl;
+            return 1;
+        }
+
+        {
+            te::RackType* persistedSplitterRack = nullptr;
+            for (auto* r : app.edit->getRackList().getTypes())
+                if (r->rackName.get() == "WO-011 CV Splitter Rack")
+                    persistedSplitterRack = r;
+
+            CvUtilityPlugin* persistedUtil = nullptr;
+            if (persistedSplitterRack != nullptr)
+                for (auto* p : persistedSplitterRack->getPlugins())
+                    if (auto* u = dynamic_cast<CvUtilityPlugin*> (p))
+                        persistedUtil = u;
+
+            if (persistedSplitterRack == nullptr
+                || persistedSplitterRack->getConnections().size() != 2
+                || persistedUtil == nullptr
+                || std::abs (persistedUtil->getOutputGain (0) - (-0.5f)) > 1e-4f
+                || std::abs (persistedUtil->getOutputOffset (1) - 0.30f) > 1e-4f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-011 CvUtilityPlugin state or rack connections did not persist"
+                          << std::endl;
+                return 1;
+            }
+        }
+
+        app.mixerComponent.refreshMeters();
+        if (app.hasUnsavedChanges())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-011 read-only mixer meter polling dirtied clean session" << std::endl;
+            return 1;
+        }
+
+        wo011TempDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-011 CvUtilityPlugin 1-to-4 splitter, 3-band EQ RPC/Undo/persistence & meter polling PASS"
+                  << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -1660,7 +1906,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "native TCP JSON-RPC IPC round-trip, non-destructive waveform "
                  "bounce-to-take DSP, portable filePathResolver, MCP rack.patch/import_file, "
                  "master WAV mixdown export, metronome click/loop transport, virtual MIDI Step Rec, "
-                 "two-row layout, and VST3 scanner lifecycle verified." << std::endl;
+                 "two-row layout, CvUtilityPlugin 1-to-4 splitter, 3-band EQ RPC/Undo/persistence, "
+                 "live mixer metering, and VST3 scanner lifecycle verified." << std::endl;
     return 0;
 }
 
