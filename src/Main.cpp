@@ -1581,7 +1581,8 @@ int MainComponent::runHeadlessSmokeTest()
             };
 
             const std::vector<juce::Component*> row2Items {
-                &app.playButton, &app.stopButton, &app.loopToggleButton, &app.clickToggleButton,
+                &app.playButton, &app.stopButton, &app.recordButton,
+                &app.loopToggleButton, &app.clickToggleButton, &app.countInButton,
                 &app.addTrackButton, &app.undoButton, &app.redoButton,
                 &app.bpmSlider, &app.transportPosLabel, &app.statusLabel
             };
@@ -1874,6 +1875,186 @@ int MainComponent::runHeadlessSmokeTest()
                   << std::endl;
     }
 
+    //===========================================================================
+    // WO-012 Regression: Live Audio/MIDI Recording, Track Arming & Count-In
+    //===========================================================================
+    {
+        // 1. Verify recording.list_inputs, mixer.set_track (armed/input_device), and count_in_bars RPC
+        const auto inputsResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":120,"method":"recording.list_inputs","params":{}})"));
+
+        if (! inputsResp["result"].hasProperty ("audio_inputs")
+            || ! inputsResp["result"].hasProperty ("midi_inputs"))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-012 recording.list_inputs response malformed" << std::endl;
+            return 1;
+        }
+
+        app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":121,"method":"mixer.set_track","params":{"track_index":0,"armed":true,"input_device":"Virtual MIDI"}})");
+        app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":122,"method":"transport.control","params":{"count_in_bars":1}})");
+
+        const auto stateBefore = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":123,"method":"daw.get_state","params":{}})"));
+        const auto* recTracksBefore = stateBefore["result"]["tracks"].getArray();
+
+        if (static_cast<int> (stateBefore["result"]["count_in_bars"]) != 1
+            || recTracksBefore == nullptr || recTracksBefore->isEmpty()
+            || ! static_cast<bool> ((*recTracksBefore)[0]["armed"])
+            || (*recTracksBefore)[0]["input_device"].toString() != "Virtual MIDI")
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-012 arm/input/count-in state mismatch" << std::endl;
+            return 1;
+        }
+
+        // 2. Verify live virtual MIDI capture commits notes inside one Undo transaction & reverts cleanly
+        {
+            const int clipsBefore = te::getAudioTracks (*app.edit)[0]->getClips().size();
+            app.recordingManager.startRecording (true);
+            app.recordingManager.captureLiveMidiMessage (juce::MidiMessage::noteOn (1, 60, 0.85f), 8.0);
+            app.recordingManager.captureLiveMidiMessage (juce::MidiMessage::noteOff (1, 60), 9.0);
+            app.recordingManager.captureLiveMidiMessage (juce::MidiMessage::noteOn (1, 67, 0.90f), 9.0);
+            app.recordingManager.captureLiveMidiMessage (juce::MidiMessage::noteOff (1, 67), 10.0);
+            const int recordedCount = app.recordingManager.stopRecording();
+
+            if (recordedCount != 2 || te::getAudioTracks (*app.edit)[0]->getClips().size() != clipsBefore + 1)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-012 virtual MIDI recording did not commit 2 notes" << std::endl;
+                return 1;
+            }
+
+            app.edit->getUndoManager().undo();
+
+            if (te::getAudioTracks (*app.edit)[0]->getClips().size() != clipsBefore)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-012 Undo did not revert recorded MIDI clip" << std::endl;
+                return 1;
+            }
+        }
+
+        // 3. Verify non-destructive audio take commit writes non-silent stereo WAV, Undo/Redo, & persists
+        const auto recTempDir = tempDir.getChildFile ("tcs_wo012_rec_smoke");
+        recTempDir.deleteRecursively();
+        recTempDir.createDirectory();
+        const auto takesDir = recTempDir.getChildFile ("Takes");
+
+        juce::File committedTakeWav;
+        {
+            constexpr int sr = 44100;
+            juce::AudioBuffer<float> micBuf (2, sr / 2); // 0.5s stereo take
+
+            for (int i = 0; i < micBuf.getNumSamples(); ++i)
+            {
+                const float s = static_cast<float> (
+                    0.4 * std::sin (2.0 * juce::MathConstants<double>::pi * 330.0 * i / sr));
+                micBuf.setSample (0, i, s);
+                micBuf.setSample (1, i, s);
+            }
+
+            auto* track0 = te::getAudioTracks (*app.edit)[0];
+            const int clipsBeforeTake = track0->getClips().size();
+
+            if (! RecordingManager::commitRecordedAudioTake (*app.edit, *track0, micBuf, sr, 0.0, takesDir, &committedTakeWav)
+                || ! committedTakeWav.existsAsFile()
+                || track0->getClips().size() != clipsBeforeTake + 1)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-012 commitRecordedAudioTake failed" << std::endl;
+                return 1;
+            }
+
+            {
+                juce::WavAudioFormat wavFmt;
+                std::unique_ptr<juce::AudioFormatReader> reader (
+                    wavFmt.createReaderFor (committedTakeWav.createInputStream().release(), true));
+
+                if (reader == nullptr
+                    || reader->numChannels != 2
+                    || std::abs (reader->sampleRate - 44100.0) > 0.1
+                    || reader->lengthInSamples != sr / 2)
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-012 committed WAV format mismatch" << std::endl;
+                    return 1;
+                }
+
+                juce::AudioBuffer<float> readBack (2, 1024);
+                reader->read (&readBack, 0, 1024, 0, true, true);
+
+                if (readBack.getMagnitude (0, 1024) < 0.1f)
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-012 committed WAV is unexpectedly silent" << std::endl;
+                    return 1;
+                }
+            }
+
+            app.edit->getUndoManager().undo();
+            if (te::getAudioTracks (*app.edit)[0]->getClips().size() != clipsBeforeTake)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-012 Undo did not remove committed audio take" << std::endl;
+                return 1;
+            }
+
+            app.edit->getUndoManager().redo();
+            if (te::getAudioTracks (*app.edit)[0]->getClips().size() != clipsBeforeTake + 1)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-012 Redo did not restore committed audio take" << std::endl;
+                return 1;
+            }
+        }
+
+        // 4. Verify two-row header still leaves statusLabel >= 180px at 1280x820 with Rec + Count-In
+        app.setSize (1280, 820);
+        app.resized();
+
+        if (app.statusLabel.getWidth() < 180)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-012 statusLabel narrowed below 180px ("
+                      << app.statusLabel.getWidth() << "px)" << std::endl;
+            return 1;
+        }
+
+        // 5. Save/reload persistence check for armed state, count-in, and committed audio take
+        const auto recSessionFile = recTempDir.getChildFile ("RecordingRoundTrip.tracktionedit");
+        app.currentEditFile = recSessionFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        if (! app.loadSessionFromFileSafely (recSessionFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-012 session reload failed" << std::endl;
+            return 1;
+        }
+
+        bool foundTakeAfterReload = false;
+        {
+            auto reloadedTracks = te::getAudioTracks (*app.edit);
+
+            if (reloadedTracks.isEmpty()
+                || ! RecordingManager::isTrackArmed (*reloadedTracks[0])
+                || RecordingManager::getTrackInputName (*reloadedTracks[0]) != "Virtual MIDI"
+                || RecordingManager::getCountInBars (*app.edit) != 1)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-012 arm/input/count-in state did not persist" << std::endl;
+                return 1;
+            }
+
+            for (auto* c : reloadedTracks[0]->getClips())
+                if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+                    if (wc->getSourceFileReference().getFile() == committedTakeWav)
+                        foundTakeAfterReload = true;
+        }
+
+        if (! foundTakeAfterReload)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-012 recorded audio take clip did not persist across reload"
+                      << std::endl;
+            return 1;
+        }
+
+        recTempDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-012 Live audio/MIDI recording, arming & count-in PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -1907,7 +2088,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "bounce-to-take DSP, portable filePathResolver, MCP rack.patch/import_file, "
                  "master WAV mixdown export, metronome click/loop transport, virtual MIDI Step Rec, "
                  "two-row layout, CvUtilityPlugin 1-to-4 splitter, 3-band EQ RPC/Undo/persistence, "
-                 "live mixer metering, and VST3 scanner lifecycle verified." << std::endl;
+                 "live mixer metering, live audio/MIDI recording, track arming, count-in, and VST3 "
+                 "scanner lifecycle verified." << std::endl;
     return 0;
 }
 

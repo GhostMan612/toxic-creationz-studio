@@ -23,6 +23,7 @@ public:
 
     std::function<void()> onNotesRecorded;
     std::function<double()> getStepBeatsCallback;
+    std::function<void (const juce::MidiMessage&)> onLiveMidiMessage;
 
     void paint (juce::Graphics& g) override;
     void resized() override;

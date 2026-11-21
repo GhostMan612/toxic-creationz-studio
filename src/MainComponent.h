@@ -13,6 +13,7 @@
 #include "WaveformEditorComponent.h"
 #include "MixdownExporter.h"
 #include "MidiKeyboardDock.h"
+#include "RecordingManager.h"
 
 #include <atomic>
 #include <functional>
@@ -93,11 +94,12 @@ private:
 
     te::Engine engine { "AI DAW" };
     std::unique_ptr<te::Edit> edit;
+    RecordingManager recordingManager { engine };
     MixerComponent mixerComponent { engine };
     ModularRackComponent modularRackComponent { engine };
     RiffLibrary riffLibrary;
     BgmGeneratorComponent bgmGeneratorComponent { riffLibrary };
-    DawIpcServer ipcServer { riffLibrary };
+    DawIpcServer ipcServer { riffLibrary, recordingManager };
 
     WaveformEditorComponent waveformEditorComponent;
     MidiKeyboardDock midiKeyboardDock;
@@ -128,8 +130,10 @@ private:
     juce::TextButton redoButton        { "Redo" };
     juce::TextButton playButton        { "Play" };
     juce::TextButton stopButton        { "Stop" };
+    juce::TextButton recordButton      { "Rec" };
     juce::TextButton loopToggleButton  { "Loop" };
     juce::TextButton clickToggleButton { "Click" };
+    juce::TextButton countInButton     { "Count-In" };
     juce::TextButton scanPluginsButton { "Scan VST3" };
     juce::TextButton mixerToggleButton   { "Mixer" };
     juce::TextButton rackToggleButton     { "Rack" };

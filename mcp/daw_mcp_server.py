@@ -127,8 +127,10 @@ async def set_mixer_channel(
     pan: float | None = None,
     mute: bool | None = None,
     solo: bool | None = None,
+    armed: bool | None = None,
+    input_device: str | None = None,
 ) -> dict[str, Any]:
-    """Adjust mixer volume (in dB, -60 to +6), stereo pan (-1.0 to 1.0), mute, or solo on a track."""
+    """Adjust mixer volume (-60 to +6 dB), pan (-1 to 1), mute, solo, record arm, or input device on a track."""
     params: dict[str, Any] = {"track_index": track_index}
 
     if volume_db is not None:
@@ -143,6 +145,12 @@ async def set_mixer_channel(
     if solo is not None:
         params["solo"] = solo
 
+    if input_device is not None:
+        params["input_device"] = input_device
+
+    if armed is not None:
+        params["armed"] = armed
+
     return await send_daw_rpc("mixer.set_track", params)
 
 
@@ -155,8 +163,9 @@ async def control_transport(
     loop: bool | None = None,
     loop_start_beat: float | None = None,
     loop_end_beat: float | None = None,
+    count_in_bars: int | None = None,
 ) -> dict[str, Any]:
-    """Control DAW transport: play/stop, BPM, playhead seek, metronome click, and loop range."""
+    """Control DAW transport: play/stop/record, BPM, playhead seek, metronome click, count-in, and loop range."""
     params: dict[str, Any] = {"action": action}
 
     if bpm is not None:
@@ -177,7 +186,16 @@ async def control_transport(
     if loop_end_beat is not None:
         params["loop_end_beat"] = max(1.0, loop_end_beat)
 
+    if count_in_bars is not None:
+        params["count_in_bars"] = 1 if count_in_bars > 0 else 0
+
     return await send_daw_rpc("transport.control", params)
+
+
+@mcp.tool()
+async def list_recording_inputs() -> dict[str, Any]:
+    """List available Windows audio inputs and hardware MIDI input devices discovered by the DAW."""
+    return await send_daw_rpc("recording.list_inputs")
 
 
 @mcp.tool()

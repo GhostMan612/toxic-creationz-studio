@@ -6,9 +6,11 @@
 #include <algorithm>
 #include <cmath>
 
-DawIpcServer::DawIpcServer (RiffLibrary& targetRiffLibrary)
+DawIpcServer::DawIpcServer (RiffLibrary& targetRiffLibrary,
+                            RecordingManager& targetRecordingManager)
     : juce::Thread ("DawIpcServer"),
-      riffLibrary (targetRiffLibrary)
+      riffLibrary (targetRiffLibrary),
+      recordingManager (targetRecordingManager)
 {
 }
 
@@ -249,9 +251,11 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
 
         root->setProperty ("bpm", edit->tempoSequence.getTempo (0)->getBpm());
         root->setProperty ("is_playing", edit->getTransport().isPlaying());
+        root->setProperty ("is_recording", recordingManager.isRecording() || edit->getTransport().isRecording());
         root->setProperty ("position_seconds", posTime.inSeconds());
         root->setProperty ("position_beats", edit->tempoSequence.toBeats (posTime).inBeats());
         root->setProperty ("click_enabled", edit->clickTrackEnabled.get());
+        root->setProperty ("count_in_bars", RecordingManager::getCountInBars (*edit));
         root->setProperty ("looping", edit->getTransport().looping.get());
         root->setProperty ("loop_start_beat", edit->tempoSequence.toBeats (loopRange.getStart()).inBeats());
         root->setProperty ("loop_end_beat", edit->tempoSequence.toBeats (loopRange.getEnd()).inBeats());
@@ -269,6 +273,8 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
             tObj->setProperty ("name", tracks[i]->getName());
             tObj->setProperty ("mute", tracks[i]->isMuted (false));
             tObj->setProperty ("solo", tracks[i]->isSolo (false));
+            tObj->setProperty ("armed", RecordingManager::isTrackArmed (*tracks[i]));
+            tObj->setProperty ("input_device", RecordingManager::getTrackInputName (*tracks[i]));
             tObj->setProperty ("clip_count", tracks[i]->getClips().size());
 
             if (auto* vol = tracks[i]->getVolumePlugin())
@@ -496,6 +502,12 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         if (params.hasProperty ("solo"))
             track->setSolo (static_cast<bool> (params["solo"]));
 
+        if (params.hasProperty ("input_device"))
+            recordingManager.setTrackInputName (*edit, *track, params["input_device"].toString(), false);
+
+        if (params.hasProperty ("armed"))
+            RecordingManager::setTrackArmed (*edit, *track, static_cast<bool> (params["armed"]), false);
+
         if (onEditMutatedByRpc)
             onEditMutatedByRpc ("MCP updated mixer on track " + juce::String (trackIdx + 1));
 
@@ -511,6 +523,8 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
 
         res->setProperty ("mute", track->isMuted (false));
         res->setProperty ("solo", track->isSolo (false));
+        res->setProperty ("armed", RecordingManager::isTrackArmed (*track));
+        res->setProperty ("input_device", RecordingManager::getTrackInputName (*track));
 
         return makeResultResponse (id, juce::var (res));
     }
@@ -576,10 +590,25 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
             edit->getTransport().looping = loopOn;
         }
 
+        if (params.hasProperty ("count_in_bars"))
+            RecordingManager::setCountInBars (*edit, static_cast<int> (params["count_in_bars"]));
+
         if (action == "play")
+        {
             edit->getTransport().play (false);
+        }
+        else if (action == "record")
+        {
+            const bool headless = juce::JUCEApplicationBase::getCommandLineParameters().contains ("--smoke-test");
+            recordingManager.startRecording (headless);
+        }
         else if (action == "stop")
-            edit->getTransport().stop (false, false);
+        {
+            if (recordingManager.isRecording())
+                recordingManager.stopRecording();
+            else
+                edit->getTransport().stop (false, false);
+        }
 
         if (onEditMutatedByRpc)
             onEditMutatedByRpc ("MCP transport update");
@@ -588,10 +617,12 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         const auto loopRange = edit->getTransport().getLoopRange();
 
         res->setProperty ("is_playing", edit->getTransport().isPlaying());
+        res->setProperty ("is_recording", recordingManager.isRecording() || edit->getTransport().isRecording());
         res->setProperty ("bpm", edit->tempoSequence.getTempo (0)->getBpm());
         res->setProperty ("position_beats",
                           edit->tempoSequence.toBeats (edit->getTransport().getPosition()).inBeats());
         res->setProperty ("click_enabled", edit->clickTrackEnabled.get());
+        res->setProperty ("count_in_bars", RecordingManager::getCountInBars (*edit));
         res->setProperty ("looping", edit->getTransport().looping.get());
         res->setProperty ("loop_start_beat", edit->tempoSequence.toBeats (loopRange.getStart()).inBeats());
         res->setProperty ("loop_end_beat", edit->tempoSequence.toBeats (loopRange.getEnd()).inBeats());
@@ -974,6 +1005,23 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         res->setProperty ("low_db",  eq->loGainValue.get());
         res->setProperty ("mid_db",  eq->midGainValue1.get());
         res->setProperty ("high_db", eq->hiGainValue.get());
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // 14. recording.list_inputs (read-only enumeration of audio/MIDI inputs)
+    if (method == "recording.list_inputs")
+    {
+        juce::Array<juce::var> audioIns, midiIns;
+
+        for (const auto& name : recordingManager.getAvailableAudioInputNames())
+            audioIns.add (name);
+
+        for (const auto& name : recordingManager.getAvailableMidiInputNames())
+            midiIns.add (name);
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("audio_inputs", audioIns);
+        res->setProperty ("midi_inputs", midiIns);
         return makeResultResponse (id, juce::var (res));
     }
 

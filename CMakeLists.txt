@@ -51,6 +51,8 @@ target_sources(AIDAW PRIVATE
     src/MixdownExporter.cpp
     src/MidiKeyboardDock.h
     src/MidiKeyboardDock.cpp
+    src/RecordingManager.h
+    src/RecordingManager.cpp
 )
 
 # 4. Preprocessor flags: enable VST3 hosting, disable unused bloat

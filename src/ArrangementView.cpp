@@ -38,6 +38,12 @@ void ArrangementView::setEdit (te::Edit* newEdit)
         onClipSelected (selectedClipID);
 }
 
+void ArrangementView::setRecordingManager (RecordingManager* manager)
+{
+    recordingManager = manager;
+    repaint();
+}
+
 void ArrangementView::setSelectedClipID (tracktion::EditItemID clipID)
 {
     if (selectedClipID != clipID)
@@ -127,11 +133,22 @@ void ArrangementView::paint (juce::Graphics& g)
             break;
 
         // Track lane + header
+        const bool armed = RecordingManager::isTrackArmed (*track);
+        const bool isActivelyRecording = (recordingManager != nullptr && recordingManager->isRecording() && armed);
+
         g.setColour (i % 2 == 0 ? juce::Colour (0xff181b22) : juce::Colour (0xff1b1e26));
         g.fillRect (headerWidth, top, bounds.getWidth() - headerWidth, trackHeight);
 
         g.setColour (juce::Colour (0xff222630));
         g.fillRect (0, top, headerWidth, trackHeight);
+
+        if (isActivelyRecording)
+        {
+            g.setColour (juce::Colour (0x22dc2626));
+            g.fillRect (0, top, headerWidth, trackHeight);
+            g.setColour (juce::Colour (0xffef4444));
+            g.fillRect (0, top, 4, trackHeight);
+        }
 
         g.setColour (juce::Colours::white);
         g.setFont (juce::Font (juce::FontOptions (13.0f, juce::Font::bold)));
@@ -145,6 +162,7 @@ void ArrangementView::paint (juce::Graphics& g)
 
         juce::Rectangle<int> muteRect (10, top + 30, 24, 18);
         juce::Rectangle<int> soloRect (38, top + 30, 24, 18);
+        juce::Rectangle<int> armRect  (66, top + 30, 24, 18);
 
         g.setColour (muted ? juce::Colour (0xffd9534f) : juce::Colour (0xff313644));
         g.fillRoundedRectangle (muteRect.toFloat(), 3.0f);
@@ -157,8 +175,13 @@ void ArrangementView::paint (juce::Graphics& g)
         g.setColour (solo ? juce::Colours::black : juce::Colours::white);
         g.drawText ("S", soloRect.toFloat(), juce::Justification::centred);
 
+        g.setColour (armed ? juce::Colour (0xffdc2626) : juce::Colour (0xff313644));
+        g.fillRoundedRectangle (armRect.toFloat(), 3.0f);
+        g.setColour (juce::Colours::white);
+        g.drawText ("R", armRect.toFloat(), juce::Justification::centred);
+
         g.setColour (juce::Colour (0xff9aa3b2));
-        g.drawText (juce::String (db, 1) + " dB", 70, top + 30, 108, 18, juce::Justification::centredRight);
+        g.drawText (juce::String (db, 1) + " dB", 94, top + 30, 86, 18, juce::Justification::centredRight);
 
         g.setColour (juce::Colour (0xff2b303c));
         g.drawHorizontalLine (top + trackHeight - 1, 0.0f, static_cast<float> (bounds.getWidth()));
@@ -302,11 +325,12 @@ void ArrangementView::mouseDown (const juce::MouseEvent& e)
     auto* track = tracks[trackIdx];
     const int top = rulerHeight + trackIdx * trackHeight;
 
-    // Header click -> Mute / Solo toggles
+    // Header click -> Mute / Solo / Record Arm toggles
     if (e.x < headerWidth)
     {
         juce::Rectangle<int> muteRect (10, top + 30, 24, 18);
         juce::Rectangle<int> soloRect (38, top + 30, 24, 18);
+        juce::Rectangle<int> armRect  (66, top + 30, 24, 18);
 
         if (muteRect.contains (e.getPosition()))
         {
@@ -317,6 +341,15 @@ void ArrangementView::mouseDown (const juce::MouseEvent& e)
         {
             track->setSolo (! track->isSolo (false));
             repaint();
+        }
+        else if (armRect.contains (e.getPosition()))
+        {
+            const bool nextArmed = ! RecordingManager::isTrackArmed (*track);
+            RecordingManager::setTrackArmed (*edit, *track, nextArmed);
+            repaint();
+
+            if (onTrackArmChanged != nullptr)
+                onTrackArmChanged();
         }
 
         return;

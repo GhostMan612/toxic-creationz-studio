@@ -1,20 +1,15 @@
 ## Pipeline State
 
-- Merged: WO-001, WO-002, WO-003, WO-004, WO-005, WO-006, WO-007, WO-008, WO-009, WO-010 (PRs #1-#10).
-- In review: WO-011 (PR #11) - `CvUtilityPlugin` 1-to-4 CV attenuverter /
-  splitter (`+ CV Splitter`), per-track `te::EqualiserPlugin` 3-band EQ & live L/R
-  `LevelMeterPlugin` mixer metering (`mixer.set_eq`, `set_track_eq`), out-of-process
-  `mcp/ai_audio_worker.py` (`generate_ai_audio_stem`), zero-dependency Python unit
-  tests (`mcp/test_mcp_server.py`), CI unittest step, and production `README.md` on
-  `feat/wo-011-v1-rc-eq-cv-worker-docs`.
-- Verification (WO-011): Release build clean (0 errors, 0 warnings), 5/5 Release
-  `--smoke-test` PASS (`13.12s`–`15.16s`), isolated ASAN Release `--smoke-test`
-  PASS (`ASAN_SMOKE_EXIT=0`), Python 4/4 `unittest` PASS + `PY_SYNTAX_OK`,
-  `dist/ToxicCreationzStudio-win64.zip` packaged (`9,713,762` bytes); rebased onto
-  `main` (`377c51c`) and re-verified before PR #11 audit.
-- Current `main`: `377c51c` (post PR #10 merge).
-- Workflow: Gemini (docs/BRIEFING.md) -> Local Executor (build, smoke, PR) ->
-  Muse PR-Doctor audit -> ChatGPT audit -> Glenn merge. Never self-merge.
+- Merged (PRs #1-#10): WO-001 through WO-010 on `main` (`377c51c`).
+- Open PR (#11): WO-011 (`feat/wo-011-v1-rc-eq-cv-worker-docs`, `918625a`) — v1.0 RC.
+- Continuous Dev (`dev/v1-complete`, branched from `918625a`): WO-012 implemented
+  — `RecordingManager` (Wave/MIDI + `"Virtual MIDI"` routing, `te::InputDeviceInstance`
+  sync, 1-bar count-in via `te::Edit::CountIn::oneBar`, live virtual MIDI capture,
+  16-bit WAV take commit), `ArrangementView` `R` pills, `MixerComponent` `R` + input
+  selector, `MainComponent` `Rec` + `Count-In` row-2 controls & `initialise(2, 2)`,
+  `MidiKeyboardDock` live capture hook, `recording.list_inputs` + extended
+  `daw.get_state` / `mixer.set_track` / `transport.control` RPCs & MCP unit tests.
+- Workflow: Local development on `dev/v1-complete` (no PRs opened during continuous build).
 - Smoke convention: Release build + `--smoke-test`; all temp dirs under
   `%TEMP%`, never `%LOCALAPPDATA%\hermes`.
 - Engine quirk surfaced by WO-008 (resolved in WO-009): `insertWaveClip` can
@@ -37,7 +32,8 @@
 | WO-008 | Phase 5 Audacity-Style Non-Destructive Waveform Editor & Bounce-to-Take DSP | Merged to `main` (`2f1264f`, PR #8) |
 | WO-009 | Phase 6 Session Portability (`filePathResolver`), Master Mixdown Export (`Export WAV`) & MCP Rack/Stem RPCs | Merged to `main` (`e9fe611`, PR #9) |
 | WO-010 | Phase 7 Two-Row Studio Header, Metronome/Loop Transport, Virtual MIDI Step-Rec & Windows Packaging | Merged to `main` (`377c51c`, PR #10) |
-| WO-011 | v1.0 Release Candidate: 1-to-4 CV Splitter, Track 3-Band EQ & Metering, Hybrid AI Worker & Production Docs | In review (`feat/wo-011-v1-rc-eq-cv-worker-docs`, PR #11) |
+| WO-011 | v1.0 Release Candidate: 1-to-4 CV Splitter, Track 3-Band EQ & Metering, Hybrid AI Worker & Production Docs | In review (`feat/wo-011-v1-rc-eq-cv-worker-docs`, `918625a`, PR #11) |
+| WO-012 | Live Audio & MIDI Recording, Per-Track Record Arming & 1-Bar Count-In | Locally implemented (`dev/v1-complete`) |
 
 ---
 

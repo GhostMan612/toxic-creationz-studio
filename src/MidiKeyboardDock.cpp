@@ -84,6 +84,9 @@ void MidiKeyboardDock::handleNoteOn (juce::MidiKeyboardState*, int midiChannel, 
     const auto msg = juce::MidiMessage::noteOn (midiChannel, midiNoteNumber, velocity);
     track->injectLiveMidiMessage (msg, te::MPESourceID{});
 
+    if (onLiveMidiMessage != nullptr)
+        onLiveMidiMessage (msg);
+
     if (stepRecToggle.getToggleState())
     {
         const int velInt = juce::jlimit (1, 127, static_cast<int> (std::round (velocity * 127.0f)));
@@ -105,6 +108,9 @@ void MidiKeyboardDock::handleNoteOff (juce::MidiKeyboardState*, int midiChannel,
 
     const auto msg = juce::MidiMessage::noteOff (midiChannel, midiNoteNumber, velocity);
     track->injectLiveMidiMessage (msg, te::MPESourceID{});
+
+    if (onLiveMidiMessage != nullptr)
+        onLiveMidiMessage (msg);
 }
 
 bool MidiKeyboardDock::recordStepNote (int midiNoteNumber, int velocity, double stepBeats)

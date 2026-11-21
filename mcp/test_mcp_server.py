@@ -159,6 +159,42 @@ class McpWorkerTests(unittest.TestCase):
             self.assertEqual(payload["clip_name"], "CyberPad")
             self.assertEqual(payload["file_path"], str(wav_path))
 
+    def test_list_recording_inputs_rpc(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"audio_inputs": ["Mic 1/2"], "midi_inputs": ["Keystation"]})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.list_recording_inputs())
+
+        self.assertEqual(res["audio_inputs"], ["Mic 1/2"])
+        mock_rpc.assert_awaited_once_with("recording.list_inputs")
+
+    def test_set_mixer_channel_armed_and_input_device(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"updated_track": 0, "armed": True, "input_device": "Virtual MIDI"})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.set_mixer_channel(0, armed=True, input_device="Virtual MIDI"))
+
+        self.assertTrue(res["armed"])
+        mock_rpc.assert_awaited_once_with(
+            "mixer.set_track",
+            {"track_index": 0, "input_device": "Virtual MIDI", "armed": True},
+        )
+
+    def test_control_transport_record_and_count_in(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"is_recording": True, "count_in_bars": 1})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.control_transport(action="record", count_in_bars=2))
+
+        self.assertTrue(res["is_recording"])
+        mock_rpc.assert_awaited_once_with(
+            "transport.control",
+            {"action": "record", "count_in_bars": 1},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

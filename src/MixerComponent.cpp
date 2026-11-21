@@ -19,13 +19,19 @@ MixerComponent::ChannelStrip::ChannelStrip (MixerComponent& ownerMixer,
 
     addAndMakeVisible (muteButton);
     addAndMakeVisible (soloButton);
+    addAndMakeVisible (armButton);
     addAndMakeVisible (addPluginButton);
+    addAndMakeVisible (inputSelector);
 
     muteButton.setClickingTogglesState (true);
     soloButton.setClickingTogglesState (true);
+    armButton.setClickingTogglesState (true);
     muteButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffd9534f));
     soloButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xfff0ad4e));
     soloButton.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+    armButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffdc2626));
+    armButton.setTooltip ("Arm track for recording");
+    inputSelector.setTooltip ("Track recording input source");
 
     muteButton.onClick = [this]
     {
@@ -43,6 +49,30 @@ MixerComponent::ChannelStrip::ChannelStrip (MixerComponent& ownerMixer,
         if (auto* t = resolveTrack())
         {
             t->setSolo (soloButton.getToggleState());
+
+            if (owner.onMixerChanged != nullptr)
+                owner.onMixerChanged();
+        }
+    };
+
+    armButton.onClick = [this]
+    {
+        if (auto* t = resolveTrack())
+        {
+            RecordingManager::setTrackArmed (edit, *t, armButton.getToggleState());
+            syncState();
+
+            if (owner.onMixerChanged != nullptr)
+                owner.onMixerChanged();
+        }
+    };
+
+    inputSelector.onChange = [this]
+    {
+        if (auto* t = resolveTrack())
+        {
+            if (owner.recordingManager != nullptr)
+                owner.recordingManager->setTrackInputName (edit, *t, inputSelector.getText());
 
             if (owner.onMixerChanged != nullptr)
                 owner.onMixerChanged();
@@ -225,6 +255,29 @@ void MixerComponent::ChannelStrip::syncState()
     titleLabel.setText (juce::String (trackIndex + 1) + ". " + t->getName(), juce::dontSendNotification);
     muteButton.setToggleState (t->isMuted (false), juce::dontSendNotification);
     soloButton.setToggleState (t->isSolo (false), juce::dontSendNotification);
+    armButton.setToggleState (RecordingManager::isTrackArmed (*t), juce::dontSendNotification);
+
+    juce::StringArray options;
+    if (owner.recordingManager != nullptr)
+    {
+        options = owner.recordingManager->getAllInputOptions();
+    }
+    else
+    {
+        options.add ("None");
+        options.add ("Virtual MIDI");
+    }
+
+    const juce::String currentInput = RecordingManager::getTrackInputName (*t);
+    if (! options.contains (currentInput))
+        options.add (currentInput);
+
+    inputSelector.clear (juce::dontSendNotification);
+    for (int i = 0; i < options.size(); ++i)
+        inputSelector.addItem (options[i], i + 1);
+
+    const int chosenIdx = std::max (0, options.indexOf (currentInput));
+    inputSelector.setSelectedId (chosenIdx + 1, juce::dontSendNotification);
 
     if (auto* vol = t->getVolumePlugin())
     {
@@ -282,8 +335,8 @@ void MixerComponent::ChannelStrip::pollMeter()
 
 int MixerComponent::ChannelStrip::getMinimumHeight() const
 {
-    // Title + M/S/add row + 21px per plugin slot + 3 EQ rows + pan + minimum fader + dB label + insets.
-    return 191 + 21 * static_cast<int> (pluginSlots.size());
+    // Title + M/S/R/add row + input picker + 21px per plugin slot + 3 EQ rows + pan + minimum fader + dB label + insets.
+    return 215 + 21 * static_cast<int> (pluginSlots.size());
 }
 
 void MixerComponent::ChannelStrip::rebuildPluginSlots()
@@ -472,12 +525,16 @@ void MixerComponent::ChannelStrip::resized()
     area.removeFromTop (3);
 
     auto btnRow = area.removeFromTop (20);
-    muteButton.setBounds (btnRow.removeFromLeft (24));
+    muteButton.setBounds (btnRow.removeFromLeft (22));
+    btnRow.removeFromLeft (3);
+    soloButton.setBounds (btnRow.removeFromLeft (22));
+    btnRow.removeFromLeft (3);
+    armButton.setBounds (btnRow.removeFromLeft (22));
     btnRow.removeFromLeft (4);
-    soloButton.setBounds (btnRow.removeFromLeft (24));
-    btnRow.removeFromLeft (6);
     addPluginButton.setBounds (btnRow);
 
+    area.removeFromTop (4);
+    inputSelector.setBounds (area.removeFromTop (20));
     area.removeFromTop (4);
 
     // All slots are laid out; if a strip needs more height than the pane
@@ -534,6 +591,12 @@ MixerComponent::~MixerComponent()
 void MixerComponent::setEdit (te::Edit* newEdit)
 {
     edit = newEdit;
+    rebuildStrips();
+}
+
+void MixerComponent::setRecordingManager (RecordingManager* manager)
+{
+    recordingManager = manager;
     rebuildStrips();
 }
 

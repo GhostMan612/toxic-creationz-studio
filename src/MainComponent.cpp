@@ -103,7 +103,7 @@ MainComponent::MainComponent()
         juce::JUCEApplicationBase::getCommandLineParameters().contains ("--smoke-test");
 
     if (! headlessSmokeTest)
-        engine.getDeviceManager().initialise (0, 2);
+        engine.getDeviceManager().initialise (2, 2);
 
     registerCvRackPlugins (engine);
     loadCachedPlugins();
@@ -145,9 +145,28 @@ MainComponent::MainComponent()
     addAndMakeVisible (midiKeyboardDock);
     midiKeyboardDock.setVisible (false);
 
+    mixerComponent.setRecordingManager (&recordingManager);
+    arrangementView.setRecordingManager (&recordingManager);
+    arrangementView.onTrackArmChanged = [this] { mixerComponent.rebuildStrips(); };
+
     midiKeyboardDock.getStepBeatsCallback = [this]
     {
         return pianoRoll.getSnapDivision();
+    };
+
+    midiKeyboardDock.onLiveMidiMessage = [this] (const juce::MidiMessage& msg)
+    {
+        recordingManager.captureLiveMidiMessage (msg);
+    };
+
+    recordingManager.onRecordingStateChanged = [this] (const juce::String& status)
+    {
+        recordButton.setToggleState (recordingManager.isRecording(), juce::dontSendNotification);
+        arrangementView.repaint();
+        pianoRoll.repaint();
+        mixerComponent.rebuildStrips();
+        syncTransportControlsFromEdit();
+        statusLabel.setText (status, juce::dontSendNotification);
     };
 
     midiKeyboardDock.onNotesRecorded = [this]
@@ -202,8 +221,10 @@ MainComponent::MainComponent()
     addAndMakeVisible (redoButton);
     addAndMakeVisible (playButton);
     addAndMakeVisible (stopButton);
+    addAndMakeVisible (recordButton);
     addAndMakeVisible (loopToggleButton);
     addAndMakeVisible (clickToggleButton);
+    addAndMakeVisible (countInButton);
     addAndMakeVisible (scanPluginsButton);
     addAndMakeVisible (mixerToggleButton);
     addAndMakeVisible (rackToggleButton);
@@ -369,8 +390,27 @@ MainComponent::MainComponent()
 
     stopButton.onClick = [this]
     {
-        if (edit != nullptr)
+        if (edit == nullptr)
+            return;
+
+        if (recordingManager.isRecording())
+            recordingManager.stopRecording();
+        else
             edit->getTransport().stop (false, false);
+    };
+
+    recordButton.setClickingTogglesState (false);
+    recordButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffdc2626));
+    recordButton.setTooltip ("Start or stop live audio/MIDI recording");
+    recordButton.onClick = [this]
+    {
+        if (edit == nullptr)
+            return;
+
+        if (recordingManager.isRecording())
+            recordingManager.stopRecording();
+        else
+            recordingManager.startRecording();
     };
 
     loopToggleButton.setClickingTogglesState (true);
@@ -408,6 +448,20 @@ MainComponent::MainComponent()
         edit->clickTrackEmphasiseBars = true;
         edit->clickTrackEnabled = enabled;
         statusLabel.setText (enabled ? "Metronome Click: ON" : "Metronome Click: OFF", juce::dontSendNotification);
+    };
+
+    countInButton.setClickingTogglesState (true);
+    countInButton.setToggleState (false, juce::dontSendNotification);
+    countInButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff0284c7));
+    countInButton.setTooltip ("Toggle 1-bar pre-roll count-in before recording");
+    countInButton.onClick = [this]
+    {
+        if (edit == nullptr)
+            return;
+
+        const int bars = countInButton.getToggleState() ? 1 : 0;
+        RecordingManager::setCountInBars (*edit, bars);
+        statusLabel.setText (bars > 0 ? "Count-In: 1 Bar" : "Count-In: OFF", juce::dontSendNotification);
     };
 
     scanPluginsButton.onClick = [this] { startVst3Scan(); };
@@ -529,6 +583,8 @@ MainComponent::~MainComponent()
     {
         // Detach every child view (and their ValueTree listeners) BEFORE the
         // Edit is destroyed: ~Edit() fires tree teardown callbacks synchronously.
+        recordingManager.onRecordingStateChanged = nullptr;
+        recordingManager.setEdit (nullptr);
         arrangementView.setEdit (nullptr);
         pianoRoll.setTarget (nullptr, {});
         mixerComponent.setEdit (nullptr);
@@ -816,6 +872,7 @@ void MainComponent::installEditFilePathResolver (te::Edit& targetEdit)
 void MainComponent::attachEdit (te::Edit& editToAttach)
 {
     installEditFilePathResolver (editToAttach);
+    recordingManager.setEdit (&editToAttach);
     arrangementView.setEdit (&editToAttach);
     pianoRoll.setTarget (&editToAttach, arrangementView.getSelectedClipID());
     mixerComponent.setEdit (&editToAttach);
@@ -835,6 +892,8 @@ void MainComponent::syncTransportControlsFromEdit()
 
     clickToggleButton.setToggleState (edit->clickTrackEnabled.get(), juce::dontSendNotification);
     loopToggleButton.setToggleState (edit->getTransport().looping.get(), juce::dontSendNotification);
+    countInButton.setToggleState (RecordingManager::getCountInBars (*edit) > 0, juce::dontSendNotification);
+    recordButton.setToggleState (recordingManager.isRecording(), juce::dontSendNotification);
     updateTransportPositionReadout();
 }
 
@@ -901,6 +960,7 @@ void MainComponent::createNewSession (const juce::File& targetFile, bool seedDef
     if (edit != nullptr)
     {
         // Detach views/listeners before ~Edit() runs its synchronous teardown.
+        recordingManager.setEdit (nullptr);
         arrangementView.setEdit (nullptr);
         pianoRoll.setTarget (nullptr, {});
         mixerComponent.setEdit (nullptr);
@@ -998,6 +1058,7 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
     if (edit != nullptr)
     {
         // Detach views/listeners before ~Edit() runs its synchronous teardown.
+        recordingManager.setEdit (nullptr);
         arrangementView.setEdit (nullptr);
         pianoRoll.setTarget (nullptr, {});
         mixerComponent.setEdit (nullptr);
@@ -1218,10 +1279,12 @@ void MainComponent::timerCallback()
     updateTransportPositionReadout();
     mixerComponent.refreshMeters();
 
-    if (edit != nullptr && edit->getTransport().isPlaying())
+    if (edit != nullptr && (edit->getTransport().isPlaying() || recordingManager.isRecording()))
     {
         const double posSec = edit->getTransport().getPosition().inSeconds();
-        statusLabel.setText ("Playing: " + juce::String (posSec, 2) + "s", juce::dontSendNotification);
+        statusLabel.setText (
+            (recordingManager.isRecording() ? "Recording: " : "Playing: ") + juce::String (posSec, 2) + "s",
+            juce::dontSendNotification);
         arrangementView.repaint();
     }
 }
@@ -1266,20 +1329,22 @@ void MainComponent::resized()
     row1.removeFromRight (4);
     bgmToggleButton.setBounds (row1.removeFromRight (74));
 
-    // Row 2: Transport, Loop/Click, Edit actions, BPM, Bar:Beat & Status
-    addRowItem (row2, playButton, 52);
-    addRowItem (row2, stopButton, 52);
-    addRowItem (row2, loopToggleButton, 54);
-    addRowItem (row2, clickToggleButton, 54);
-    row2.removeFromLeft (6);
-    addRowItem (row2, addTrackButton, 68);
-    addRowItem (row2, undoButton, 52);
-    addRowItem (row2, redoButton, 52);
-    row2.removeFromLeft (6);
-    bpmSlider.setBounds (row2.removeFromLeft (128));
-    row2.removeFromLeft (6);
+    // Row 2: Transport, Record, Loop/Click/Count-In, Edit actions, BPM, Bar:Beat & Status
+    addRowItem (row2, playButton, 46);
+    addRowItem (row2, stopButton, 46);
+    addRowItem (row2, recordButton, 44);
+    addRowItem (row2, loopToggleButton, 46);
+    addRowItem (row2, clickToggleButton, 46);
+    addRowItem (row2, countInButton, 64);
+    row2.removeFromLeft (4);
+    addRowItem (row2, addTrackButton, 58);
+    addRowItem (row2, undoButton, 46);
+    addRowItem (row2, redoButton, 46);
+    row2.removeFromLeft (4);
+    bpmSlider.setBounds (row2.removeFromLeft (120));
+    row2.removeFromLeft (4);
     transportPosLabel.setBounds (row2.removeFromLeft (78));
-    row2.removeFromLeft (8);
+    row2.removeFromLeft (6);
     statusLabel.setBounds (row2);
 
     if (bgmGeneratorComponent.isVisible())
