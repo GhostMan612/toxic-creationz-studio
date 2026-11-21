@@ -136,8 +136,12 @@ async def control_transport(
     action: str = "",
     bpm: float | None = None,
     beat: float | None = None,
+    click: bool | None = None,
+    loop: bool | None = None,
+    loop_start_beat: float | None = None,
+    loop_end_beat: float | None = None,
 ) -> dict[str, Any]:
-    """Start ('play') or stop ('stop') DAW playback, update BPM, or seek to a beat position."""
+    """Control DAW transport: play/stop, BPM, playhead seek, metronome click, and loop range."""
     params: dict[str, Any] = {"action": action}
 
     if bpm is not None:
@@ -145,6 +149,18 @@ async def control_transport(
 
     if beat is not None:
         params["beat"] = max(0.0, beat)
+
+    if click is not None:
+        params["click"] = click
+
+    if loop is not None:
+        params["loop"] = loop
+
+    if loop_start_beat is not None:
+        params["loop_start_beat"] = max(0.0, loop_start_beat)
+
+    if loop_end_beat is not None:
+        params["loop_end_beat"] = max(1.0, loop_end_beat)
 
     return await send_daw_rpc("transport.control", params)
 

@@ -28,3 +28,14 @@ jobs:
       run: |
         & ".\build\AIDAW_artefacts\Release\AI DAW.exe" --smoke-test
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Package Windows Release Artifact
+      shell: pwsh
+      run: .\scripts\package-windows.ps1 -BuildConfig Release -OutputDir dist
+
+    - name: Upload Windows Release Zip
+      uses: actions/upload-artifact@v4
+      with:
+        name: ToxicCreationzStudio-win64
+        path: dist/ToxicCreationzStudio-win64.zip
+        retention-days: 14

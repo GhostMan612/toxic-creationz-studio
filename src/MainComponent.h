@@ -12,6 +12,7 @@
 #include "DawIpcServer.h"
 #include "WaveformEditorComponent.h"
 #include "MixdownExporter.h"
+#include "MidiKeyboardDock.h"
 
 #include <atomic>
 #include <functional>
@@ -76,6 +77,8 @@ private:
 
     void installEditFilePathResolver (te::Edit& targetEdit);
     void attachEdit (te::Edit& editToAttach);
+    void syncTransportControlsFromEdit();
+    void updateTransportPositionReadout();
     static bool isTransientEditSubtree (juce::ValueTree tree);
 
     void guardUnsavedChanges (std::function<void (bool)> onProceed);
@@ -97,6 +100,7 @@ private:
     DawIpcServer ipcServer { riffLibrary };
 
     WaveformEditorComponent waveformEditorComponent;
+    MidiKeyboardDock midiKeyboardDock;
 
     juce::File currentEditFile;
     bool sessionUntitled = false;
@@ -124,13 +128,17 @@ private:
     juce::TextButton redoButton        { "Redo" };
     juce::TextButton playButton        { "Play" };
     juce::TextButton stopButton        { "Stop" };
+    juce::TextButton loopToggleButton  { "Loop" };
+    juce::TextButton clickToggleButton { "Click" };
     juce::TextButton scanPluginsButton { "Scan VST3" };
     juce::TextButton mixerToggleButton   { "Mixer" };
     juce::TextButton rackToggleButton     { "Rack" };
+    juce::TextButton keysToggleButton     { "Keys" };
     juce::TextButton bgmToggleButton       { "BGM Gen" };
     juce::TextButton waveEditorToggleButton { "Wave Edit" };
     juce::TextButton audioSettingsButton { "Audio Settings" };
     juce::Slider bpmSlider;
+    juce::Label transportPosLabel      { {}, "Bar 1.1" };
     juce::Label statusLabel            { {}, "Ready" };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)

@@ -244,12 +244,17 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
     {
         auto* root = new juce::DynamicObject();
 
-        const auto posTime = edit->getTransport().getPosition();
+        const auto posTime   = edit->getTransport().getPosition();
+        const auto loopRange = edit->getTransport().getLoopRange();
 
         root->setProperty ("bpm", edit->tempoSequence.getTempo (0)->getBpm());
         root->setProperty ("is_playing", edit->getTransport().isPlaying());
         root->setProperty ("position_seconds", posTime.inSeconds());
         root->setProperty ("position_beats", edit->tempoSequence.toBeats (posTime).inBeats());
+        root->setProperty ("click_enabled", edit->clickTrackEnabled.get());
+        root->setProperty ("looping", edit->getTransport().looping.get());
+        root->setProperty ("loop_start_beat", edit->tempoSequence.toBeats (loopRange.getStart()).inBeats());
+        root->setProperty ("loop_end_beat", edit->tempoSequence.toBeats (loopRange.getEnd()).inBeats());
         root->setProperty ("rack_count", edit->getRackList().getTypes().size());
 
         juce::Array<juce::var> trackList;
@@ -523,6 +528,48 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
                 edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (targetBeat)));
         }
 
+        if (params.hasProperty ("click"))
+        {
+            edit->clickTrackGain = 0.7f;
+            edit->clickTrackEmphasiseBars = true;
+            edit->clickTrackEnabled = static_cast<bool> (params["click"]);
+        }
+
+        if (params.hasProperty ("loop_start_beat") || params.hasProperty ("loop_end_beat"))
+        {
+            const auto existingLoop = edit->getTransport().getLoopRange();
+            const double curStartB = existingLoop.isEmpty()
+                                         ? 0.0
+                                         : edit->tempoSequence.toBeats (existingLoop.getStart()).inBeats();
+            const double curEndB   = existingLoop.isEmpty()
+                                         ? 16.0
+                                         : edit->tempoSequence.toBeats (existingLoop.getEnd()).inBeats();
+            const double startB = std::max (0.0, static_cast<double> (params.getProperty ("loop_start_beat", curStartB)));
+            const double endB   = std::max (startB + 1.0,
+                                            static_cast<double> (params.getProperty ("loop_end_beat",
+                                                                                     std::max (startB + 4.0, curEndB))));
+
+            edit->getTransport().setLoopRange ({
+                edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (startB)),
+                edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (endB))
+            });
+        }
+
+        if (params.hasProperty ("loop"))
+        {
+            const bool loopOn = static_cast<bool> (params["loop"]);
+
+            if (loopOn && edit->getTransport().getLoopRange().isEmpty())
+            {
+                edit->getTransport().setLoopRange ({
+                    tracktion::TimePosition::fromSeconds (0.0),
+                    edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (16.0))
+                });
+            }
+
+            edit->getTransport().looping = loopOn;
+        }
+
         if (action == "play")
             edit->getTransport().play (false);
         else if (action == "stop")
@@ -532,11 +579,16 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
             onEditMutatedByRpc ("MCP transport update");
 
         auto* res = new juce::DynamicObject();
+        const auto loopRange = edit->getTransport().getLoopRange();
 
         res->setProperty ("is_playing", edit->getTransport().isPlaying());
         res->setProperty ("bpm", edit->tempoSequence.getTempo (0)->getBpm());
         res->setProperty ("position_beats",
                           edit->tempoSequence.toBeats (edit->getTransport().getPosition()).inBeats());
+        res->setProperty ("click_enabled", edit->clickTrackEnabled.get());
+        res->setProperty ("looping", edit->getTransport().looping.get());
+        res->setProperty ("loop_start_beat", edit->tempoSequence.toBeats (loopRange.getStart()).inBeats());
+        res->setProperty ("loop_end_beat", edit->tempoSequence.toBeats (loopRange.getEnd()).inBeats());
 
         return makeResultResponse (id, juce::var (res));
     }

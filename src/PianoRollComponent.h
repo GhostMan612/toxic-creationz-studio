@@ -14,6 +14,7 @@ public:
 
     void setTarget (te::Edit* targetEdit, tracktion::EditItemID clipID);
     void setSnapDivision (double beatsPerStep); // 0.25 == 1/16th note
+    double getSnapDivision() const noexcept { return snapBeats; }
 
     std::function<void()> onSequenceChanged;
 

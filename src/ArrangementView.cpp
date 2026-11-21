@@ -1,5 +1,8 @@
 #include "ArrangementView.h"
 
+#include <algorithm>
+#include <cmath>
+
 ArrangementView::ArrangementView()
 {
     setOpaque (true);
@@ -213,6 +216,33 @@ void ArrangementView::paint (juce::Graphics& g)
     g.setColour (juce::Colour (0xff363c4a));
     g.drawVerticalLine (headerWidth, 0.0f, static_cast<float> (bounds.getHeight()));
 
+    // Loop range highlight on the top ruler when looping is enabled
+    if (edit->getTransport().looping.get())
+    {
+        const auto loopRange = edit->getTransport().getLoopRange();
+
+        if (! loopRange.isEmpty())
+        {
+            const double startBeat = edit->tempoSequence.toBeats (loopRange.getStart()).inBeats();
+            const double endBeat   = edit->tempoSequence.toBeats (loopRange.getEnd()).inBeats();
+
+            const int x1 = juce::jlimit (headerWidth, bounds.getWidth(),
+                                         headerWidth + static_cast<int> (std::round (startBeat * pixelsPerBeat)));
+            const int x2 = juce::jlimit (headerWidth, bounds.getWidth(),
+                                         headerWidth + static_cast<int> (std::round (endBeat * pixelsPerBeat)));
+
+            if (x2 > x1)
+            {
+                const juce::Colour loopCyan (0xff22d3ee);
+                g.setColour (loopCyan.withAlpha (0.28f));
+                g.fillRect (x1, 0, x2 - x1, rulerHeight - 1);
+                g.setColour (loopCyan);
+                g.fillRect (x1, 0, x2 - x1, 2);
+                g.fillRect (x1, rulerHeight - 3, x2 - x1, 2);
+            }
+        }
+    }
+
     // Transport playhead
     const double playheadBeat = edit->tempoSequence.toBeats (edit->getTransport().getPosition()).inBeats();
     const int playheadX = headerWidth + static_cast<int> (playheadBeat * pixelsPerBeat);
@@ -229,10 +259,34 @@ void ArrangementView::mouseDown (const juce::MouseEvent& e)
     if (edit == nullptr)
         return;
 
-    // Ruler click -> seek playhead
+    // Ruler click -> Shift+Click sets loop end (bar-snapped), plain click seeks playhead
     if (e.y < rulerHeight && e.x >= headerWidth)
     {
-        const double clickedBeat = std::floor (getBeatAtX (e.x) * 4.0) / 4.0;
+        const double rawBeat = getBeatAtX (e.x);
+
+        if (e.mods.isShiftDown())
+        {
+            const auto curLoop = edit->getTransport().getLoopRange();
+            const double loopStartBeat = curLoop.isEmpty()
+                                             ? 0.0
+                                             : std::max (0.0, edit->tempoSequence.toBeats (curLoop.getStart()).inBeats());
+            const double snappedEndBeat = std::max (loopStartBeat + 4.0,
+                                                    std::ceil (std::max (0.25, rawBeat) / 4.0) * 4.0);
+
+            edit->getTransport().setLoopRange ({
+                edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (loopStartBeat)),
+                edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (snappedEndBeat))
+            });
+            edit->getTransport().looping = true;
+
+            if (onLoopChanged != nullptr)
+                onLoopChanged();
+
+            repaint();
+            return;
+        }
+
+        const double clickedBeat = std::floor (rawBeat * 4.0) / 4.0;
         const auto targetTime = edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (clickedBeat));
         edit->getTransport().setPosition (targetTime);
         repaint();

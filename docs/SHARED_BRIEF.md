@@ -1,21 +1,24 @@
 ## Pipeline State
 
-- Merged: WO-001, WO-002, WO-003, WO-004, WO-005, WO-006, WO-007, WO-008 (PRs #1-#8).
-- In review: WO-009 (PR #9) - Phase 6, portable `filePathResolver`, `MixdownExporter`
-  + `Export WAV` via synchronous Tracktion `Renderer::RenderTask`, and MCP
-  `rack.get_state` / `rack.patch` / `audio.import_file` / `audio.export_wav`
-  on `feat/wo-009-resolver-mixdown-mcp-rack` (retargeted to `main` after PR #8 merged).
-- Verification (WO-009): Release build clean, 5/5 Release `--smoke-test` PASS,
-  isolated ASAN Release `--smoke-test` PASS, Python MCP script syntax verified;
-  awaiting Muse PR Doctor audit & CI on the `main` base.
-- Auditor (Muse): review `5987762952` REQUEST CHANGES (no CI on the stacked
-  base; global 30 s RPC timeout). Fix applied directly to the PR branch per
-  Glenn's word: per-method wait — 30 s only for `audio.export_wav`, 2.5 s for
-  everything else. Merged `main` (`2f1264f`) into the branch to resolve
-  conflicts; CI running on the merged head.
-- Next Queued Work Order: WO-010 - Phase 7 Live MIDI & Audio Input Recording,
-  Metronome Count-In & Release Packaging (gated on `main` post-PR #9).
-- Current `main`: `2f1264f` (post PR #8 merge).
+- Merged: WO-001, WO-002, WO-003, WO-004, WO-005, WO-006, WO-007, WO-008, WO-009 (PRs #1-#9).
+- In review: WO-010 (PR #10) - Phase 7, two-row studio header (`1280x820`),
+  metronome `Click` (`clickTrackEnabled`) & `Loop` transport + cyan ruler
+  highlight, `MidiKeyboardDock` (live synth auditioning + quantized `Step Rec`),
+  extended `daw.get_state` / `transport.control` RPCs & `control_transport` MCP
+  tool, and `scripts/package-windows.ps1` + CI release zip upload on
+  `feat/wo-010-metronome-loop-midi-packaging`.
+- Verification (WO-010): Release build clean (0 errors, 0 warnings), 5/5 Release
+  `--smoke-test` PASS (`8.09s`–`10.23s`), isolated ASAN Release `--smoke-test`
+  PASS (`ASAN_SMOKE_EXIT=0`), `dist/ToxicCreationzStudio-win64.zip` packaged
+  (`9,686,160` bytes), Python MCP syntax check (`PY_SYNTAX_OK`); awaiting Muse
+  PR Doctor audit & Glenn merge.
+- Auditor (Muse): review REQUEST CHANGES (Step Rec stretched an early clip
+  across the timeline instead of starting a fresh clip at the playhead's bar).
+  Fix applied directly to the PR branch per Glenn's word: `recordStepNote`
+  now targets the clip containing the playhead and starts a fresh clip at the
+  playhead's bar otherwise, with a smoke assertion recording at beat 32.
+  Awaiting CI on the fix commit.
+- Current `main`: `e9fe611` (post PR #9 merge).
 - Workflow: Gemini (docs/BRIEFING.md) -> Local Executor (build, smoke, PR) ->
   Muse PR-Doctor audit -> ChatGPT audit -> Glenn merge. Never self-merge.
 - Smoke convention: Release build + `--smoke-test`; all temp dirs under
@@ -38,7 +41,8 @@
 | WO-006 | Phase 3 Riff-Layering BGM Solver, Starter WAV Provisioner & Time-Stretched Audio Clips | Merged to `main` (`4105512`, PR #6) |
 | WO-007 | Phase 4 Native JSON-RPC 2.0 IPC Server (`DawIpcServer`) & Python FastMCP Co-Producer Bridge | Merged to `main` (`074feb9`, PR #7) |
 | WO-008 | Phase 5 Audacity-Style Non-Destructive Waveform Editor & Bounce-to-Take DSP | Merged to `main` (`2f1264f`, PR #8) |
-| WO-009 | Phase 6 Session Portability (`filePathResolver`), Master Mixdown Export (`Export WAV`) & MCP Rack/Stem RPCs | In review (`feat/wo-009-resolver-mixdown-mcp-rack`, PR #9, stacked on PR #8) |
+| WO-009 | Phase 6 Session Portability (`filePathResolver`), Master Mixdown Export (`Export WAV`) & MCP Rack/Stem RPCs | Merged to `main` (`e9fe611`, PR #9) |
+| WO-010 | Phase 7 Two-Row Studio Header, Metronome/Loop Transport, Virtual MIDI Step-Rec & Windows Packaging | In review (`feat/wo-010-metronome-loop-midi-packaging`, PR #10) |
 
 ---
 

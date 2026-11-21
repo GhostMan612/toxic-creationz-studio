@@ -1428,6 +1428,206 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-009 filePathResolver, MCP rack.patch/import_file & Master Mixdown WAV PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-010 Regression: Metronome Click, Loop Transport, Step Rec & Header Layout
+    //===========================================================================
+    {
+        // 1. Toggle click & loop range via transport.control RPC and verify via daw.get_state
+        app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":100,"method":"transport.control","params":{"click":true,"loop":true,"loop_start_beat":0.0,"loop_end_beat":16.0}})");
+        const auto stateResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":101,"method":"daw.get_state","params":{}})"));
+
+        if (! static_cast<bool> (stateResp["result"]["click_enabled"])
+            || ! static_cast<bool> (stateResp["result"]["looping"])
+            || std::abs (static_cast<double> (stateResp["result"]["loop_start_beat"]) - 0.0) > 0.05
+            || std::abs (static_cast<double> (stateResp["result"]["loop_end_beat"]) - 16.0) > 0.05)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-010 click/loop transport RPC state mismatch" << std::endl;
+            return 1;
+        }
+
+        // 2. Verify MidiKeyboardDock::recordStepNote appends a MIDI note, advances playhead, and undoes cleanly
+        {
+            app.midiKeyboardDock.setEdit (app.edit.get());
+            app.edit->getTransport().setPosition (tracktion::TimePosition::fromSeconds (0.0));
+
+            auto countTrack0Notes = [&app]()
+            {
+                int total = 0;
+                auto tracks = te::getAudioTracks (*app.edit);
+                if (! tracks.isEmpty())
+                    for (auto* c : tracks[0]->getClips())
+                        if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                            total += mc->getSequence().getNumNotes();
+                return total;
+            };
+
+            const int notesBefore = countTrack0Notes();
+
+            if (! app.midiKeyboardDock.recordStepNote (64, 112, 0.5))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-010 recordStepNote returned false" << std::endl;
+                return 1;
+            }
+
+            const double playheadAfter = app.edit->tempoSequence.toBeats (app.edit->getTransport().getPosition()).inBeats();
+            const int notesAfter = countTrack0Notes();
+
+            if (notesAfter != notesBefore + 1 || std::abs (playheadAfter - 0.5) > 0.01)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-010 recordStepNote did not add note or advance playhead" << std::endl;
+                return 1;
+            }
+
+            app.edit->getUndoManager().undo();
+            const int notesAfterUndo = countTrack0Notes();
+
+            if (notesAfterUndo != notesBefore)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-010 Undo did not revert recordStepNote" << std::endl;
+                return 1;
+            }
+
+            // 2b. Step Rec at a late playhead must start a fresh clip at the
+            // playhead's bar — it must NOT stretch the seeded "Intro Riff"
+            // clip (beats 0-4) across the timeline to hold the note.
+            auto tracks = te::getAudioTracks (*app.edit);
+            te::MidiClip* introClip = nullptr;
+
+            if (! tracks.isEmpty())
+                for (auto* c : tracks[0]->getClips())
+                    if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                        if (mc->getName() == "Intro Riff")
+                            introClip = mc;
+
+            if (introClip == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-010 seeded Intro Riff clip missing" << std::endl;
+                return 1;
+            }
+
+            const double introEndBefore = app.edit->tempoSequence.toBeats (introClip->getPosition().getEnd()).inBeats();
+            const int notesBeforeLate = countTrack0Notes();
+
+            app.edit->getTransport().setPosition (
+                app.edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (32.0)));
+
+            if (! app.midiKeyboardDock.recordStepNote (67, 100, 0.5))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-010 recordStepNote at beat 32 returned false" << std::endl;
+                return 1;
+            }
+
+            const double introEndAfter = app.edit->tempoSequence.toBeats (introClip->getPosition().getEnd()).inBeats();
+            bool freshClipAt32 = false;
+
+            for (auto* c : tracks[0]->getClips())
+                if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                    if (std::abs (app.edit->tempoSequence.toBeats (mc->getPosition().getStart()).inBeats() - 32.0) < 0.01)
+                        freshClipAt32 = true;
+
+            if (countTrack0Notes() != notesBeforeLate + 1
+                || std::abs (introEndAfter - introEndBefore) > 0.01
+                || ! freshClipAt32)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-010 Step Rec stretched the Intro Riff clip or did not start a fresh clip at beat 32" << std::endl;
+                return 1;
+            }
+
+            app.edit->getUndoManager().undo();
+        }
+
+        // 3. Verify two-row header layout (zero overlap, statusLabel >= 180px) & keyboard dock height
+        {
+            app.setSize (1280, 820);
+            app.resized();
+
+            if (app.statusLabel.getWidth() < 180)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-010 statusLabel too narrow at 1280x820 ("
+                          << app.statusLabel.getWidth() << "px)" << std::endl;
+                return 1;
+            }
+
+            auto assertNoOverlap = [] (const std::vector<juce::Component*>& items, const char* rowLabel)
+            {
+                for (size_t i = 0; i < items.size(); ++i)
+                {
+                    if (items[i]->getWidth() <= 0 || items[i]->getHeight() <= 0)
+                    {
+                        std::cerr << "[SMOKE_TEST] FAIL: WO-010 zero-sized control in " << rowLabel << std::endl;
+                        return false;
+                    }
+
+                    for (size_t j = i + 1; j < items.size(); ++j)
+                    {
+                        if (items[i]->getBounds().intersects (items[j]->getBounds()))
+                        {
+                            std::cerr << "[SMOKE_TEST] FAIL: WO-010 overlapping controls in " << rowLabel << std::endl;
+                            return false;
+                        }
+                    }
+                }
+
+                return true;
+            };
+
+            const std::vector<juce::Component*> row1Items {
+                &app.newButton, &app.openButton, &app.saveButton, &app.saveAsButton,
+                &app.exportWavButton, &app.scanPluginsButton, &app.audioSettingsButton,
+                &app.bgmToggleButton, &app.waveEditorToggleButton, &app.keysToggleButton,
+                &app.rackToggleButton, &app.mixerToggleButton
+            };
+
+            const std::vector<juce::Component*> row2Items {
+                &app.playButton, &app.stopButton, &app.loopToggleButton, &app.clickToggleButton,
+                &app.addTrackButton, &app.undoButton, &app.redoButton,
+                &app.bpmSlider, &app.transportPosLabel, &app.statusLabel
+            };
+
+            if (! assertNoOverlap (row1Items, "Row 1") || ! assertNoOverlap (row2Items, "Row 2"))
+                return 1;
+
+            app.midiKeyboardDock.setVisible (true);
+            app.resized();
+
+            if (app.midiKeyboardDock.getHeight() != 74)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-010 midiKeyboardDock height mismatch, got "
+                          << app.midiKeyboardDock.getHeight() << std::endl;
+                return 1;
+            }
+
+            app.midiKeyboardDock.setVisible (false);
+            app.resized();
+        }
+
+        // 4. Verify clickTrackEnabled, looping & loopRange persist across save/load round-trip
+        const auto wo010TempDir = tempDir.getChildFile ("tcs_wo010_smoke");
+        wo010TempDir.deleteRecursively();
+        wo010TempDir.createDirectory();
+        const auto wo010SessionFile = wo010TempDir.getChildFile ("ClickLoopRoundTrip.tracktionedit");
+
+        app.currentEditFile = wo010SessionFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        if (! app.loadSessionFromFileSafely (wo010SessionFile)
+            || ! app.edit->clickTrackEnabled.get()
+            || ! app.edit->getTransport().looping.get()
+            || std::abs (app.edit->tempoSequence.toBeats (app.edit->getTransport().getLoopRange().getEnd()).inBeats() - 16.0) > 0.05
+            || ! app.clickToggleButton.getToggleState()
+            || ! app.loopToggleButton.getToggleState())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-010 clickTrackEnabled or loop state did not persist across reload" << std::endl;
+            return 1;
+        }
+
+        wo010TempDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-010 Metronome click, loop transport, Step Rec & two-row layout PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -1459,7 +1659,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "BGM riff-layering WaveAudioClip time-stretch/pitch persistence, "
                  "native TCP JSON-RPC IPC round-trip, non-destructive waveform "
                  "bounce-to-take DSP, portable filePathResolver, MCP rack.patch/import_file, "
-                 "master WAV mixdown export, and VST3 scanner lifecycle verified." << std::endl;
+                 "master WAV mixdown export, metronome click/loop transport, virtual MIDI Step Rec, "
+                 "two-row layout, and VST3 scanner lifecycle verified." << std::endl;
     return 0;
 }
 
