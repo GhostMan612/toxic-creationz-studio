@@ -122,17 +122,17 @@ bool MidiKeyboardDock::recordStepNote (int midiNoteNumber, int velocity, double 
     auto& um = edit->getUndoManager();
     um.beginNewTransaction ("Step Record MIDI Note");
 
-    te::MidiClip* firstClip = nullptr;
+    // Target the clip under the playhead. A clip that merely starts before
+    // the playhead must NOT be stretched across the timeline to hold the
+    // note — step-recording late in the arrangement used to grow an early
+    // 4-beat clip to cover the note instead of starting a fresh clip.
     te::MidiClip* targetClip = nullptr;
 
     for (auto* c : track->getClips())
     {
         if (auto* mc = dynamic_cast<te::MidiClip*> (c))
         {
-            if (firstClip == nullptr)
-                firstClip = mc;
-
-            if (mc->getPosition().getStart() <= posTime)
+            if (mc->getPosition().getStart() <= posTime && posTime < mc->getPosition().getEnd())
             {
                 targetClip = mc;
                 break;
@@ -140,17 +140,18 @@ bool MidiKeyboardDock::recordStepNote (int midiNoteNumber, int velocity, double 
         }
     }
 
-    if (targetClip == nullptr)
-        targetClip = firstClip;
-
-    const double minClipEndBeat = std::max (4.0, std::ceil (noteEndBeat / 4.0) * 4.0);
-    const tracktion::TimeRange clipRange {
-        tracktion::TimePosition::fromSeconds (0.0),
-        edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (minClipEndBeat))
-    };
+    // A fresh clip starts at the bar containing the playhead, not at 0.
+    const double barStartBeat = std::floor (currentBeat / 4.0) * 4.0;
+    const double minClipEndBeat = std::max (barStartBeat + 4.0, std::ceil (noteEndBeat / 4.0) * 4.0);
+    const auto minClipEndTime = edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (minClipEndBeat));
 
     if (targetClip == nullptr)
     {
+        const tracktion::TimeRange clipRange {
+            edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (barStartBeat)),
+            minClipEndTime
+        };
+
         targetClip = dynamic_cast<te::MidiClip*> (
             track->insertNewClip (te::TrackItem::Type::midi, "Step Rec", clipRange, nullptr));
     }
@@ -158,8 +159,8 @@ bool MidiKeyboardDock::recordStepNote (int midiNoteNumber, int velocity, double 
     if (targetClip == nullptr)
         return false;
 
-    if (targetClip->getPosition().getEnd() < clipRange.getEnd())
-        targetClip->setEnd (clipRange.getEnd(), true);
+    if (targetClip->getPosition().getEnd() < minClipEndTime)
+        targetClip->setEnd (minClipEndTime, true);
 
     const double clipStartBeat = edit->tempoSequence.toBeats (targetClip->getPosition().getStart()).inBeats();
     const double relStartBeat  = std::max (0.0, currentBeat - clipStartBeat);

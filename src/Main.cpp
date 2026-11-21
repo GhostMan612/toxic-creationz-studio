@@ -1488,6 +1488,54 @@ int MainComponent::runHeadlessSmokeTest()
                 std::cerr << "[SMOKE_TEST] FAIL: WO-010 Undo did not revert recordStepNote" << std::endl;
                 return 1;
             }
+
+            // 2b. Step Rec at a late playhead must start a fresh clip at the
+            // playhead's bar — it must NOT stretch the seeded "Intro Riff"
+            // clip (beats 0-4) across the timeline to hold the note.
+            auto tracks = te::getAudioTracks (*app.edit);
+            te::MidiClip* introClip = nullptr;
+
+            if (! tracks.isEmpty())
+                for (auto* c : tracks[0]->getClips())
+                    if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                        if (mc->getName() == "Intro Riff")
+                            introClip = mc;
+
+            if (introClip == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-010 seeded Intro Riff clip missing" << std::endl;
+                return 1;
+            }
+
+            const double introEndBefore = app.edit->tempoSequence.toBeats (introClip->getPosition().getEnd()).inBeats();
+            const int notesBeforeLate = countTrack0Notes();
+
+            app.edit->getTransport().setPosition (
+                app.edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (32.0)));
+
+            if (! app.midiKeyboardDock.recordStepNote (67, 100, 0.5))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-010 recordStepNote at beat 32 returned false" << std::endl;
+                return 1;
+            }
+
+            const double introEndAfter = app.edit->tempoSequence.toBeats (introClip->getPosition().getEnd()).inBeats();
+            bool freshClipAt32 = false;
+
+            for (auto* c : tracks[0]->getClips())
+                if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                    if (std::abs (app.edit->tempoSequence.toBeats (mc->getPosition().getStart()).inBeats() - 32.0) < 0.01)
+                        freshClipAt32 = true;
+
+            if (countTrack0Notes() != notesBeforeLate + 1
+                || std::abs (introEndAfter - introEndBefore) > 0.01
+                || ! freshClipAt32)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-010 Step Rec stretched the Intro Riff clip or did not start a fresh clip at beat 32" << std::endl;
+                return 1;
+            }
+
+            app.edit->getUndoManager().undo();
         }
 
         // 3. Verify two-row header layout (zero overlap, statusLabel >= 180px) & keyboard dock height

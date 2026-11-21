@@ -12,6 +12,12 @@
   PASS (`ASAN_SMOKE_EXIT=0`), `dist/ToxicCreationzStudio-win64.zip` packaged
   (`9,686,160` bytes), Python MCP syntax check (`PY_SYNTAX_OK`); awaiting Muse
   PR Doctor audit & Glenn merge.
+- Auditor (Muse): review REQUEST CHANGES (Step Rec stretched an early clip
+  across the timeline instead of starting a fresh clip at the playhead's bar).
+  Fix applied directly to the PR branch per Glenn's word: `recordStepNote`
+  now targets the clip containing the playhead and starts a fresh clip at the
+  playhead's bar otherwise, with a smoke assertion recording at beat 32.
+  Awaiting CI on the fix commit.
 - Current `main`: `e9fe611` (post PR #9 merge).
 - Workflow: Gemini (docs/BRIEFING.md) -> Local Executor (build, smoke, PR) ->
   Muse PR-Doctor audit -> ChatGPT audit -> Glenn merge. Never self-merge.
