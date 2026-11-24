@@ -1,5 +1,6 @@
 #include "MixerComponent.h"
 #include "AutomationManager.h"
+#include "CvRackPlugins.h"
 
 //==============================================================================
 // ChannelStrip
@@ -421,6 +422,13 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
     menu.addSectionHeader ("Aux FX Buses");
     menu.addItem (5, "Aux Send -> FX Bus 1 (Reverb)");
     menu.addItem (6, "Aux Send -> FX Bus 2 (Delay)");
+    menu.addSeparator();
+    menu.addSectionHeader ("Modular Racks");
+    menu.addItem (49, "Insert New CV Wobble Rack");
+
+    const auto& existingRacks = edit.getRackList().getTypes();
+    for (int i = 0; i < existingRacks.size() && i < 40; ++i)
+        menu.addItem (50 + i, "Rack: " + existingRacks.getUnchecked (i)->rackName.get());
 
     const auto vstTypes = engine.getPluginManager().knownPluginList.getTypes();
 
@@ -490,6 +498,46 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
                 ownerPtr->onMixerChanged();
 
             return;
+        }
+        else if (chosenId == 49)
+        {
+            safeThis->edit.getUndoManager().beginNewTransaction ("Insert New CV Wobble Rack");
+
+            if (auto newRack = safeThis->edit.getRackList().addNewRack())
+            {
+                newRack->rackName = "Track " + juce::String (safeThis->trackIndex + 1) + " CV Wobble Rack";
+                auto lfoPtr    = safeThis->edit.getPluginCache().createNewPlugin (CvLfoPlugin::xmlTypeName, {});
+                auto wobblePtr = safeThis->edit.getPluginCache().createNewPlugin (CvWobbleFilterPlugin::xmlTypeName, {});
+
+                if (lfoPtr != nullptr && wobblePtr != nullptr)
+                {
+                    const auto lfoID    = lfoPtr->itemID;
+                    const auto wobbleID = wobblePtr->itemID;
+                    newRack->addPlugin (lfoPtr,    { 0.14f, 0.22f }, false);
+                    newRack->addPlugin (wobblePtr, { 0.54f, 0.22f }, false);
+
+                    newRack->addConnection ({}, 1, wobbleID, 1);
+                    newRack->addConnection ({}, 2, wobbleID, 2);
+                    newRack->addConnection (lfoID, 1, wobbleID, 3);
+                    newRack->addConnection (wobbleID, 1, {}, 1);
+                    newRack->addConnection (wobbleID, 2, {}, 2);
+                }
+
+                tr->pluginList.insertPlugin (te::RackInstance::create (*newRack),
+                                             MixerComponent::getInsertIndexForNewPlugin (*tr));
+            }
+        }
+        else if (chosenId >= 50 && chosenId < 90)
+        {
+            const int rackIdx = chosenId - 50;
+            const auto& racks = safeThis->edit.getRackList().getTypes();
+
+            if (juce::isPositiveAndBelow (rackIdx, racks.size()))
+            {
+                safeThis->edit.getUndoManager().beginNewTransaction ("Insert Modular Rack");
+                tr->pluginList.insertPlugin (te::RackInstance::create (*racks.getUnchecked (rackIdx)),
+                                             MixerComponent::getInsertIndexForNewPlugin (*tr));
+            }
         }
         else if (chosenId >= 100)
         {
@@ -664,23 +712,7 @@ void MixerComponent::rebuildStrips()
 
 int MixerComponent::getInsertIndexForNewPlugin (te::AudioTrack& track)
 {
-    int index = 0;
-
-    for (auto* plugin : track.pluginList)
-    {
-        // The terminal utilities sit at the end of the chain; a new insert
-        // goes just before the first of them. If there are none, the index
-        // is past the end and insertPlugin appends.
-        if (dynamic_cast<te::VolumeAndPanPlugin*> (plugin) != nullptr
-            || dynamic_cast<te::LevelMeterPlugin*> (plugin) != nullptr)
-        {
-            break;
-        }
-
-        ++index;
-    }
-
-    return index;
+    return AutomationManager::getInsertIndexBeforeTerminalPlugins (track);
 }
 
 void MixerComponent::paint (juce::Graphics& g)

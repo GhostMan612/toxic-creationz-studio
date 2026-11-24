@@ -50,8 +50,8 @@ private:
     static constexpr int headerWidth    = 190;
     static constexpr int rulerHeight    = 28;
     static constexpr int trackHeight    = 56;
-    static constexpr int totalBars      = 16;
 
+    int getTotalBars() const;
     int getTrackIndexAtY (int y) const;
     int getMaxVerticalScrollPx() const;
     void clampVerticalScroll();

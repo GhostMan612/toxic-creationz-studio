@@ -19,12 +19,13 @@ float AudioToMidiTranscriber::estimateFrameFrequencyYin (const float* frame,
     const double maxFreq = 440.0 * std::pow (2.0, (static_cast<double> (maxMidi) - 69.0) / 12.0);
     const double minFreq = 440.0 * std::pow (2.0, (static_cast<double> (minMidi) - 69.0) / 12.0);
 
-    const int tauMin = juce::jlimit (2, halfW - 2, static_cast<int> (std::floor (sampleRate / maxFreq)));
-    const int tauMax = juce::jlimit (tauMin + 1, halfW - 1, static_cast<int> (std::ceil (sampleRate / minFreq)));
+    const int tauMin   = juce::jlimit (2, halfW - 2, static_cast<int> (std::floor (sampleRate / maxFreq)));
+    const int tauMax   = juce::jlimit (tauMin + 1, halfW - 1, static_cast<int> (std::ceil (sampleRate / minFreq)));
+    const int tauLimit = std::min (halfW - 1, tauMax + 1);
 
-    std::vector<float> diff (static_cast<size_t> (halfW), 0.0f);
+    std::vector<float> diff (static_cast<size_t> (tauLimit + 1), 0.0f);
 
-    for (int tau = 1; tau < halfW; ++tau)
+    for (int tau = 1; tau <= tauLimit; ++tau)
     {
         double sum = 0.0;
 
@@ -37,10 +38,10 @@ float AudioToMidiTranscriber::estimateFrameFrequencyYin (const float* frame,
         diff[static_cast<size_t> (tau)] = static_cast<float> (sum);
     }
 
-    std::vector<float> cmndf (static_cast<size_t> (halfW), 1.0f);
+    std::vector<float> cmndf (static_cast<size_t> (tauLimit + 1), 1.0f);
     double runningSum = 0.0;
 
-    for (int tau = 1; tau < halfW; ++tau)
+    for (int tau = 1; tau <= tauLimit; ++tau)
     {
         runningSum += static_cast<double> (diff[static_cast<size_t> (tau)]);
 
@@ -71,7 +72,7 @@ float AudioToMidiTranscriber::estimateFrameFrequencyYin (const float* frame,
     // Parabolic interpolation around bestTau
     double refinedTau = static_cast<double> (bestTau);
 
-    if (bestTau > 1 && bestTau + 1 < halfW)
+    if (bestTau > 1 && bestTau + 1 <= tauLimit)
     {
         const double s0 = static_cast<double> (cmndf[static_cast<size_t> (bestTau - 1)]);
         const double s1 = static_cast<double> (cmndf[static_cast<size_t> (bestTau)]);
@@ -291,11 +292,78 @@ TranscriptionCommitResult AudioToMidiTranscriber::transcribeClipToMidi (te::Edit
     }
 
     const auto* tempoSetting = edit.tempoSequence.getTempo (0);
-    const double bpm = tempoSetting != nullptr ? tempoSetting->getBpm() : 124.0;
-    const double srcStartBeat = edit.tempoSequence.toBeats (srcClip->getPosition().getStart()).inBeats();
+    const double sessionBpm = tempoSetting != nullptr ? tempoSetting->getBpm() : 124.0;
+    const auto clipPos = srcClip->getPosition();
+    const double srcStartBeat = edit.tempoSequence.toBeats (clipPos.getStart()).inBeats();
+    const double srcEndBeat   = edit.tempoSequence.toBeats (clipPos.getEnd()).inBeats();
+    const double clipSpanBeats = std::max (0.0, srcEndBeat - srcStartBeat);
     const juce::String srcName = srcClip->getName();
 
-    auto notes = transcribeFile (wavFile, bpm, opts);
+    // Respect clip trim offset, auto-tempo stretch ratio, and pitchChange semitones
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (wavFile));
+
+    if (reader == nullptr || reader->lengthInSamples <= 0 || reader->numChannels == 0 || reader->sampleRate <= 0.0)
+    {
+        res.errorMessage = "Unreadable audio source: " + wavFile.getFileName();
+        return res;
+    }
+
+    const juce::int64 offsetSamples = juce::jlimit<juce::int64> (
+        0,
+        std::max<juce::int64> (0, reader->lengthInSamples - 2048),
+        static_cast<juce::int64> (std::llround (std::max (0.0, clipPos.getOffset().inSeconds()) * reader->sampleRate)));
+    const juce::int64 availSamples = reader->lengthInSamples - offsetSamples;
+    const int maxSamples = static_cast<int> (std::min<juce::int64> (
+        availSamples, static_cast<juce::int64> (reader->sampleRate * 60.0)));
+
+    if (maxSamples < 2048)
+    {
+        res.errorMessage = "Audio clip region too short for pitch analysis";
+        return res;
+    }
+
+    juce::AudioBuffer<float> clipBuf (static_cast<int> (reader->numChannels), maxSamples);
+
+    if (! reader->read (&clipBuf, 0, maxSamples, offsetSamples, true, true))
+    {
+        res.errorMessage = "Failed to read audio samples from clip";
+        return res;
+    }
+
+    double effectiveBpm = sessionBpm;
+    const double fileDurSec = static_cast<double> (reader->lengthInSamples) / reader->sampleRate;
+
+    if (srcClip->getAutoTempo() && srcClip->getLoopInfo().getNumBeats() > 0.0 && fileDurSec > 0.01)
+        effectiveBpm = std::clamp (60.0 * (srcClip->getLoopInfo().getNumBeats() / fileDurSec), 40.0, 240.0);
+    else if (srcClip->getSpeedRatio() > 0.05)
+        effectiveBpm = std::clamp (sessionBpm / srcClip->getSpeedRatio(), 40.0, 240.0);
+
+    auto notes = transcribeBuffer (clipBuf, reader->sampleRate, effectiveBpm, opts);
+    reader.reset();
+
+    const int pitchShiftSemis = static_cast<int> (std::round (srcClip->getPitchChange()));
+
+    if (pitchShiftSemis != 0)
+    {
+        for (auto& n : notes)
+            n.pitch = juce::jlimit (0, 127, n.pitch + pitchShiftSemis);
+    }
+
+    if (clipSpanBeats >= 0.25)
+    {
+        notes.erase (std::remove_if (notes.begin(), notes.end(),
+                                     [clipSpanBeats] (const TranscribedNote& n)
+                                     {
+                                         return n.startBeat >= clipSpanBeats - 1e-4;
+                                     }),
+                     notes.end());
+
+        for (auto& n : notes)
+            if (n.startBeat + n.lengthBeats > clipSpanBeats)
+                n.lengthBeats = std::max (0.125, clipSpanBeats - n.startBeat);
+    }
 
     if (notes.empty())
     {

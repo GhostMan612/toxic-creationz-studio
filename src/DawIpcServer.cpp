@@ -34,6 +34,7 @@ bool DawIpcServer::startListening (int listenPort)
     if (! serverSocket.createListener (listenPort, "127.0.0.1"))
         return false;
 
+    aliveFlag = std::make_shared<std::atomic<bool>> (true);
     boundPort.store (listenPort, std::memory_order_release);
     listening.store (true, std::memory_order_release);
 
@@ -44,6 +45,9 @@ bool DawIpcServer::startListening (int listenPort)
 
 void DawIpcServer::stopListening()
 {
+    if (aliveFlag != nullptr)
+        aliveFlag->store (false, std::memory_order_release);
+
     signalThreadShouldExit();
     listening.store (false, std::memory_order_release);
     serverSocket.close();
@@ -124,6 +128,14 @@ void DawIpcServer::handleClient (juce::StreamingSocket& client)
         }
         else if (ch != '\r')
         {
+            if (lineBuffer.getSize() >= maxJsonFrameBytes)
+            {
+                const auto errJson = makeErrorResponse (juce::var(), -32600, "JSON-RPC frame exceeds 4 MiB limit") + "\n";
+                client.write (errJson.toRawUTF8(), static_cast<int> (errJson.getNumBytesAsUTF8()));
+                lineBuffer.reset();
+                break;
+            }
+
             lineBuffer.append (&ch, 1);
         }
     }
@@ -139,9 +151,11 @@ juce::String DawIpcServer::enqueueAndWaitForMessageThread (const juce::String& r
         pendingQueue.push_back ({ rawJson, promise });
     }
 
-    juce::MessageManager::callAsync ([this]
+    const auto flag = aliveFlag;
+    juce::MessageManager::callAsync ([this, flag]
     {
-        servicePendingRequestsOnMessageThread();
+        if (flag != nullptr && flag->load (std::memory_order_acquire))
+            servicePendingRequestsOnMessageThread();
     });
 
     // Per-method wait: long-running audio operations (mixdown rendering and
@@ -225,20 +239,7 @@ juce::String DawIpcServer::executeJsonRpcOnMessageThread (const juce::String& ra
 
 int DawIpcServer::getInsertIndexBeforeTerminalPlugins (te::AudioTrack& track)
 {
-    int idx = 0;
-
-    for (auto* p : track.pluginList)
-    {
-        if (dynamic_cast<te::VolumeAndPanPlugin*> (p) != nullptr
-            || dynamic_cast<te::LevelMeterPlugin*> (p) != nullptr)
-        {
-            break;
-        }
-
-        ++idx;
-    }
-
-    return idx;
+    return AutomationManager::getInsertIndexBeforeTerminalPlugins (track);
 }
 
 juce::String DawIpcServer::dispatchMethod (const juce::var& id,

@@ -25,7 +25,7 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 
 ---
 
-## Implemented Work Orders (`WO-001` through `WO-014`)
+## Implemented Work Orders (`WO-001` through `WO-016`)
 
 | Phase | Highlights |
 | --- | --- |
@@ -42,6 +42,8 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 | **WO-012** | Live audio & MIDI recording via `RecordingManager`, per-track record arm (`R`), input monitoring, hardware audio/MIDI + `Virtual MIDI` input routing, 1-bar transport `Count-In`, and `recording.list_inputs` MCP support. |
 | **WO-013** | `StudioLookAndFeel` dark studio theme, `AutomationManager` (`te::AutomationCurve` overlay + `Auto` lane editor), shared `Aux Send` / `Aux Return` FX bus with built-in Reverb & Delay, zoomable timeline & piano roll, and keyboard shortcuts. |
 | **WO-014** | Zero-dependency C++ **YIN** monophonic pitch transcription (`AudioToMidiTranscriber`), Waveform Editor `To MIDI` button, `audio.transcribe_to_midi` MCP tool (`transcribe_audio_to_midi`), and final v1.0 packaging. |
+| **WO-015** | `StudioUIBehaviour` & `StudioPluginWindow` (native VST3 + generic plugin editors), `ArrangementView` vertical track scroll, `Wave Edit` → `To MIDI` auto-switch, QWERTY virtual-keys focus routing, and Mixer `Aux FX Buses` menu items. |
+| **WO-016** | Real CV-modulated `StateVariableTPTFilter` in `CvWobbleFilterPlugin`, direction-aware `ModularRackComponent` Audio/CV + Rack I/O jacks & Mixer rack insert, clip-transpose/stretch-aware `AudioToMidiTranscriber`, `DawIpcServer` alive/frame guards, and window-close unsaved guard. |
 
 ---
 
@@ -129,6 +131,7 @@ src/
   Main.cpp                           # JUCEApplication + headless --smoke-test regression suite
   MainComponent.h/.cpp               # Engine/Edit lifecycle, two-row studio header, shortcuts, IPC
   StudioLookAndFeel.h                # Dark studio LookAndFeel palette
+  StudioPluginWindow.h               # Native VST3 & generic Tracktion/CV floating plugin editors
   ArrangementView.h/.cpp             # Zoomable multi-track timeline, loop range, arm pills & automation overlay
   PianoRollComponent.h/.cpp          # Zoomable grid-snapping MIDI editor
   MixerComponent.h/.cpp              # Channel strips, 3-band EQ, Reverb/Delay inserts, Aux sends, meters, rec arm

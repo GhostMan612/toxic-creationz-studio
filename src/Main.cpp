@@ -2464,6 +2464,181 @@ int MainComponent::runHeadlessSmokeTest()
                   << std::endl;
     }
 
+    //===========================================================================
+    // WO-016 Regression Test: CV SVF Filter DSP, Direction Pins, Transpose & Undo
+    //===========================================================================
+    {
+        const auto wo016TempDir = tempDir.getChildFile ("tcs_wo016_smoke");
+        wo016TempDir.deleteRecursively();
+        wo016TempDir.createDirectory();
+
+        // 1. Fresh-session Undo history starts empty
+        app.createNewSession (wo016TempDir.getChildFile ("FreshUndo.tracktionedit"), true, false);
+        if (app.edit->getUndoManager().canUndo())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-016 fresh session started with non-empty undo history" << std::endl;
+            return 1;
+        }
+
+        // 2. CvWobbleFilterPlugin: 3 inputs (L, R, CV In), real CV-modulated SVF attenuation & CV clear
+        {
+            auto wobbleTestP = app.edit->getPluginCache().createNewPlugin (CvWobbleFilterPlugin::xmlTypeName, {});
+            auto* wobble = dynamic_cast<CvWobbleFilterPlugin*> (wobbleTestP.get());
+
+            juce::StringArray ins, outs;
+            if (wobble != nullptr)
+                wobble->getChannelNames (&ins, &outs);
+
+            if (wobble == nullptr || ins.size() != 3 || outs.size() != 2 || ins[2] != "CV In")
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 CvWobbleFilterPlugin channel pin layout mismatch" << std::endl;
+                return 1;
+            }
+
+            constexpr int blockN = 256;
+            constexpr double sr = 44100.0;
+            auto makeTestBlock = [] (float cvVal)
+            {
+                juce::AudioBuffer<float> buf (3, blockN);
+                for (int i = 0; i < blockN; ++i)
+                {
+                    // 1500 Hz sits inside the high-CV passband (~2545 Hz) and
+                    // ~2.2 octaves above the low-CV cutoff (~318 Hz) at default depth 0.5.
+                    const float sig = static_cast<float> (
+                        0.5 * std::sin (2.0 * juce::MathConstants<double>::pi * 1500.0 * i / sr));
+                    buf.setSample (0, i, sig);
+                    buf.setSample (1, i, sig);
+                    buf.setSample (2, i, cvVal);
+                }
+                return buf;
+            };
+
+            auto bufLow  = makeTestBlock (-1.0f);
+            auto bufHigh = makeTestBlock (+1.0f);
+
+            const te::PluginInitialisationInfo initInfo { tracktion::TimePosition::fromSeconds (0.0), sr, blockN };
+            wobble->initialise (initInfo);
+            wobble->applyToBuffer (te::PluginRenderContext (&bufLow, 0, blockN, nullptr, 0.0, {}, false, false, false, false));
+            wobble->deinitialise();
+
+            wobble->initialise (initInfo);
+            wobble->applyToBuffer (te::PluginRenderContext (&bufHigh, 0, blockN, nullptr, 0.0, {}, false, false, false, false));
+            wobble->deinitialise();
+
+            const float lowRms  = bufLow.getRMSLevel (0, 0, blockN);
+            const float highRms = bufHigh.getRMSLevel (0, 0, blockN);
+
+            if (highRms <= lowRms * 1.25f || std::abs (bufHigh.getSample (2, 0)) > 1e-6f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 CvWobbleFilterPlugin CV-modulated SVF filter check failed"
+                          << std::endl;
+                return 1;
+            }
+        }
+
+        // 3. ModularRackComponent direction-aware input/output pins & Rack I/O rails
+        {
+            auto wo16Rack = app.edit->getRackList().addNewRack();
+            wo16Rack->rackName = "WO-016 CV Rack";
+
+            auto lfoP    = app.edit->getPluginCache().createNewPlugin (CvLfoPlugin::xmlTypeName, {});
+            auto wobbleP = app.edit->getPluginCache().createNewPlugin (CvWobbleFilterPlugin::xmlTypeName, {});
+
+            const auto lfoID    = lfoP->itemID;
+            const auto wobbleID = wobbleP->itemID;
+
+            if (! wo16Rack->addPlugin (lfoP, { 0.15f, 0.25f }, false)
+                || ! wo16Rack->addPlugin (wobbleP, { 0.55f, 0.25f }, false)
+                || ! wo16Rack->addConnection ({}, 1, wobbleID, 1)
+                || ! wo16Rack->addConnection (lfoID, 1, wobbleID, 3)
+                || ! wo16Rack->addConnection (wobbleID, 1, {}, 1))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 could not wire Rack I/O & LFO -> Wobble CV In" << std::endl;
+                return 1;
+            }
+
+            const int rIdx = app.edit->getRackList().getTypes().size() - 1;
+            app.modularRackComponent.syncFromEdit();
+            app.modularRackComponent.selectRack (rIdx);
+            app.modularRackComponent.setSize (1000, 560);
+            app.modularRackComponent.resized();
+
+            const auto inPos  = app.modularRackComponent.getPinCentreInRack (wobbleID, 1, true);
+            const auto outPos = app.modularRackComponent.getPinCentreInRack (wobbleID, 1, false);
+
+            if (inPos.x >= outPos.x || ! app.modularRackComponent.verifyNonOverlappingLayoutForSmokeTest())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 direction-aware pin geometry invalid" << std::endl;
+                return 1;
+            }
+        }
+
+        // 4. Pitch-shift-aware AudioToMidiTranscriber (A4 + 3 semitones -> C5 = 72)
+        const auto pitchWav = wo016TempDir.getChildFile ("PitchShiftA4.wav");
+        const double curBpm = app.edit->tempoSequence.getTempo (0)->getBpm();
+        const double beatSec = 60.0 / std::max (40.0, curBpm);
+        constexpr int sr = 44100;
+        const int nSamples = static_cast<int> (std::round (beatSec * 2.0 * sr));
+
+        {
+            juce::AudioBuffer<float> a4Buf (2, nSamples);
+            for (int i = 0; i < nSamples; ++i)
+            {
+                const float s = static_cast<float> (
+                    0.5 * std::sin (2.0 * juce::MathConstants<double>::pi * 440.0 * i / sr));
+                a4Buf.setSample (0, i, s);
+                a4Buf.setSample (1, i, s);
+            }
+
+            auto fs = std::make_unique<juce::FileOutputStream> (pitchWav);
+            fs->setPosition (0);
+            fs->truncate();
+            std::unique_ptr<juce::OutputStream> os (fs.release());
+            juce::WavAudioFormat fmt;
+            auto writer = fmt.createWriterFor (os, juce::AudioFormatWriterOptions{}
+                                                       .withSampleRate (sr)
+                                                       .withNumChannels (2)
+                                                       .withBitsPerSample (16));
+            if (writer == nullptr || ! writer->writeFromAudioSampleBuffer (a4Buf, 0, nSamples))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 could not write PitchShiftA4.wav" << std::endl;
+                return 1;
+            }
+        }
+
+        {
+            auto tracks = te::getAudioTracks (*app.edit);
+            const tracktion::TimeRange r {
+                tracktion::TimePosition::fromSeconds (0.0),
+                tracktion::TimePosition::fromSeconds (beatSec * 2.0)
+            };
+
+            if (auto wc = tracks[1]->insertWaveClip ("TransposedTake", pitchWav, te::ClipPosition { r, {} }, false))
+            {
+                wc->getSourceFileReference().setToFile (
+                    pitchWav, te::SourceFileReference::PathStyle::alwaysAbsolute, false);
+                wc->setPitchChange (3.0f);
+            }
+        }
+
+        const auto transShiftResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":160,"method":"audio.transcribe_to_midi","params":{"track_index":1,"clip_index":0,"target_track_index":-1,"quantize_beats":0.25,"min_note_beats":0.25}})"));
+        const auto* shiftNotes = transShiftResp["result"]["notes"].getArray();
+
+        if (shiftNotes == nullptr || shiftNotes->isEmpty() || static_cast<int> ((*shiftNotes)[0]["pitch"]) != 72)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-016 transposed clip transcription expected pitch 72, got "
+                      << (shiftNotes != nullptr && ! shiftNotes->isEmpty()
+                              ? static_cast<int> ((*shiftNotes)[0]["pitch"])
+                              : -1)
+                      << std::endl;
+            return 1;
+        }
+
+        wo016TempDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-016 CV SVF filter, direction pins & transposed transcription PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -2500,6 +2675,7 @@ int MainComponent::runHeadlessSmokeTest()
                  "live mixer metering, live audio/MIDI recording, track arming, count-in, automation curves, "
                  "Aux FX send/return bus, zoomable views, dark studio theme, YIN audio-to-MIDI pitch transcription, "
                  "plugin editor windows, timeline vertical scroll, Wave-to-MIDI switch, "
+                 "CV SVF filter DSP, direction-aware rack pins, clip-transpose transcription, "
                  "and VST3 scanner lifecycle verified."
               << std::endl;
     return 0;
@@ -2552,6 +2728,16 @@ public:
 
         void closeButtonPressed() override
         {
+            if (auto* mc = dynamic_cast<MainComponent*> (getContentComponent()))
+            {
+                mc->guardUnsavedChanges ([] (bool proceed)
+                {
+                    if (proceed)
+                        JUCEApplication::getInstance()->systemRequestedQuit();
+                });
+                return;
+            }
+
             JUCEApplication::getInstance()->systemRequestedQuit();
         }
     };

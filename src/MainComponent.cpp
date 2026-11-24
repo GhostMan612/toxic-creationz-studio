@@ -626,6 +626,7 @@ MainComponent::~MainComponent()
         midiKeyboardDock.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
+        te::PluginWindowState::hideAllWindowsTemporarily (*edit);
         detachStateListener (*edit);
         edit->filePathResolver = nullptr;
         edit.reset();
@@ -1002,6 +1003,7 @@ void MainComponent::createNewSession (const juce::File& targetFile, bool seedDef
         midiKeyboardDock.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
+        te::PluginWindowState::hideAllWindowsTemporarily (*edit);
         detachStateListener (*edit);
         edit->filePathResolver = nullptr;
         edit.reset();
@@ -1047,6 +1049,7 @@ void MainComponent::createNewSession (const juce::File& targetFile, bool seedDef
     }
 
     suppressDirtyTracking = true;
+    edit->getUndoManager().clearUndoHistory();
     edit->resetChangedStatus();
     sessionDirty = false;
     snapshotSavedState();
@@ -1100,6 +1103,7 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
         midiKeyboardDock.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
+        te::PluginWindowState::hideAllWindowsTemporarily (*edit);
         detachStateListener (*edit);
         edit->filePathResolver = nullptr;
         edit.reset();
@@ -1110,6 +1114,7 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
     sessionUntitled = false;
 
     suppressDirtyTracking = true;
+    edit->getUndoManager().clearUndoHistory();
     edit->resetChangedStatus();
     sessionDirty = false;
     snapshotSavedState();

@@ -33,6 +33,8 @@ public:
     void setEdit (te::Edit* editToAttach);
     void resized() override;
     void paint (juce::Graphics& g) override;
+    void paintOverChildren (juce::Graphics& g) override;
+    void mouseDown (const juce::MouseEvent& e) override;
     void refresh();
 
     // Read-only UI synchronisation. Must never touch the UndoManager.
@@ -64,10 +66,12 @@ private:
         NodeView (te::Plugin& pluginToView, const juce::String& displayName, bool cvSource);
         void paint (juce::Graphics& g) override;
         void mouseDown (const juce::MouseEvent& e) override;
-        juce::Rectangle<float> getPinRect (int pinIndex) const;
+        void mouseDoubleClick (const juce::MouseEvent& e) override;
+        juce::Rectangle<float> getPinRect (int pinIndex, bool isInput) const;
         te::Plugin& plugin;
 
         std::function<void (NodeView&, const juce::MouseEvent&)> onClick;
+        std::function<void (NodeView&)> onDoubleClick;
 
     private:
         juce::String name;
@@ -93,9 +97,10 @@ private:
     juce::Array<std::tuple<te::EditItemID, int, te::EditItemID, int>> connections;
 
     bool connectMode = false;
-    bool awaitingSecondNode = false;
-    int firstNodeIndex = -1;
+    bool awaitingSecondEndpoint = false;
+    te::EditItemID firstEndpointID;
     int firstPinIndex = -1;
+    bool firstIsInput = false;
 
     void addCvPluginToRack (const char* xmlTypeName);
     void rebuildRackSelector();
@@ -103,6 +108,7 @@ private:
     void addConnection (te::EditItemID source, int sourcePin, te::EditItemID dest, int destPin);
     void removeConnection (te::EditItemID source, int sourcePin, te::EditItemID dest, int destPin);
     void handleNodeClick (int nodeIndex, NodeView& view, const juce::MouseEvent& e);
+    void handleEndpointSelection (te::EditItemID endpointID, int pinIndex, bool isInputPin);
 
     juce::Rectangle<int> getCanvasArea() const;
     juce::Rectangle<int> computeGridSlot (int pluginIndex,
@@ -111,8 +117,10 @@ private:
                                                   juce::Point<float> storedPos,
                                                   juce::Rectangle<int> canvasArea) const;
     int findNodeIndex (te::EditItemID pluginID) const;
-    juce::Rectangle<float> getPinRectInCanvas (int nodeIndex, int pinIndex) const;
-    juce::Rectangle<float> getPinRectInRack (int nodeIndex, int pinIndex) const;
+    juce::Rectangle<float> getPinRectInCanvas (int nodeIndex, int pinIndex, bool isInput) const;
+    juce::Rectangle<float> getPinRectInRack (int nodeIndex, int pinIndex, bool isInput) const;
+    juce::Rectangle<float> getRackIoPinRectInCanvas (int pinIndex, bool isRackInputSource) const;
+    juce::Rectangle<float> getRackIoPinRectInRack (int pinIndex, bool isRackInputSource) const;
 
     void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&) override;
     void valueTreeChildAdded (juce::ValueTree&, juce::ValueTree&) override;

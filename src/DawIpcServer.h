@@ -80,6 +80,9 @@ private:
 
     std::atomic<bool> listening { false };
     std::atomic<int> boundPort { 0 };
+    std::shared_ptr<std::atomic<bool>> aliveFlag { std::make_shared<std::atomic<bool>> (true) };
+
+    static constexpr size_t maxJsonFrameBytes = 4 * 1024 * 1024;
 
     std::mutex queueMutex;
     std::deque<PendingRpcRequest> pendingQueue;

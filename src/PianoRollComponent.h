@@ -47,10 +47,18 @@ private:
     static bool isBlackKey (int midiPitch);
     static juce::String getNoteLabel (int midiPitch);
 
-    static constexpr int topBarHeight   = 30;
-    static constexpr int pianoKeyWidth  = 58;
-    static constexpr int lowestPitch    = 36;  // C2
-    static constexpr int highestPitch   = 84;  // C6
+    static constexpr int topBarHeight    = 30;
+    static constexpr int pianoKeyWidth   = 58;
+    static constexpr int minPitch        = 24;  // C1
+    static constexpr int maxPitch        = 96;  // C7
+    static constexpr int visibleRowCount = 36;  // 3 octaves visible with vertical scroll
+
+    int getHighestVisiblePitch() const noexcept
+    {
+        return std::min (maxPitch, lowestVisiblePitch + visibleRowCount - 1);
+    }
+
+    int lowestVisiblePitch = 42; // F#2..F6 default window
 
     te::Edit* edit = nullptr;
     tracktion::EditItemID targetClipID;

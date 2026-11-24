@@ -42,6 +42,8 @@ public:
     // Headless regression harness, invoked by AI DAW.exe --smoke-test.
     static int runHeadlessSmokeTest();
 
+    void guardUnsavedChanges (std::function<void (bool)> onProceed);
+
 private:
     class Vst3ScanThread;
 
@@ -84,8 +86,6 @@ private:
     void syncTransportControlsFromEdit();
     void updateTransportPositionReadout();
     static bool isTransientEditSubtree (juce::ValueTree tree);
-
-    void guardUnsavedChanges (std::function<void (bool)> onProceed);
 
     void createNewSession (const juce::File& targetFile, bool seedDefaultContent, bool untitled);
     bool loadSessionFromFileSafely (const juce::File& fileToLoad, juce::String* errorOut = nullptr);

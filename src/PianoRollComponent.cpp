@@ -40,6 +40,32 @@ void PianoRollComponent::setTarget (te::Edit* targetEdit, tracktion::EditItemID 
     horizontalScrollBeats = 0.0;
     dragMode = DragMode::none;
     activeNoteState = {};
+
+    if (auto* mc = resolveClip())
+    {
+        const auto& notes = mc->getSequence().getNotes();
+
+        if (! notes.isEmpty())
+        {
+            int lowN = maxPitch;
+            int highN = minPitch;
+
+            for (auto* n : notes)
+            {
+                lowN  = std::min (lowN, n->getNoteNumber());
+                highN = std::max (highN, n->getNoteNumber());
+            }
+
+            if (lowN < lowestVisiblePitch || highN > getHighestVisiblePitch())
+            {
+                const int mid = (lowN + highN) / 2;
+                lowestVisiblePitch = juce::jlimit (minPitch,
+                                                   maxPitch - visibleRowCount + 1,
+                                                   mid - visibleRowCount / 2);
+            }
+        }
+    }
+
     repaint();
 }
 
@@ -110,12 +136,13 @@ juce::String PianoRollComponent::getNoteLabel (int midiPitch)
 
 int PianoRollComponent::getPitchAtY (int y) const
 {
-    const int numRows = highestPitch - lowestPitch + 1;
+    const int highP = getHighestVisiblePitch();
+    const int numRows = visibleRowCount;
     const float gridHeight = static_cast<float> (std::max (1, getHeight() - topBarHeight));
     const float rowHeight = gridHeight / static_cast<float> (numRows);
 
     const int rowFromTop = static_cast<int> ((y - topBarHeight) / rowHeight);
-    return juce::jlimit (lowestPitch, highestPitch, highestPitch - rowFromTop);
+    return juce::jlimit (lowestVisiblePitch, highP, highP - rowFromTop);
 }
 
 double PianoRollComponent::getBeatAtX (int x) const
@@ -125,12 +152,13 @@ double PianoRollComponent::getBeatAtX (int x) const
 
 juce::Rectangle<int> PianoRollComponent::getNoteRect (const te::MidiNote& note) const
 {
-    const int numRows = highestPitch - lowestPitch + 1;
+    const int highP = getHighestVisiblePitch();
+    const int numRows = visibleRowCount;
     const float gridHeight = static_cast<float> (std::max (1, getHeight() - topBarHeight));
     const float rowHeight = gridHeight / static_cast<float> (numRows);
 
     const int pitch = note.getNoteNumber();
-    const int rowFromTop = highestPitch - pitch;
+    const int rowFromTop = highP - pitch;
 
     const int x = pianoKeyWidth + static_cast<int> (std::round ((note.getStartBeat().inBeats() - horizontalScrollBeats) * pixelsPerBeat));
     const int w = std::max (8, static_cast<int> (std::round (note.getLengthBeats().inBeats() * pixelsPerBeat)));
@@ -166,14 +194,15 @@ void PianoRollComponent::paint (juce::Graphics& g)
         return;
     }
 
-    const int numRows = highestPitch - lowestPitch + 1;
+    const int highP = getHighestVisiblePitch();
+    const int numRows = visibleRowCount;
     const float gridHeight = static_cast<float> (std::max (1, bounds.getHeight() - topBarHeight));
     const float rowHeight = gridHeight / static_cast<float> (numRows);
 
     // Pitch rows + left piano keyboard
-    for (int pitch = highestPitch; pitch >= lowestPitch; --pitch)
+    for (int pitch = highP; pitch >= lowestVisiblePitch; --pitch)
     {
-        const int rowFromTop = highestPitch - pitch;
+        const int rowFromTop = highP - pitch;
         const int y = topBarHeight + static_cast<int> (rowFromTop * rowHeight);
         const int h = std::max (2, static_cast<int> (std::ceil (rowHeight)));
         const bool black = isBlackKey (pitch);
@@ -230,7 +259,7 @@ void PianoRollComponent::paint (juce::Graphics& g)
     {
         const auto* note = notes[i];
 
-        if (note->getNoteNumber() < lowestPitch || note->getNoteNumber() > highestPitch)
+        if (note->getNoteNumber() < lowestVisiblePitch || note->getNoteNumber() > highP)
             continue;
 
         const auto rect = getNoteRect (*note);
@@ -396,7 +425,17 @@ void PianoRollComponent::mouseWheelMove (const juce::MouseEvent& e, const juce::
     if (e.mods.isShiftDown() || std::abs (wheel.deltaX) > 0.0f)
     {
         const double delta = (std::abs (wheel.deltaX) > 0.0f) ? -wheel.deltaX : -wheel.deltaY;
-        horizontalScrollBeats = juce::jlimit (0.0, 64.0, horizontalScrollBeats + delta * 1.5);
+        horizontalScrollBeats = juce::jlimit (0.0, 128.0, horizontalScrollBeats + delta * 1.5);
+        repaint();
+        return;
+    }
+
+    if (std::abs (wheel.deltaY) > 0.0f)
+    {
+        const int stepSemis = juce::roundToInt (wheel.deltaY * 6.0f);
+        lowestVisiblePitch = juce::jlimit (minPitch,
+                                           maxPitch - visibleRowCount + 1,
+                                           lowestVisiblePitch + stepSemis);
         repaint();
     }
 }

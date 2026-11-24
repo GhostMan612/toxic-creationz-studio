@@ -166,6 +166,26 @@ te::MidiClip* ArrangementView::resolveSelectedClip() const
     return nullptr;
 }
 
+int ArrangementView::getTotalBars() const
+{
+    int maxBar = 16;
+
+    if (edit != nullptr)
+    {
+        for (auto* track : te::getAudioTracks (*edit))
+        {
+            for (auto* clip : track->getClips())
+            {
+                const double endBeat = edit->tempoSequence.toBeats (clip->getPosition().getEnd()).inBeats();
+                const int endBar = static_cast<int> (std::ceil (endBeat / 4.0));
+                maxBar = std::max (maxBar, endBar + 4);
+            }
+        }
+    }
+
+    return juce::jlimit (16, 128, maxBar);
+}
+
 int ArrangementView::getTrackIndexAtY (int y) const
 {
     if (y < rulerHeight)
@@ -235,7 +255,7 @@ void ArrangementView::paint (juce::Graphics& g)
                     autoParamRect.toFloat(), juce::Justification::centred);
     }
 
-    const int totalBeats = totalBars * 4;
+    const int totalBeats = getTotalBars() * 4;
 
     {
         juce::Graphics::ScopedSaveState timelineClip (g);
@@ -682,7 +702,7 @@ void ArrangementView::mouseWheelMove (const juce::MouseEvent& e, const juce::Mou
     if (e.mods.isShiftDown() || std::abs (wheel.deltaX) > 0.0f)
     {
         const double delta = (std::abs (wheel.deltaX) > 0.0f) ? -wheel.deltaX : -wheel.deltaY;
-        horizontalScrollBeats = juce::jlimit (0.0, static_cast<double> (totalBars * 4),
+        horizontalScrollBeats = juce::jlimit (0.0, static_cast<double> (getTotalBars() * 4),
                                               horizontalScrollBeats + delta * 2.0);
         repaint();
         return;
