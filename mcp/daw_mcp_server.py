@@ -437,5 +437,37 @@ async def transcribe_audio_to_midi(
     return await send_daw_rpc("audio.transcribe_to_midi", params, timeout=15.0)
 
 
+@mcp.tool()
+async def set_plugin_preset(
+    track_index: int = 0,
+    preset_name: str = "",
+    plugin_index: int = 0,
+) -> dict[str, Any]:
+    """List or apply a factory sound preset (e.g. 'Reese Neuro Bass', 'Supersaw Anthem Lead') on a track plugin."""
+    return await send_daw_rpc(
+        "plugin.set_preset",
+        {
+            "track_index": max(0, track_index),
+            "plugin_index": max(0, plugin_index),
+            "preset_name": preset_name.strip(),
+        },
+    )
+
+
+@mcp.tool()
+async def add_rack_machine(
+    machine_type: str = "4osc",
+    rack_index: int = 0,
+) -> dict[str, Any]:
+    """Insert a synth, sampler, effect, or CV utility ('4osc', 'sampler', 'compressor', 'chorus', 'phaser', 'lowpass', 'pitchshift', 'reverb', 'delay', 'eq', 'cv_lfo', 'cv_wobble', 'cv_splitter') into a modular rack."""
+    return await send_daw_rpc(
+        "rack.add_machine",
+        {
+            "rack_index": max(0, rack_index),
+            "machine_type": machine_type.strip().lower(),
+        },
+    )
+
+
 if __name__ == "__main__":
     mcp.run()

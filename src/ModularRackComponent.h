@@ -4,6 +4,7 @@
 #include <tracktion_engine/tracktion_engine.h>
 
 #include "CvRackPlugins.h"
+#include "PluginPresetManager.h"
 
 #include <functional>
 #include <tuple>
@@ -40,6 +41,9 @@ public:
     // Read-only UI synchronisation. Must never touch the UndoManager.
     void syncFromEdit();
     void selectRack (int rackIndex);
+    te::Plugin* addMachineToRack (const juce::String& xmlTypeName,
+                                  const juce::File& optionalSamplerKitDir = {});
+    te::Plugin* addExternalPluginToRack (const juce::PluginDescription& desc);
 
     juce::String getSelectedRackName() const;
     int getNumPluginsInSelectedRack() const;
@@ -52,18 +56,25 @@ public:
     bool verifyNonOverlappingLayoutForSmokeTest() const;
 
 private:
+    enum class NodeRole
+    {
+        cvSource,
+        instrument,
+        effect
+    };
+
     struct RackNode
     {
         te::Plugin* plugin = nullptr;
         juce::Rectangle<float> rect;   // canvas-local (nodesContainer) space
         juce::String name;
-        bool isCvSource = false;
+        NodeRole role = NodeRole::effect;
     };
 
     class NodeView : public juce::Component
     {
     public:
-        NodeView (te::Plugin& pluginToView, const juce::String& displayName, bool cvSource);
+        NodeView (te::Plugin& pluginToView, const juce::String& displayName, NodeRole nodeRole);
         void paint (juce::Graphics& g) override;
         void mouseDown (const juce::MouseEvent& e) override;
         void mouseDoubleClick (const juce::MouseEvent& e) override;
@@ -75,7 +86,7 @@ private:
 
     private:
         juce::String name;
-        bool isCv;
+        NodeRole role;
     };
 
     te::Engine& engine;
@@ -83,6 +94,7 @@ private:
     te::RackType::Ptr selectedRack;
 
     juce::ComboBox rackSelector;
+    juce::TextButton addMachineButton  { "+ Machine" };
     juce::TextButton addLfoButton      { "+ CV LFO" };
     juce::TextButton addWobbleButton   { "+ Wobble" };
     juce::TextButton addSplitterButton { "+ CV Splitter" };
@@ -103,6 +115,8 @@ private:
     bool firstIsInput = false;
 
     void addCvPluginToRack (const char* xmlTypeName);
+    void showAddMachineMenu();
+    void ensureRackSelected();
     void rebuildRackSelector();
     void rebuildFromRack();
     void addConnection (te::EditItemID source, int sourcePin, te::EditItemID dest, int destPin);

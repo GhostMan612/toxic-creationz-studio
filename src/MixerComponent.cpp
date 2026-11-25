@@ -1,6 +1,7 @@
 #include "MixerComponent.h"
 #include "AutomationManager.h"
 #include "CvRackPlugins.h"
+#include "PluginPresetManager.h"
 
 //==============================================================================
 // ChannelStrip
@@ -413,9 +414,15 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
     juce::PopupMenu menu;
     menu.addSectionHeader ("Built-In Instruments");
     menu.addItem (1, "4OSC Synthesizer");
+    menu.addItem (10, "Multi-Sampler (808 + Synth Kit)");
     menu.addSeparator();
     menu.addSectionHeader ("Built-In Effects");
     menu.addItem (2, "4-Band Equaliser (EQ)");
+    menu.addItem (11, "Compressor");
+    menu.addItem (12, "Chorus");
+    menu.addItem (13, "Phaser");
+    menu.addItem (14, "Low-Pass Filter");
+    menu.addItem (15, "Pitch Shifter");
     menu.addItem (3, "Reverb");
     menu.addItem (4, "Delay");
     menu.addSeparator();
@@ -483,6 +490,28 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
             safeThis->edit.getUndoManager().beginNewTransaction ("Add Delay");
             if (auto dly = safeThis->edit.getPluginCache().createNewPlugin (te::DelayPlugin::xmlTypeName, {}))
                 tr->pluginList.insertPlugin (dly, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
+        }
+        else if (chosenId == 10)
+        {
+            safeThis->edit.getUndoManager().beginNewTransaction ("Add Multi-Sampler");
+            if (auto smp = safeThis->edit.getPluginCache().createNewPlugin (te::SamplerPlugin::xmlTypeName, {}))
+            {
+                if (auto* samplerPtr = dynamic_cast<te::SamplerPlugin*> (smp.get()))
+                    PluginPresetManager::seedStarterSamplerKit (*samplerPtr);
+                tr->pluginList.insertPlugin (smp, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
+            }
+        }
+        else if (chosenId >= 11 && chosenId <= 15)
+        {
+            const char* fxTypeName = te::CompressorPlugin::xmlTypeName;
+            if (chosenId == 12) fxTypeName = te::ChorusPlugin::xmlTypeName;
+            else if (chosenId == 13) fxTypeName = te::PhaserPlugin::xmlTypeName;
+            else if (chosenId == 14) fxTypeName = te::LowPassPlugin::xmlTypeName;
+            else if (chosenId == 15) fxTypeName = te::PitchShiftPlugin::xmlTypeName;
+
+            safeThis->edit.getUndoManager().beginNewTransaction ("Add Built-In Effect");
+            if (auto fx = safeThis->edit.getPluginCache().createNewPlugin (fxTypeName, {}))
+                tr->pluginList.insertPlugin (fx, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
         }
         else if (chosenId == 5 || chosenId == 6)
         {

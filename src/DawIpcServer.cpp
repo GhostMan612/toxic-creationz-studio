@@ -3,6 +3,7 @@
 #include "AudioToMidiTranscriber.h"
 #include "AutomationManager.h"
 #include "MixdownExporter.h"
+#include "PluginPresetManager.h"
 #include "WaveformEditorComponent.h"
 
 #include <algorithm>
@@ -1217,6 +1218,132 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         out->setProperty ("clip_name", res.clipName);
         out->setProperty ("notes_transcribed", static_cast<int> (res.notes.size()));
         out->setProperty ("notes", notesOut);
+        return makeResultResponse (id, juce::var (out));
+    }
+
+    // 19. plugin.set_preset (list or apply factory presets on non-terminal track plugins)
+    if (method == "plugin.set_preset")
+    {
+        const int trackIdx  = static_cast<int> (params.getProperty ("track_index", 0));
+        const int pluginIdx = static_cast<int> (params.getProperty ("plugin_index", 0));
+        const juce::String presetName = params.getProperty ("preset_name", "").toString().trim();
+
+        auto tracks = te::getAudioTracks (*edit);
+        if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "Invalid track_index");
+
+        if (pluginIdx < 0)
+            return makeErrorResponse (id, -32602, "Invalid plugin_index");
+
+        juce::Array<te::Plugin*> nonTerminal;
+        for (auto* p : tracks[trackIdx]->pluginList)
+        {
+            if (dynamic_cast<te::VolumeAndPanPlugin*> (p) == nullptr
+                && dynamic_cast<te::LevelMeterPlugin*> (p) == nullptr)
+            {
+                nonTerminal.add (p);
+            }
+        }
+
+        if (! juce::isPositiveAndBelow (pluginIdx, nonTerminal.size()))
+            return makeErrorResponse (id, -32602, "No plugin at track_index/plugin_index");
+
+        auto* targetPlugin = nonTerminal.getUnchecked (pluginIdx);
+        const auto available = PluginPresetManager::getFactoryPresetNames (*targetPlugin);
+
+        juce::Array<juce::var> availArr;
+        for (const auto& name : available)
+            availArr.add (name);
+
+        if (presetName.isNotEmpty())
+        {
+            if (! PluginPresetManager::applyFactoryPreset (*targetPlugin, presetName))
+                return makeErrorResponse (id, -32602, "Unknown preset_name for plugin: " + presetName);
+
+            if (onEditMutatedByRpc)
+                onEditMutatedByRpc ("MCP applied preset " + presetName + " to " + targetPlugin->getName());
+        }
+
+        auto* out = new juce::DynamicObject();
+        out->setProperty ("track_index", trackIdx);
+        out->setProperty ("plugin_index", pluginIdx);
+        out->setProperty ("plugin_name", targetPlugin->getName());
+        out->setProperty ("applied_preset", presetName);
+        out->setProperty ("available_presets", availArr);
+        return makeResultResponse (id, juce::var (out));
+    }
+
+    // 20. rack.add_machine (insert instrument, effect, or CV utility into a modular rack)
+    if (method == "rack.add_machine")
+    {
+        const int rackIdx = static_cast<int> (params.getProperty ("rack_index", 0));
+        const juce::String rawType = params.getProperty ("machine_type", "4osc").toString().trim().toLowerCase();
+
+        if (rackIdx < 0)
+            return makeErrorResponse (id, -32602, "Invalid rack_index");
+
+        if (edit->getRackList().getTypes().isEmpty() && rackIdx == 0)
+        {
+            if (auto newRack = edit->getRackList().addNewRack())
+                newRack->rackName = "Modular Studio Rack";
+        }
+
+        const auto& racks = edit->getRackList().getTypes();
+        if (! juce::isPositiveAndBelow (rackIdx, racks.size()))
+            return makeErrorResponse (id, -32602, "Invalid rack_index");
+
+        juce::String xmlType;
+        if (rawType == "4osc") xmlType = te::FourOscPlugin::xmlTypeName;
+        else if (rawType == "sampler") xmlType = te::SamplerPlugin::xmlTypeName;
+        else if (rawType == "compressor") xmlType = te::CompressorPlugin::xmlTypeName;
+        else if (rawType == "chorus") xmlType = te::ChorusPlugin::xmlTypeName;
+        else if (rawType == "phaser") xmlType = te::PhaserPlugin::xmlTypeName;
+        else if (rawType == "lowpass") xmlType = te::LowPassPlugin::xmlTypeName;
+        else if (rawType == "pitchshift") xmlType = te::PitchShiftPlugin::xmlTypeName;
+        else if (rawType == "reverb") xmlType = te::ReverbPlugin::xmlTypeName;
+        else if (rawType == "delay") xmlType = te::DelayPlugin::xmlTypeName;
+        else if (rawType == "eq" || rawType == "equaliser") xmlType = te::EqualiserPlugin::xmlTypeName;
+        else if (rawType == "cv_lfo") xmlType = CvLfoPlugin::xmlTypeName;
+        else if (rawType == "cv_wobble") xmlType = CvWobbleFilterPlugin::xmlTypeName;
+        else if (rawType == "cv_splitter") xmlType = CvUtilityPlugin::xmlTypeName;
+        else
+            return makeErrorResponse (id, -32602, "Unsupported machine_type: " + rawType);
+
+        auto* rack = racks[rackIdx];
+        edit->getUndoManager().beginNewTransaction ("MCP Add Rack Machine");
+
+        auto plugin = edit->getPluginCache().createNewPlugin (xmlType, {});
+        if (plugin == nullptr)
+            return makeErrorResponse (id, -32603, "Failed to instantiate plugin: " + xmlType);
+
+        if (auto* sampler = dynamic_cast<te::SamplerPlugin*> (plugin.get()))
+        {
+            const auto kitDir = getTakesDirectoryCallback
+                                    ? getTakesDirectoryCallback().getChildFile ("SamplerKit")
+                                    : PluginPresetManager::getDefaultSamplerKitDirectory();
+            PluginPresetManager::seedStarterSamplerKit (*sampler, kitDir);
+        }
+
+        const float count = static_cast<float> (rack->getPlugins().size());
+        const float x = juce::jlimit (0.05f, 0.78f, 0.08f + 0.14f * std::fmod (count, 4.0f));
+        const float y = juce::jlimit (0.08f, 0.72f, 0.12f + 0.22f * std::floor (count / 4.0f));
+
+        if (! rack->addPlugin (plugin, { x, y }, false))
+            return makeErrorResponse (id, -32603, "Failed to add machine into rack");
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP added " + plugin->getName() + " to rack " + juce::String (rackIdx));
+
+        juce::Array<juce::var> availPresets;
+        for (const auto& presetName : PluginPresetManager::getFactoryPresetNames (*plugin))
+            availPresets.add (presetName);
+
+        auto* out = new juce::DynamicObject();
+        out->setProperty ("rack_index", rackIdx);
+        out->setProperty ("plugin_id", static_cast<juce::int64> (plugin->itemID.getRawID()));
+        out->setProperty ("plugin_name", plugin->getName());
+        out->setProperty ("machine_type", rawType);
+        out->setProperty ("available_presets", availPresets);
         return makeResultResponse (id, juce::var (out));
     }
 

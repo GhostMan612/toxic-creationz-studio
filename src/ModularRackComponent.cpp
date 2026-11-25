@@ -5,7 +5,8 @@ namespace
     const juce::Colour rackBackground  (0xff1e2128);
     const juce::Colour rackLine        (0xff3a3f4b);
     const juce::Colour cvNodeColour    (0xff2b6f6f);
-    const juce::Colour audioNodeColour (0xff44507a);
+    const juce::Colour synthNodeColour (0xff4c3b78);
+    const juce::Colour audioNodeColour (0xff3b5278);
     const juce::Colour midiPinColour   (0xff818cf8);
     const juce::Colour cvAudioPinCol   (0xfffbbf24);
     const juce::Colour wireColour      (0xff7fd1ae);
@@ -24,6 +25,7 @@ ModularRackComponent::ModularRackComponent (te::Engine& engineRef)
     : engine (engineRef)
 {
     addAndMakeVisible (rackSelector);
+    addAndMakeVisible (addMachineButton);
     addAndMakeVisible (addLfoButton);
     addAndMakeVisible (addWobbleButton);
     addAndMakeVisible (addSplitterButton);
@@ -32,12 +34,16 @@ ModularRackComponent::ModularRackComponent (te::Engine& engineRef)
     addAndMakeVisible (rackInfoLabel);
     addAndMakeVisible (nodesViewport);
 
+    addMachineButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff0284c7));
+    addMachineButton.setTooltip ("Insert Synth, Sampler, Effect, CV Utility, or VST3 plugin into the rack");
+
     nodesViewport.setViewedComponent (&nodesContainer, false);
     nodesViewport.setScrollBarsShown (true, true);
     nodesContainer.addMouseListener (this, false);
 
     rackSelector.onChange = [this] { selectRack (rackSelector.getSelectedId() - 1); };
 
+    addMachineButton.onClick = [this] { showAddMachineMenu(); };
     addLfoButton.onClick = [this] { addCvPluginToRack (CvLfoPlugin::xmlTypeName); };
     addWobbleButton.onClick = [this] { addCvPluginToRack (CvWobbleFilterPlugin::xmlTypeName); };
     addSplitterButton.onClick = [this] { addCvPluginToRack (CvUtilityPlugin::xmlTypeName); };
@@ -375,13 +381,15 @@ void ModularRackComponent::resized()
     auto area = getLocalBounds().reduced (4);
     auto toolbar = area.removeFromTop (30);
 
-    rackSelector.setBounds (toolbar.removeFromLeft (190));
-    toolbar.removeFromLeft (6);
-    addLfoButton.setBounds (toolbar.removeFromLeft (80));
-    addWobbleButton.setBounds (toolbar.removeFromLeft (90));
-    addSplitterButton.setBounds (toolbar.removeFromLeft (94));
-    connectModeButton.setBounds (toolbar.removeFromLeft (100));
-    clearRackButton.setBounds (toolbar.removeFromLeft (90));
+    rackSelector.setBounds (toolbar.removeFromLeft (170));
+    toolbar.removeFromLeft (4);
+    addMachineButton.setBounds (toolbar.removeFromLeft (84));
+    toolbar.removeFromLeft (4);
+    addLfoButton.setBounds (toolbar.removeFromLeft (72));
+    addWobbleButton.setBounds (toolbar.removeFromLeft (76));
+    addSplitterButton.setBounds (toolbar.removeFromLeft (84));
+    connectModeButton.setBounds (toolbar.removeFromLeft (94));
+    clearRackButton.setBounds (toolbar.removeFromLeft (80));
     rackInfoLabel.setBounds (toolbar);
 
     nodesViewport.setBounds (area);
@@ -589,11 +597,23 @@ void ModularRackComponent::rebuildFromRack()
         node.plugin = plugin;
         node.rect = slot.toFloat();
         node.name = plugin->getName();
-        node.isCvSource = (dynamic_cast<CvLfoPlugin*> (plugin) != nullptr
-                           || dynamic_cast<CvUtilityPlugin*> (plugin) != nullptr);
+        if (dynamic_cast<CvLfoPlugin*> (plugin) != nullptr
+            || dynamic_cast<CvUtilityPlugin*> (plugin) != nullptr
+            || dynamic_cast<CvWobbleFilterPlugin*> (plugin) != nullptr)
+        {
+            node.role = NodeRole::cvSource;
+        }
+        else if (plugin->isSynth())
+        {
+            node.role = NodeRole::instrument;
+        }
+        else
+        {
+            node.role = NodeRole::effect;
+        }
         nodes.add (node);
 
-        auto view = std::make_unique<NodeView> (*plugin, node.name, node.isCvSource);
+        auto view = std::make_unique<NodeView> (*plugin, node.name, node.role);
         view->setBounds (slot);
 
         const auto itemID = plugin->itemID;
@@ -627,40 +647,159 @@ void ModularRackComponent::rebuildFromRack()
                            juce::dontSendNotification);
 }
 
-void ModularRackComponent::addCvPluginToRack (const char* xmlTypeName)
+void ModularRackComponent::ensureRackSelected()
 {
-    if (edit == nullptr)
+    if (edit == nullptr || selectedRack != nullptr)
         return;
 
-    if (selectedRack == nullptr)
+    if (edit->getRackList().getTypes().isEmpty())
     {
-        if (edit->getRackList().getTypes().isEmpty())
-        {
-            if (auto newRack = edit->getRackList().addNewRack())
-                newRack->rackName = "Default CV Rack";
-        }
-
-        rebuildRackSelector();
-        rebuildFromRack();
-        resized();
+        if (auto newRack = edit->getRackList().addNewRack())
+            newRack->rackName = "Modular Studio Rack";
     }
 
-    if (selectedRack == nullptr)
-        return;
+    rebuildRackSelector();
+    rebuildFromRack();
+    resized();
+}
 
+te::Plugin* ModularRackComponent::addMachineToRack (const juce::String& xmlTypeName,
+                                                    const juce::File& optionalSamplerKitDir)
+{
+    if (edit == nullptr)
+        return nullptr;
+
+    ensureRackSelected();
+    if (selectedRack == nullptr)
+        return nullptr;
+
+    edit->getUndoManager().beginNewTransaction ("Add Rack Machine");
     auto plugin = edit->getPluginCache().createNewPlugin (xmlTypeName, {});
     if (plugin == nullptr)
-        return;
+        return nullptr;
 
-    const float count = (float) selectedRack->getPlugins().size();
-    const float x = 0.08f + 0.06f * count;
-    const float y = 0.16f + 0.05f * count;
+    if (auto* sampler = dynamic_cast<te::SamplerPlugin*> (plugin.get()))
+        PluginPresetManager::seedStarterSamplerKit (*sampler, optionalSamplerKitDir);
+
+    const float count = static_cast<float> (selectedRack->getPlugins().size());
+    const float x = juce::jlimit (0.05f, 0.78f, 0.08f + 0.14f * std::fmod (count, 4.0f));
+    const float y = juce::jlimit (0.08f, 0.72f, 0.12f + 0.22f * std::floor (count / 4.0f));
 
     if (selectedRack->addPlugin (plugin, { x, y }, false))
     {
         rebuildFromRack();
         repaint();
+        return plugin.get();
     }
+
+    return nullptr;
+}
+
+te::Plugin* ModularRackComponent::addExternalPluginToRack (const juce::PluginDescription& desc)
+{
+    if (edit == nullptr)
+        return nullptr;
+
+    ensureRackSelected();
+    if (selectedRack == nullptr)
+        return nullptr;
+
+    edit->getUndoManager().beginNewTransaction ("Add VST3 Rack Machine");
+    const auto pluginTree = te::ExternalPlugin::create (engine, desc);
+    auto plugin = edit->getPluginCache().createNewPlugin (pluginTree);
+    if (plugin == nullptr)
+        return nullptr;
+
+    const float count = static_cast<float> (selectedRack->getPlugins().size());
+    const float x = juce::jlimit (0.05f, 0.78f, 0.08f + 0.14f * std::fmod (count, 4.0f));
+    const float y = juce::jlimit (0.08f, 0.72f, 0.12f + 0.22f * std::floor (count / 4.0f));
+
+    if (selectedRack->addPlugin (plugin, { x, y }, false))
+    {
+        rebuildFromRack();
+        repaint();
+        return plugin.get();
+    }
+
+    return nullptr;
+}
+
+void ModularRackComponent::addCvPluginToRack (const char* xmlTypeName)
+{
+    addMachineToRack (xmlTypeName);
+}
+
+void ModularRackComponent::showAddMachineMenu()
+{
+    if (edit == nullptr)
+        return;
+
+    juce::PopupMenu menu;
+    menu.addSectionHeader ("Instruments");
+    menu.addItem (1, "4OSC Synthesizer");
+    menu.addItem (2, "Multi-Sampler (808 + Synth Kit)");
+    menu.addSeparator();
+    menu.addSectionHeader ("Studio Effects");
+    menu.addItem (3, "Compressor");
+    menu.addItem (4, "Chorus");
+    menu.addItem (5, "Phaser");
+    menu.addItem (6, "Low-Pass Filter");
+    menu.addItem (7, "Pitch Shifter");
+    menu.addItem (8, "Reverb");
+    menu.addItem (9, "Delay");
+    menu.addItem (10, "4-Band Equaliser (EQ)");
+    menu.addSeparator();
+    menu.addSectionHeader ("CV & Modular Utilities");
+    menu.addItem (20, "CV LFO");
+    menu.addItem (21, "CV Wobble Filter (SVF)");
+    menu.addItem (22, "CV 1-to-4 Splitter");
+
+    const auto vstTypes = engine.getPluginManager().knownPluginList.getTypes();
+    if (! vstTypes.isEmpty())
+    {
+        menu.addSeparator();
+        menu.addSectionHeader ("Scanned VST3 Plugins");
+        for (int i = 0; i < vstTypes.size(); ++i)
+            menu.addItem (100 + i, vstTypes[i].name + " (" + vstTypes[i].manufacturerName + ")");
+    }
+    else
+    {
+        menu.addSeparator();
+        menu.addItem (99, "(No VST3 cached - click Scan VST3)", false);
+    }
+
+    juce::Component::SafePointer<ModularRackComponent> safeThis (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addMachineButton),
+                        [safeThis, vstTypes] (int chosenId)
+    {
+        if (safeThis == nullptr || chosenId <= 0)
+            return;
+
+        switch (chosenId)
+        {
+            case 1:  safeThis->addMachineToRack (te::FourOscPlugin::xmlTypeName); break;
+            case 2:  safeThis->addMachineToRack (te::SamplerPlugin::xmlTypeName); break;
+            case 3:  safeThis->addMachineToRack (te::CompressorPlugin::xmlTypeName); break;
+            case 4:  safeThis->addMachineToRack (te::ChorusPlugin::xmlTypeName); break;
+            case 5:  safeThis->addMachineToRack (te::PhaserPlugin::xmlTypeName); break;
+            case 6:  safeThis->addMachineToRack (te::LowPassPlugin::xmlTypeName); break;
+            case 7:  safeThis->addMachineToRack (te::PitchShiftPlugin::xmlTypeName); break;
+            case 8:  safeThis->addMachineToRack (te::ReverbPlugin::xmlTypeName); break;
+            case 9:  safeThis->addMachineToRack (te::DelayPlugin::xmlTypeName); break;
+            case 10: safeThis->addMachineToRack (te::EqualiserPlugin::xmlTypeName); break;
+            case 20: safeThis->addMachineToRack (CvLfoPlugin::xmlTypeName); break;
+            case 21: safeThis->addMachineToRack (CvWobbleFilterPlugin::xmlTypeName); break;
+            case 22: safeThis->addMachineToRack (CvUtilityPlugin::xmlTypeName); break;
+            default:
+                if (chosenId >= 100)
+                {
+                    const int idx = chosenId - 100;
+                    if (juce::isPositiveAndBelow (idx, vstTypes.size()))
+                        safeThis->addExternalPluginToRack (vstTypes[idx]);
+                }
+                break;
+        }
+    });
 }
 
 void ModularRackComponent::addConnection (te::EditItemID source, int sourcePin,
@@ -794,16 +933,19 @@ void ModularRackComponent::valueTreeRedirected (juce::ValueTree&) {}
 //==============================================================================
 ModularRackComponent::NodeView::NodeView (te::Plugin& pluginToView,
                                           const juce::String& displayName,
-                                          bool cvSource)
+                                          NodeRole nodeRole)
     : plugin (pluginToView),
       name (displayName),
-      isCv (cvSource)
+      role (nodeRole)
 {
 }
 
 void ModularRackComponent::NodeView::paint (juce::Graphics& g)
 {
-    g.fillAll (isCv ? cvNodeColour : audioNodeColour);
+    const auto bgCol = (role == NodeRole::cvSource)
+                           ? cvNodeColour
+                           : (role == NodeRole::instrument ? synthNodeColour : audioNodeColour);
+    g.fillAll (bgCol);
     g.setColour (juce::Colours::black.withAlpha (0.25f));
     g.drawRect (getLocalBounds().toFloat(), 1.0f);
 

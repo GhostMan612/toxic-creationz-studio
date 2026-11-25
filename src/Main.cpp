@@ -1,4 +1,6 @@
 #include "MainComponent.h"
+#include "PluginPresetManager.h"
+#include "StudioPluginWindow.h"
 
 #include <algorithm>
 #include <chrono>
@@ -2639,6 +2641,143 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-016 CV SVF filter, direction pins & transposed transcription PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-017 Regression Test: Factory Presets, .trkpreset, Sampler & Multi-Machine
+    //===========================================================================
+    {
+        const auto wo017TempDir = tempDir.getChildFile ("tcs_wo017_smoke");
+        wo017TempDir.deleteRecursively();
+        wo017TempDir.createDirectory();
+
+        // 1. Fresh session + 4OSC Factory Presets + GenericTracktionPluginEditor + .trkpreset round-trip
+        app.createNewSession (wo017TempDir.getChildFile ("Wo017Presets.tracktionedit"), true, false);
+        auto tracks = te::getAudioTracks (*app.edit);
+        te::FourOscPlugin* synth = nullptr;
+
+        if (! tracks.isEmpty())
+            synth = tracks[0]->pluginList.findFirstPluginOfType<te::FourOscPlugin>();
+
+        if (synth == nullptr || PluginPresetManager::getFactoryPresetNames (*synth).size() < 8)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 FourOscPlugin or factory preset bank missing" << std::endl;
+            return 1;
+        }
+
+        if (! PluginPresetManager::applyFactoryPreset (*synth, "Reese Neuro Bass")
+            || synth->voiceModeValue.get() != 1
+            || synth->oscParams[0]->waveShapeValue.get() != 3
+            || synth->oscParams[0]->voicesValue.get() != 4
+            || ! synth->distortionOnValue.get())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 Reese Neuro Bass preset properties mismatch" << std::endl;
+            return 1;
+        }
+
+        {
+            GenericTracktionPluginEditor editor (*synth);
+            if (editor.getNumPresetItems() < 8)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-017 GenericTracktionPluginEditor preset combo empty" << std::endl;
+                return 1;
+            }
+        }
+
+        const auto origId = synth->itemID;
+        const auto presetFile = wo017TempDir.getChildFile ("ReeseSaved.trkpreset");
+
+        if (! PluginPresetManager::savePresetToFile (*synth, presetFile) || ! presetFile.existsAsFile())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 savePresetToFile failed" << std::endl;
+            return 1;
+        }
+
+        if (! PluginPresetManager::applyFactoryPreset (*synth, "Init Sine")
+            || synth->oscParams[0]->waveShapeValue.get() != 1
+            || synth->distortionOnValue.get())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 Init Sine reset failed" << std::endl;
+            return 1;
+        }
+
+        if (! PluginPresetManager::loadPresetFromFile (*synth, presetFile)
+            || synth->itemID != origId
+            || synth->oscParams[0]->waveShapeValue.get() != 3
+            || ! synth->distortionOnValue.get())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 loadPresetFromFile restore or ID preservation failed" << std::endl;
+            return 1;
+        }
+
+        // 2. MCP rack.add_machine ('sampler', 'compressor') + SamplerPlugin 808 kit audio render + plugin.set_preset
+        const auto prevTakesCb = app.ipcServer.getTakesDirectoryCallback;
+        app.ipcServer.getTakesDirectoryCallback = [wo017TempDir]
+        {
+            return wo017TempDir.getChildFile ("Takes");
+        };
+
+        const auto addSamplerResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":170,"method":"rack.add_machine","params":{"rack_index":0,"machine_type":"sampler"}})"));
+        const auto addCompResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":171,"method":"rack.add_machine","params":{"rack_index":0,"machine_type":"compressor"}})"));
+
+        app.ipcServer.getTakesDirectoryCallback = prevTakesCb;
+
+        const juce::int64 samplerId = static_cast<juce::int64> (addSamplerResp["result"]["plugin_id"]);
+        const juce::int64 compId    = static_cast<juce::int64> (addCompResp["result"]["plugin_id"]);
+
+        if (samplerId <= 0 || compId <= 0)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 MCP rack.add_machine returned invalid plugin_id" << std::endl;
+            return 1;
+        }
+
+        auto rack0 = app.edit->getRackList().getRackType (0);
+        auto* sampler = (rack0 != nullptr)
+                            ? dynamic_cast<te::SamplerPlugin*> (rack0->getPluginForID (
+                                  tracktion::EditItemID::fromRawID (static_cast<uint64_t> (samplerId))))
+                            : nullptr;
+
+        if (sampler == nullptr || sampler->getNumSounds() != 4)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 SamplerPlugin starter kit expected 4 sounds" << std::endl;
+            return 1;
+        }
+
+        constexpr int smpBlock = 512;
+        constexpr double smpSr = 44100.0;
+        juce::AudioBuffer<float> smpOut (2, smpBlock);
+        smpOut.clear();
+        te::MidiMessageArray midiArr;
+        midiArr.addMidiMessage (juce::MidiMessage::noteOn (1, 36, static_cast<juce::uint8> (115)),
+                                0.0,
+                                te::MPESourceID{});
+
+        sampler->initialise (te::PluginInitialisationInfo { tracktion::TimePosition::fromSeconds (0.0), smpSr, smpBlock });
+        sampler->applyToBuffer (te::PluginRenderContext (&smpOut, 0, smpBlock, &midiArr, 0.0, {}, false, false, false, false));
+        sampler->deinitialise();
+
+        if (smpOut.getRMSLevel (0, 0, smpBlock) <= 0.005f)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 SamplerPlugin 808 Kick rendered silence" << std::endl;
+            return 1;
+        }
+
+        const auto setPresetResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":172,"method":"plugin.set_preset","params":{"track_index":0,"plugin_index":0,"preset_name":"Supersaw Anthem Lead"}})"));
+
+        if (setPresetResp["result"]["applied_preset"].toString() != "Supersaw Anthem Lead"
+            || synth->oscParams[0]->voicesValue.get() != 6
+            || ! synth->reverbOnValue.get())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 MCP plugin.set_preset did not apply Supersaw Anthem Lead" << std::endl;
+            return 1;
+        }
+
+        app.createNewSession (sessionFile, true, false);
+        wo017TempDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-017 Factory presets, .trkpreset round-trip, Sampler 808 kit & multi-machine rack PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -2676,6 +2815,7 @@ int MainComponent::runHeadlessSmokeTest()
                  "Aux FX send/return bus, zoomable views, dark studio theme, YIN audio-to-MIDI pitch transcription, "
                  "plugin editor windows, timeline vertical scroll, Wave-to-MIDI switch, "
                  "CV SVF filter DSP, direction-aware rack pins, clip-transpose transcription, "
+                 "factory preset bank, .trkpreset round-trip, Sampler 808 kit, multi-machine rack, "
                  "and VST3 scanner lifecycle verified."
               << std::endl;
     return 0;

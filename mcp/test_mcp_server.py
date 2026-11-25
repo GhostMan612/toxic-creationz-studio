@@ -311,6 +311,61 @@ class McpWorkerTests(unittest.TestCase):
             timeout=15.0,
         )
 
+    def test_set_plugin_preset_clamps_and_forwards(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(
+            return_value={
+                "track_index": 0,
+                "plugin_index": 0,
+                "plugin_name": "4OSC",
+                "applied_preset": "Reese Neuro Bass",
+                "available_presets": ["Init Sine", "Reese Neuro Bass"],
+            }
+        )
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(
+                srv.set_plugin_preset(
+                    track_index=-3,
+                    preset_name="  Reese Neuro Bass  ",
+                    plugin_index=-1,
+                )
+            )
+
+        self.assertEqual(res["applied_preset"], "Reese Neuro Bass")
+        mock_rpc.assert_awaited_once_with(
+            "plugin.set_preset",
+            {
+                "track_index": 0,
+                "plugin_index": 0,
+                "preset_name": "Reese Neuro Bass",
+            },
+        )
+
+    def test_add_rack_machine_clamps_and_normalizes(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(
+            return_value={
+                "rack_index": 0,
+                "plugin_id": 91,
+                "plugin_name": "Sampler",
+                "machine_type": "sampler",
+                "available_presets": ["Neon 808 + Synth Kit"],
+            }
+        )
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.add_rack_machine(machine_type="  SAMPLER ", rack_index=-2))
+
+        self.assertEqual(res["machine_type"], "sampler")
+        mock_rpc.assert_awaited_once_with(
+            "rack.add_machine",
+            {
+                "rack_index": 0,
+                "machine_type": "sampler",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

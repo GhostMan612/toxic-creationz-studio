@@ -25,7 +25,7 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 
 ---
 
-## Implemented Work Orders (`WO-001` through `WO-016`)
+## Implemented Work Orders (`WO-001` through `WO-017`)
 
 | Phase | Highlights |
 | --- | --- |
@@ -44,6 +44,7 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 | **WO-014** | Zero-dependency C++ **YIN** monophonic pitch transcription (`AudioToMidiTranscriber`), Waveform Editor `To MIDI` button, `audio.transcribe_to_midi` MCP tool (`transcribe_audio_to_midi`), and final v1.0 packaging. |
 | **WO-015** | `StudioUIBehaviour` & `StudioPluginWindow` (native VST3 + generic plugin editors), `ArrangementView` vertical track scroll, `Wave Edit` → `To MIDI` auto-switch, QWERTY virtual-keys focus routing, and Mixer `Aux FX Buses` menu items. |
 | **WO-016** | Real CV-modulated `StateVariableTPTFilter` in `CvWobbleFilterPlugin`, direction-aware `ModularRackComponent` Audio/CV + Rack I/O jacks & Mixer rack insert, clip-transpose/stretch-aware `AudioToMidiTranscriber`, `DawIpcServer` alive/frame guards, and window-close unsaved guard. |
+| **WO-017** | `PluginPresetManager` factory preset bank & `.trkpreset` save/load (`8` `4OSC` synth patches + CV/FX presets), `4OSC` oscillator/unison/voice/FX editor strip, `Multi-Sampler (808 + Synth Kit)` (`SamplerPlugin` + WAV loader), multi-machine `+ Machine` Modular Rack & Mixer inserts (`Compressor`, `Chorus`, `Phaser`, `LowPass`, `PitchShift`), and `set_plugin_preset` / `add_rack_machine` MCP tools. |
 
 ---
 
@@ -107,8 +108,8 @@ python mcp/daw_mcp_server.py
 
 - **Session, Recording & Transport:** `get_session_state`, `control_transport` (`play`, `stop`, `record`, `bpm`, `beat`, `click`, `loop`, `loop_start_beat`, `loop_end_beat`, `count_in_bars`), `list_recording_inputs`
 - **Tracks & Piano Roll:** `create_instrument_track`, `write_piano_roll_notes`, `get_piano_roll_notes`
-- **Mixer, EQ, FX Sends & Automation:** `set_mixer_channel` (volume, pan, mute, solo, record arm, input device), `set_track_eq` (`low_db`, `mid_db`, `high_db` in `[-18, +18]` dB), `configure_fx_send` (Aux Send to shared Reverb/Delay return bus), `write_track_automation`, `get_track_automation`
-- **Modular Rack:** `get_modular_racks`, `patch_modular_rack`
+- **Mixer, EQ, FX Sends, Presets & Automation:** `set_mixer_channel` (volume, pan, mute, solo, record arm, input device), `set_plugin_preset` (list/apply built-in synth & FX factory presets), `set_track_eq` (`low_db`, `mid_db`, `high_db` in `[-18, +18]` dB), `configure_fx_send` (Aux Send to shared Reverb/Delay return bus), `write_track_automation`, `get_track_automation`
+- **Modular Rack:** `get_modular_racks`, `add_rack_machine` (`4osc`, `sampler`, `compressor`, `chorus`, `phaser`, `lowpass`, `pitchshift`, `reverb`, `delay`, `eq`, `cv_lfo`, `cv_wobble`, `cv_splitter`), `patch_modular_rack`
 - **Audio, Pitch Transcription, BGM & Export:** `generate_bgm_arrangement`, `process_audio_clip`, `transcribe_audio_to_midi` (YIN monophonic audio-to-MIDI into a new or existing MIDI track), `generate_ai_audio_stem`, `import_audio_stem`, `export_master_wav`
 
 `generate_ai_audio_stem` delegates WAV synthesis to `mcp/ai_audio_worker.py` (automatically using `arioso` when installed, or falling back to a stereo 44.1 kHz key/tempo-synced synthesizer), saves stems to `~/Documents/Toxic Creationz Studio/GeneratedStems/`, and imports them cleanly via `audio.import_file`.
@@ -131,7 +132,8 @@ src/
   Main.cpp                           # JUCEApplication + headless --smoke-test regression suite
   MainComponent.h/.cpp               # Engine/Edit lifecycle, two-row studio header, shortcuts, IPC
   StudioLookAndFeel.h                # Dark studio LookAndFeel palette
-  StudioPluginWindow.h               # Native VST3 & generic Tracktion/CV floating plugin editors
+  StudioPluginWindow.h               # Native VST3, preset bar, 4OSC/Sampler & generic plugin editors
+  PluginPresetManager.h/.cpp         # Factory preset bank, .trkpreset XML save/load & 808 Sampler kit seeder
   ArrangementView.h/.cpp             # Zoomable multi-track timeline, loop range, arm pills & automation overlay
   PianoRollComponent.h/.cpp          # Zoomable grid-snapping MIDI editor
   MixerComponent.h/.cpp              # Channel strips, 3-band EQ, Reverb/Delay inserts, Aux sends, meters, rec arm
