@@ -1,4 +1,5 @@
 #include "MainComponent.h"
+#include "HardwareRackPlugins.h"
 #include "PluginPresetManager.h"
 #include "StudioPluginWindow.h"
 
@@ -2773,9 +2774,264 @@ int MainComponent::runHeadlessSmokeTest()
             return 1;
         }
 
+        // Release the RackType::Ptr before createNewSession() destroys the Edit.
+        rack0 = nullptr;
         app.createNewSession (sessionFile, true, false);
         wo017TempDir.deleteRecursively();
         std::cout << "[SMOKE_TEST] WO-017 Factory presets, .trkpreset round-trip, Sampler 808 kit & multi-machine rack PASS" << std::endl;
+    }
+
+    //===========================================================================
+    // WO-016 Hardware Rack Suite: TR-808, 12-bit sampler, tape + RPC persistence
+    //===========================================================================
+    {
+        const auto hwDir = tempDir.getChildFile ("tcs_wo016_hardware_smoke");
+        hwDir.deleteRecursively();
+        hwDir.createDirectory();
+        app.createNewSession (hwDir.getChildFile ("HardwareRack.tracktionedit"), true, false);
+
+        // 1. TR-808 multi-out + CV accent on pin 1 / channel 0.
+        {
+            constexpr int blockN = 512;
+            juce::AudioBuffer<float> drumBuf (5, blockN);
+            drumBuf.clear();
+
+            for (int i = 0; i < blockN; ++i)
+                drumBuf.setSample (0, i, 0.6f);
+
+            te::MidiMessageArray drumMidi;
+            drumMidi.addMidiMessage (juce::MidiMessage::noteOn (1, 36, static_cast<juce::uint8> (120)), 0.0, te::MPESourceID{});
+            drumMidi.addMidiMessage (juce::MidiMessage::noteOn (1, 38, static_cast<juce::uint8> (120)), 0.0, te::MPESourceID{});
+            drumMidi.addMidiMessage (juce::MidiMessage::noteOn (1, 42, static_cast<juce::uint8> (120)), 0.0, te::MPESourceID{});
+
+            auto drumPtr = app.edit->getPluginCache().createNewPlugin (Tr808DrumPlugin::xmlTypeName, {});
+            auto* drum = dynamic_cast<Tr808DrumPlugin*> (drumPtr.get());
+
+            if (drum == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 Tr808DrumPlugin could not be created" << std::endl;
+                return 1;
+            }
+
+            drum->initialise (te::PluginInitialisationInfo {
+                tracktion::TimePosition::fromSeconds (0.0), 44100.0, blockN });
+            drum->applyToBuffer (te::PluginRenderContext (&drumBuf, 0, blockN, &drumMidi,
+                                                          0.0, {}, false, false, false, false));
+            drum->deinitialise();
+
+            for (int ch = 0; ch < 5; ++ch)
+            {
+                bool finite = true;
+
+                for (int i = 0; i < blockN; ++i)
+                    if (! std::isfinite (drumBuf.getSample (ch, i)))
+                        finite = false;
+
+                if (! finite || drumBuf.getRMSLevel (ch, 0, blockN) <= 1e-3f)
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-016 TR-808 output " << ch
+                              << " silent or non-finite" << std::endl;
+                    return 1;
+                }
+            }
+
+            drumPtr = nullptr;
+        }
+
+        // 2. 12-bit sampler: ZOH decimation + reconstruction bypass.
+        {
+            constexpr int blockN = 1024;
+            juce::AudioBuffer<float> sampleOut (2, blockN);
+            sampleOut.clear();
+
+            te::MidiMessageArray sampleMidi;
+            sampleMidi.addMidiMessage (juce::MidiMessage::noteOn (1, 60, static_cast<juce::uint8> (120)), 0.0, te::MPESourceID{});
+
+            auto samplerPtr = app.edit->getPluginCache().createNewPlugin (VintageSamplerPlugin::xmlTypeName, {});
+            auto* sampler = dynamic_cast<VintageSamplerPlugin*> (samplerPtr.get());
+
+            if (sampler == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 VintageSamplerPlugin could not be created" << std::endl;
+                return 1;
+            }
+
+            sampler->setTargetRate (12000.0f);
+            sampler->setFilterCutoff (18000.0f);
+            sampler->initialise (te::PluginInitialisationInfo {
+                tracktion::TimePosition::fromSeconds (0.0), 44100.0, blockN });
+            sampler->applyToBuffer (te::PluginRenderContext (&sampleOut, 0, blockN, &sampleMidi,
+                                                             0.0, {}, false, false, false, false));
+            sampler->deinitialise();
+
+            int repeats = 0;
+
+            for (int i = 1; i < 300; ++i)
+                if (sampleOut.getSample (0, i) == sampleOut.getSample (0, i - 1))
+                    ++repeats;
+
+            if (sampleOut.getRMSLevel (0, 0, blockN) <= 1e-3f || repeats < 20)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 sampler ZOH staircase missing (repeats="
+                          << repeats << ")" << std::endl;
+                return 1;
+            }
+
+            samplerPtr = nullptr;
+        }
+
+        // 3. Analog tape: asymmetric saturation + wow/flutter is bounded & non-linear.
+        {
+            constexpr int blockN = 512;
+            constexpr double sr = 44100.0;
+            juce::AudioBuffer<float> tapeBuf (3, blockN);
+
+            for (int i = 0; i < blockN; ++i)
+            {
+                const float s = static_cast<float> (0.5 * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / sr));
+                tapeBuf.setSample (0, i, s);
+                tapeBuf.setSample (1, i, s);
+                tapeBuf.setSample (2, i, 0.0f);
+            }
+
+            const float inputRms = tapeBuf.getRMSLevel (0, 0, blockN);
+
+            auto tapePtr = app.edit->getPluginCache().createNewPlugin (AnalogTapePlugin::xmlTypeName, {});
+            auto* tape = dynamic_cast<AnalogTapePlugin*> (tapePtr.get());
+
+            if (tape == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 AnalogTapePlugin could not be created" << std::endl;
+                return 1;
+            }
+
+            tape->setDrive (4.0f);
+            tape->setWow (0.4f);
+            tape->setMix (1.0f);
+            tape->initialise (te::PluginInitialisationInfo {
+                tracktion::TimePosition::fromSeconds (0.0), sr, blockN });
+            tape->applyToBuffer (te::PluginRenderContext (&tapeBuf, 0, blockN, nullptr,
+                                                          0.0, {}, false, false, false, false));
+            tape->deinitialise();
+
+            float diff = 0.0f;
+            bool finite = true;
+
+            for (int i = 0; i < blockN; ++i)
+            {
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    const float x = tapeBuf.getSample (ch, i);
+                    if (! std::isfinite (x) || std::abs (x) >= 1.0f)
+                        finite = false;
+                    diff += std::abs (x - static_cast<float> (0.5 * std::sin (
+                                        2.0 * juce::MathConstants<double>::pi * 220.0 * i / sr)));
+                }
+            }
+
+            if (! finite || tapeBuf.getRMSLevel (0, 0, blockN) <= 1e-3f
+                || diff / static_cast<float> (blockN * 2) < 1e-3f
+                || std::abs (tapeBuf.getRMSLevel (0, 0, blockN) - inputRms) < 1e-4f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 tape saturation/wow invalid or unbounded" << std::endl;
+                return 1;
+            }
+
+            tapePtr = nullptr;
+        }
+
+        // 4. rack.add_module + track.create + save/reload persistence.
+        {
+            const auto targetFile = hwDir.getChildFile ("HardwarePersist.tracktionedit");
+            targetFile.deleteFile();
+            app.createNewSession (targetFile, true, false);
+
+            const char* moduleTypes[3] = { "tr808", "sampler", "tape" };
+
+            for (int i = 0; i < 3; ++i)
+            {
+                const auto resp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                    "{\"jsonrpc\":\"2.0\",\"id\":" + juce::String (180 + i)
+                    + ",\"method\":\"rack.add_module\",\"params\":{\"module_type\":\""
+                    + moduleTypes[i] + "\",\"x\":" + juce::String (0.2 + 0.2 * i)
+                    + ",\"y\":0.5}}"));
+
+                if (! resp["result"].isObject()
+                    || resp["result"]["name"].toString().isEmpty())
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-016 rack.add_module " << moduleTypes[i]
+                              << " returned invalid result" << std::endl;
+                    return 1;
+                }
+            }
+
+            for (int i = 0; i < 3; ++i)
+            {
+                const auto resp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                    "{\"jsonrpc\":\"2.0\",\"id\":" + juce::String (190 + i)
+                    + ",\"method\":\"track.create\",\"params\":{\"name\":\"HW "
+                    + juce::String (i + 1) + "\",\"plugin_type\":\"" + moduleTypes[i] + "\"}}"));
+
+                if (! resp["result"].isObject())
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-016 track.create " << moduleTypes[i]
+                              << " returned invalid result" << std::endl;
+                    return 1;
+                }
+            }
+
+            app.currentEditFile = targetFile;
+            app.sessionUntitled = false;
+            app.saveSession();
+
+            if (! targetFile.existsAsFile())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 hardware session was not saved" << std::endl;
+                return 1;
+            }
+
+            juce::String loadError;
+
+            if (! app.loadSessionFromFileSafely (targetFile, &loadError))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 hardware session reload: "
+                          << loadError << std::endl;
+                return 1;
+            }
+
+            int found[3] = { 0, 0, 0 };
+
+            auto countPlugin = [&found] (te::Plugin* p)
+            {
+                if (dynamic_cast<Tr808DrumPlugin*> (p) != nullptr)       ++found[0];
+                if (dynamic_cast<VintageSamplerPlugin*> (p) != nullptr)  ++found[1];
+                if (dynamic_cast<AnalogTapePlugin*> (p) != nullptr)      ++found[2];
+            };
+
+            for (auto* t : te::getAudioTracks (*app.edit))
+                for (auto* p : t->pluginList)
+                    countPlugin (p);
+
+            for (auto* r : app.edit->getRackList().getTypes())
+                for (auto* p : r->getPlugins())
+                    countPlugin (p);
+
+            for (int i = 0; i < 3; ++i)
+            {
+                if (found[i] < 2)
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-016 " << moduleTypes[i]
+                              << " did not persist (found " << found[i] << ")"
+                              << std::endl;
+                    return 1;
+                }
+            }
+
+            app.createNewSession (sessionFile, true, false);
+        }
+
+        hwDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-016 TR-808 multi-out, 12-bit ZOH sampler, analog tape & rack.add_module persistence PASS" << std::endl;
     }
 
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
@@ -2816,6 +3072,7 @@ int MainComponent::runHeadlessSmokeTest()
                  "plugin editor windows, timeline vertical scroll, Wave-to-MIDI switch, "
                  "CV SVF filter DSP, direction-aware rack pins, clip-transpose transcription, "
                  "factory preset bank, .trkpreset round-trip, Sampler 808 kit, multi-machine rack, "
+                 "TR-808, 12-bit ZOH sampler, analog tape saturation & rack.add_module persistence, "
                  "and VST3 scanner lifecycle verified."
               << std::endl;
     return 0;

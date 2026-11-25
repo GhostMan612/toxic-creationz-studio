@@ -2,6 +2,7 @@
 
 #include "AudioToMidiTranscriber.h"
 #include "AutomationManager.h"
+#include "HardwareRackPlugins.h"
 #include "MixdownExporter.h"
 #include "PluginPresetManager.h"
 #include "WaveformEditorComponent.h"
@@ -320,9 +321,16 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
 
         newTrack->setName (name);
 
-        if (pluginType == "4osc")
+        if (pluginType == "4osc" || pluginType == "tr808" || pluginType == "sampler"
+            || pluginType == "tape")
         {
-            if (auto synth = edit->getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {}))
+            const char* typeName = te::FourOscPlugin::xmlTypeName;
+
+            if (pluginType == "tr808")   typeName = Tr808DrumPlugin::xmlTypeName;
+            else if (pluginType == "sampler") typeName = VintageSamplerPlugin::xmlTypeName;
+            else if (pluginType == "tape")    typeName = AnalogTapePlugin::xmlTypeName;
+
+            if (auto synth = edit->getPluginCache().createNewPlugin (typeName, {}))
                 newTrack->pluginList.insertPlugin (synth, getInsertIndexBeforeTerminalPlugins (*newTrack), nullptr);
         }
 
@@ -1344,6 +1352,74 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         out->setProperty ("plugin_name", plugin->getName());
         out->setProperty ("machine_type", rawType);
         out->setProperty ("available_presets", availPresets);
+        return makeResultResponse (id, juce::var (out));
+    }
+
+    // 21. rack.add_module (Reason-style CV / hardware module into a modular rack)
+    if (method == "rack.add_module")
+    {
+        const int rackIdx = static_cast<int> (params.getProperty ("rack_index", 0));
+        const juce::String rawType = params.getProperty ("module_type", "cv_lfo").toString().trim().toLowerCase();
+
+        if (rackIdx < 0)
+            return makeErrorResponse (id, -32602, "Invalid rack_index");
+
+        if (edit->getRackList().getTypes().isEmpty() && rackIdx == 0)
+        {
+            if (auto newRack = edit->getRackList().addNewRack())
+                newRack->rackName = "Modular Studio Rack";
+        }
+
+        const auto& racks = edit->getRackList().getTypes();
+
+        if (! juce::isPositiveAndBelow (rackIdx, racks.size()))
+            return makeErrorResponse (id, -32602, "Invalid rack_index");
+
+        juce::String xmlType;
+
+        if (rawType == "cv_lfo")                        xmlType = CvLfoPlugin::xmlTypeName;
+        else if (rawType == "cv_filter" || rawType == "cv_wobble") xmlType = CvWobbleFilterPlugin::xmlTypeName;
+        else if (rawType == "cv_splitter")               xmlType = CvUtilityPlugin::xmlTypeName;
+        else if (rawType == "tr808")                     xmlType = Tr808DrumPlugin::xmlTypeName;
+        else if (rawType == "sampler")                   xmlType = VintageSamplerPlugin::xmlTypeName;
+        else if (rawType == "tape")                      xmlType = AnalogTapePlugin::xmlTypeName;
+        else if (rawType == "4osc")                      xmlType = te::FourOscPlugin::xmlTypeName;
+        else
+            return makeErrorResponse (id, -32602, "Unsupported module_type: " + rawType);
+
+        auto* rack = racks[rackIdx];
+        edit->getUndoManager().beginNewTransaction ("MCP Add Rack Module");
+
+        auto plugin = edit->getPluginCache().createNewPlugin (xmlType, {});
+
+        if (plugin == nullptr)
+            return makeErrorResponse (id, -32603, "Failed to instantiate module: " + xmlType);
+
+        const float x = juce::jlimit (0.02f, 0.92f, static_cast<float> (params.getProperty ("x", 0.25)));
+        const float y = juce::jlimit (0.02f, 0.92f, static_cast<float> (params.getProperty ("y", 0.5)));
+
+        if (! rack->addPlugin (plugin, { x, y }, false))
+            return makeErrorResponse (id, -32603, "Failed to add module into rack");
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP added module " + plugin->getName() + " to rack " + juce::String (rackIdx));
+
+        juce::StringArray ins, outs;
+        plugin->getChannelNames (&ins, &outs);
+        juce::Array<juce::var> inputs, outputs;
+
+        for (const auto& name : ins)
+            inputs.add (name);
+
+        for (const auto& name : outs)
+            outputs.add (name);
+
+        auto* out = new juce::DynamicObject();
+        out->setProperty ("rack_index", rackIdx);
+        out->setProperty ("plugin_id", static_cast<juce::int64> (plugin->itemID.getRawID()));
+        out->setProperty ("name", plugin->getName());
+        out->setProperty ("inputs", inputs);
+        out->setProperty ("outputs", outputs);
         return makeResultResponse (id, juce::var (out));
     }
 

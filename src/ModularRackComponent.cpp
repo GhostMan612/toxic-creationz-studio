@@ -189,7 +189,8 @@ juce::Rectangle<int> ModularRackComponent::getCanvasArea() const
 }
 
 juce::Rectangle<int> ModularRackComponent::computeGridSlot (int pluginIndex,
-                                                            juce::Rectangle<int> canvasArea) const
+                                                            juce::Rectangle<int> canvasArea,
+                                                            int slotHeight) const
 {
     const int innerW = juce::jmax (nodeWidth, canvasArea.getWidth() - padX);
     const int cols   = juce::jmax (1, innerW / (nodeWidth + 24));
@@ -197,21 +198,30 @@ juce::Rectangle<int> ModularRackComponent::computeGridSlot (int pluginIndex,
     const int row    = pluginIndex / cols;
 
     return { canvasArea.getX() + padX + col * (nodeWidth + 24),
-             canvasArea.getY() + padY + row * (nodeHeight + padY),
-             nodeWidth, nodeHeight };
+             canvasArea.getY() + padY + row * (slotHeight + padY),
+             nodeWidth, slotHeight };
+}
+
+int ModularRackComponent::getNodeHeightForPlugin (te::Plugin& plugin) const
+{
+    juce::StringArray ins, outs;
+    plugin.getChannelNames (&ins, &outs);
+    const int maxPins = juce::jmax (ins.size() + 1, outs.size() + 1);
+    return juce::jmax (nodeHeight, maxPins * 22 + 36);
 }
 
 juce::Rectangle<int> ModularRackComponent::computeModuleSlotBounds (int pluginIndex,
                                                                     int totalPlugins,
                                                                     juce::Point<float> storedPos,
-                                                                    juce::Rectangle<int> canvasArea) const
+                                                                    juce::Rectangle<int> canvasArea,
+                                                                    int slotHeight) const
 {
     juce::ignoreUnused (totalPlugins);
 
     const int usableW = juce::jmax (nodeWidth,  canvasArea.getWidth()  - nodeWidth  - padX * 2);
-    const int usableH = juce::jmax (nodeHeight, canvasArea.getHeight() - nodeHeight - padY * 2);
+    const int usableH = juce::jmax (slotHeight, canvasArea.getHeight() - slotHeight - padY * 2);
 
-    auto slot = computeGridSlot (pluginIndex, canvasArea);
+    auto slot = computeGridSlot (pluginIndex, canvasArea, slotHeight);
 
     if (storedPos.x > 0.01f || storedPos.y > 0.01f)
     {
@@ -249,7 +259,7 @@ juce::Rectangle<float> ModularRackComponent::getPinRectInCanvas (int nodeIndex, 
 
     const auto& n = nodes.getReference (nodeIndex);
     const float px = n.rect.getX() + (isInput ? 6.0f : static_cast<float> (nodeWidth) - 14.0f);
-    const float py = 24.0f + static_cast<float> (juce::jlimit (0, 5, pinIndex) * 15);
+    const float py = 24.0f + static_cast<float> (juce::jlimit (0, 5, pinIndex) * 22);
 
     return juce::Rectangle<float> (px, n.rect.getY() + py, static_cast<float> (pinSize), static_cast<float> (pinSize));
 }
@@ -554,8 +564,9 @@ void ModularRackComponent::rebuildFromRack()
     {
         auto* plugin = plugins.getUnchecked (i);
         const auto storedPos = selectedRack->getPluginPosition (i);
+        const int slotHeight = getNodeHeightForPlugin (*plugin);
 
-        auto slot = computeModuleSlotBounds (i, plugins.size(), storedPos, canvasArea);
+        auto slot = computeModuleSlotBounds (i, plugins.size(), storedPos, canvasArea, slotHeight);
 
         bool overlaps = false;
 
@@ -573,7 +584,7 @@ void ModularRackComponent::rebuildFromRack()
 
             for (int candidate = 0; candidate < cols * 256; ++candidate)
             {
-                auto gridSlot = computeGridSlot (candidate, canvasArea);
+                auto gridSlot = computeGridSlot (candidate, canvasArea, slotHeight);
                 bool hit = false;
 
                 for (auto& r : placed)
@@ -738,6 +749,9 @@ void ModularRackComponent::showAddMachineMenu()
     menu.addSectionHeader ("Instruments");
     menu.addItem (1, "4OSC Synthesizer");
     menu.addItem (2, "Multi-Sampler (808 + Synth Kit)");
+    menu.addItem (11, "TR-808 Drum Synth");
+    menu.addItem (12, "12-Bit Vintage Sampler");
+    menu.addItem (13, "Analog Tape Deck");
     menu.addSeparator();
     menu.addSectionHeader ("Studio Effects");
     menu.addItem (3, "Compressor");
@@ -779,6 +793,9 @@ void ModularRackComponent::showAddMachineMenu()
         {
             case 1:  safeThis->addMachineToRack (te::FourOscPlugin::xmlTypeName); break;
             case 2:  safeThis->addMachineToRack (te::SamplerPlugin::xmlTypeName); break;
+            case 11: safeThis->addMachineToRack (Tr808DrumPlugin::xmlTypeName); break;
+            case 12: safeThis->addMachineToRack (VintageSamplerPlugin::xmlTypeName); break;
+            case 13: safeThis->addMachineToRack (AnalogTapePlugin::xmlTypeName); break;
             case 3:  safeThis->addMachineToRack (te::CompressorPlugin::xmlTypeName); break;
             case 4:  safeThis->addMachineToRack (te::ChorusPlugin::xmlTypeName); break;
             case 5:  safeThis->addMachineToRack (te::PhaserPlugin::xmlTypeName); break;
@@ -884,8 +901,8 @@ void ModularRackComponent::handleNodeClick (int nodeIndex, NodeView& view, const
     juce::StringArray ins, outs;
     view.plugin.getChannelNames (&ins, &outs);
 
-    const int maxInPin  = juce::jlimit (0, 4, ins.size());
-    const int maxOutPin = juce::jlimit (0, 4, outs.size());
+    const int maxInPin  = juce::jlimit (0, 5, ins.size());
+    const int maxOutPin = juce::jlimit (0, 5, outs.size());
 
     for (int p = 0; p <= maxInPin; ++p)
     {
@@ -956,8 +973,8 @@ void ModularRackComponent::NodeView::paint (juce::Graphics& g)
     juce::StringArray ins, outs;
     plugin.getChannelNames (&ins, &outs);
 
-    const int maxInPin  = juce::jlimit (0, 4, ins.size());
-    const int maxOutPin = juce::jlimit (0, 4, outs.size());
+    const int maxInPin  = juce::jlimit (0, 5, ins.size());
+    const int maxOutPin = juce::jlimit (0, 5, outs.size());
 
     g.setFont (juce::Font (juce::FontOptions (9.5f)));
 
@@ -1003,6 +1020,6 @@ void ModularRackComponent::NodeView::mouseDoubleClick (const juce::MouseEvent&)
 juce::Rectangle<float> ModularRackComponent::NodeView::getPinRect (int pinIndex, bool isInput) const
 {
     const float px = isInput ? 6.0f : static_cast<float> (getWidth()) - 14.0f;
-    const float py = 24.0f + static_cast<float> (juce::jlimit (0, 5, pinIndex) * 15);
+    const float py = 24.0f + static_cast<float> (juce::jlimit (0, 5, pinIndex) * 22);
     return { px, py, static_cast<float> (pinSize), static_cast<float> (pinSize) };
 }

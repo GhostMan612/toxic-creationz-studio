@@ -42,6 +42,7 @@
 | WO-014 | YIN Audio-to-MIDI Pitch Transcription, Waveform Editor `To MIDI`, MCP Transcription Tool & Final v1.0 Packaging | Committed locally (`dev/v1-complete`, `08a89a1`) |
 | WO-015 | Live Studio QA Polish: Plugin Editor Windows, Timeline Vertical Scroll, Wave-to-MIDI Switch, QWERTY Focus & Mixer Aux Sends | Committed locally (`dev/v1-complete`, `16522de`) |
 | WO-016 | Post-v1.0 Architectural Audit Hardening: Real SVF CV Wobble Filter, RackType I/O & Pin Directionality, Clip-Transpose Transcription & Lifecycle Safety | Committed locally (`dev/v1-complete`) |
+| WO-016B | Reason-Style Native Hardware Rack Suite: TR-808 Drum Synth, 12-Bit Vintage Sampler, Analog Tape Deck & `rack.add_module` MCP tool | Committed locally (`dev/v1-complete`) |
 
 ---
 

@@ -1,5 +1,7 @@
 #include "MainComponent.h"
 
+#include "HardwareRackPlugins.h"
+
 #include <juce_audio_utils/juce_audio_utils.h>
 
 //==============================================================================
@@ -109,6 +111,7 @@ MainComponent::MainComponent()
         engine.getDeviceManager().initialise (2, 2);
 
     registerCvRackPlugins (engine);
+    registerHardwareRackPlugins (engine);
     loadCachedPlugins();
 
     // Provision the starter riff pack once for interactive sessions. The

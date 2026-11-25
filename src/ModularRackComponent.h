@@ -4,6 +4,7 @@
 #include <tracktion_engine/tracktion_engine.h>
 
 #include "CvRackPlugins.h"
+#include "HardwareRackPlugins.h"
 #include "PluginPresetManager.h"
 
 #include <functional>
@@ -125,11 +126,14 @@ private:
     void handleEndpointSelection (te::EditItemID endpointID, int pinIndex, bool isInputPin);
 
     juce::Rectangle<int> getCanvasArea() const;
+    int getNodeHeightForPlugin (te::Plugin& plugin) const;
     juce::Rectangle<int> computeGridSlot (int pluginIndex,
-                                          juce::Rectangle<int> canvasArea) const;
+                                          juce::Rectangle<int> canvasArea,
+                                          int slotHeight) const;
     juce::Rectangle<int> computeModuleSlotBounds (int pluginIndex, int totalPlugins,
                                                   juce::Point<float> storedPos,
-                                                  juce::Rectangle<int> canvasArea) const;
+                                                  juce::Rectangle<int> canvasArea,
+                                                  int slotHeight) const;
     int findNodeIndex (te::EditItemID pluginID) const;
     juce::Rectangle<float> getPinRectInCanvas (int nodeIndex, int pinIndex, bool isInput) const;
     juce::Rectangle<float> getPinRectInRack (int nodeIndex, int pinIndex, bool isInput) const;

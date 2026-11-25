@@ -37,6 +37,7 @@ target_sources(AIDAW PRIVATE
     src/MixerComponent.h
     src/MixerComponent.cpp
     src/CvRackPlugins.h
+    src/HardwareRackPlugins.h
     src/ModularRackComponent.h
     src/ModularRackComponent.cpp
     src/RiffLibrary.h

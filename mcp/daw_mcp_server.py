@@ -98,7 +98,7 @@ async def get_session_state() -> dict[str, Any]:
 
 @mcp.tool()
 async def create_instrument_track(name: str, instrument: str = "4osc") -> dict[str, Any]:
-    """Create a new track in the DAW loaded with an instrument ('4osc' or 'none')."""
+    """Create a new track with an instrument: '4osc', 'tr808', 'sampler', 'tape', or 'none'."""
     return await send_daw_rpc("track.create", {"name": name, "plugin_type": instrument})
 
 
@@ -465,6 +465,29 @@ async def add_rack_machine(
         {
             "rack_index": max(0, rack_index),
             "machine_type": machine_type.strip().lower(),
+        },
+    )
+
+
+@mcp.tool()
+async def add_rack_module(
+    module_type: str = "cv_lfo",
+    rack_index: int = 0,
+    x: float = 0.25,
+    y: float = 0.5,
+) -> dict[str, Any]:
+    """Insert a CV or hardware module into a modular rack.
+
+    module_type: 'cv_lfo', 'cv_filter', 'cv_splitter', 'tr808', 'sampler',
+    'tape', or '4osc'. x/y are normalised 0..1 rack positions.
+    """
+    return await send_daw_rpc(
+        "rack.add_module",
+        {
+            "rack_index": max(0, rack_index),
+            "module_type": module_type.strip().lower(),
+            "x": x,
+            "y": y,
         },
     )
 

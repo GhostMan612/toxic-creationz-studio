@@ -1,6 +1,7 @@
 #include "MixerComponent.h"
 #include "AutomationManager.h"
 #include "CvRackPlugins.h"
+#include "HardwareRackPlugins.h"
 #include "PluginPresetManager.h"
 
 //==============================================================================
@@ -415,6 +416,9 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
     menu.addSectionHeader ("Built-In Instruments");
     menu.addItem (1, "4OSC Synthesizer");
     menu.addItem (10, "Multi-Sampler (808 + Synth Kit)");
+    menu.addItem (16, "TR-808 Drum Synth");
+    menu.addItem (17, "12-Bit Vintage Sampler");
+    menu.addItem (18, "Analog Tape Deck");
     menu.addSeparator();
     menu.addSectionHeader ("Built-In Effects");
     menu.addItem (2, "4-Band Equaliser (EQ)");
@@ -500,6 +504,16 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
                     PluginPresetManager::seedStarterSamplerKit (*samplerPtr);
                 tr->pluginList.insertPlugin (smp, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
             }
+        }
+        else if (chosenId >= 16 && chosenId <= 18)
+        {
+            const char* hwTypeName = Tr808DrumPlugin::xmlTypeName;
+            if (chosenId == 17) hwTypeName = VintageSamplerPlugin::xmlTypeName;
+            else if (chosenId == 18) hwTypeName = AnalogTapePlugin::xmlTypeName;
+
+            safeThis->edit.getUndoManager().beginNewTransaction ("Add Hardware Rack Machine");
+            if (auto hw = safeThis->edit.getPluginCache().createNewPlugin (hwTypeName, {}))
+                tr->pluginList.insertPlugin (hw, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
         }
         else if (chosenId >= 11 && chosenId <= 15)
         {

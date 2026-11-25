@@ -367,5 +367,46 @@ class McpWorkerTests(unittest.TestCase):
         )
 
 
+    def test_add_rack_module_clamps_and_forwards(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(
+            return_value={
+                "rack_index": 0,
+                "plugin_id": 108,
+                "name": "TR-808 Drum Synth",
+                "inputs": ["CV Accent In"],
+                "outputs": ["Master L", "Master R", "Kick Out", "Snare Out", "Hat/Tom Out"],
+            }
+        )
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(
+                srv.add_rack_module(module_type="  TR808 ", rack_index=-3, x=0.4, y=0.6)
+            )
+
+        self.assertEqual(res["name"], "TR-808 Drum Synth")
+        mock_rpc.assert_awaited_once_with(
+            "rack.add_module",
+            {
+                "rack_index": 0,
+                "module_type": "tr808",
+                "x": 0.4,
+                "y": 0.6,
+            },
+        )
+
+    def test_create_instrument_track_hardware_types(self) -> None:
+        srv = _load_daw_mcp_server()
+
+        for instrument in ("tr808", "sampler", "tape", "none"):
+            mock_rpc = AsyncMock(return_value={"track_index": 0, "name": "HW Track"})
+            with patch.object(srv, "send_daw_rpc", mock_rpc):
+                res = asyncio.run(srv.create_instrument_track(name="HW Track", instrument=instrument))
+            self.assertEqual(res["track_index"], 0)
+            mock_rpc.assert_awaited_once_with(
+                "track.create", {"name": "HW Track", "plugin_type": instrument}
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
