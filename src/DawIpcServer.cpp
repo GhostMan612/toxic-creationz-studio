@@ -1311,6 +1311,9 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         else if (rawType == "reverb") xmlType = te::ReverbPlugin::xmlTypeName;
         else if (rawType == "delay") xmlType = te::DelayPlugin::xmlTypeName;
         else if (rawType == "eq" || rawType == "equaliser") xmlType = te::EqualiserPlugin::xmlTypeName;
+        else if (rawType == "tr808") xmlType = Tr808DrumPlugin::xmlTypeName;
+        else if (rawType == "vintage_sampler") xmlType = VintageSamplerPlugin::xmlTypeName;
+        else if (rawType == "tape") xmlType = AnalogTapePlugin::xmlTypeName;
         else if (rawType == "cv_lfo") xmlType = CvLfoPlugin::xmlTypeName;
         else if (rawType == "cv_wobble") xmlType = CvWobbleFilterPlugin::xmlTypeName;
         else if (rawType == "cv_splitter") xmlType = CvUtilityPlugin::xmlTypeName;

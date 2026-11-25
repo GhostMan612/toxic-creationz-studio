@@ -749,6 +749,8 @@ void ModularRackComponent::showAddMachineMenu()
     menu.addSectionHeader ("Instruments");
     menu.addItem (1, "4OSC Synthesizer");
     menu.addItem (2, "Multi-Sampler (808 + Synth Kit)");
+    menu.addSeparator();
+    menu.addSectionHeader ("Hardware Rack Suite");
     menu.addItem (11, "TR-808 Drum Synth");
     menu.addItem (12, "12-Bit Vintage Sampler");
     menu.addItem (13, "Analog Tape Deck");

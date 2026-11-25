@@ -3,16 +3,15 @@
 - Merged (PRs #1-#10): WO-001 through WO-010 on `main` (`377c51c`).
 - Open PR (#11): WO-011 (`feat/wo-011-v1-rc-eq-cv-worker-docs`, `918625a`) — v1.0 RC.
 - Continuous Dev (`dev/v1-complete`, branched from `918625a`): `WO-012` (`4268ada`), `WO-013` (`cc59e83`),
-  `WO-014` (`08a89a1`), `WO-015` (`16522de`), and `WO-016` complete and locally verified — real
-  12 dB/oct `juce::dsp::StateVariableTPTFilter` CV-modulated wobble filter (`Pin 3: CV In`),
-  direction-aware `RackType` MIDI/Audio/CV pin indexing + `IN`/`OUT` rails + click-to-toggle cable
-  disconnect + double-click module `StudioPluginWindow` + Mixer `Modular Racks` insertion, clip
-  offset/tempo/semitone-transpose-aware YIN `AudioToMidiTranscriber`, `DawIpcServer` `aliveFlag` async
-  guard + `4 MiB` frame cap, `MainWindow::closeButtonPressed()` unsaved-changes guard +
-  `hideAllWindowsTemporarily` teardown safety + clean fresh-session undo history, dynamic `16..128`-bar
-  timeline & `C1..C7` scrollable piano roll, 5/5 Release `--smoke-test` (`PASS`), isolated ASAN
-  `RelWithDebInfo` `--smoke-test` (`exit 0`, clean), `12/12` Python `unittest` (`OK`), and portable
-  Release zip `dist/ToxicCreationzStudio-win64.zip` (`9,858,352` bytes).
+  `WO-014` (`08a89a1`), `WO-015` (`16522de`), `WO-016` (`6ecc571`), `WO-017` (`43eb2e0`), and
+  Hardware Rack Suite (`525d672` + hardened follow-up) complete and locally verified —
+  `PluginPresetManager` factory preset bank & `.trkpreset` XML round-trip, `4OSC` oscillator/unison/FX
+  editor strip, `Multi-Sampler (808 + Synth Kit)`, native `HardwareRackPlugins.h` suite (`Tr808DrumPlugin`
+  5-out + 2-ch stereo + CHat->OHat choke, `VintageSamplerPlugin` 12-bit ZOH + stereo reconstruction LPF +
+  WAV loader, `AnalogTapePlugin` wow/flutter + 85 Hz head bump + asymmetric saturation on both 3-ch rack &
+  2-ch track inserts), `plugin.set_preset` / `rack.add_machine` / `rack.add_module` MCP tools, 5/5 Release
+  `--smoke-test` (`PASS`), isolated ASAN `RelWithDebInfo` `--smoke-test` (`exit 0`, clean), `16/16` Python
+  `unittest` (`OK`), and portable Release zip `dist/ToxicCreationzStudio-win64.zip`.
 - Workflow: Local development on `dev/v1-complete` (no PRs opened during continuous build).
 - Smoke convention: Release build + `--smoke-test`; all temp dirs under
   `%TEMP%`, never `%LOCALAPPDATA%\hermes`.
@@ -41,8 +40,9 @@
 | WO-013 | Automation Lanes, Aux Send/Return FX Bus, Zoomable Views & Studio Ergonomics | Committed locally (`dev/v1-complete`, `cc59e83`) |
 | WO-014 | YIN Audio-to-MIDI Pitch Transcription, Waveform Editor `To MIDI`, MCP Transcription Tool & Final v1.0 Packaging | Committed locally (`dev/v1-complete`, `08a89a1`) |
 | WO-015 | Live Studio QA Polish: Plugin Editor Windows, Timeline Vertical Scroll, Wave-to-MIDI Switch, QWERTY Focus & Mixer Aux Sends | Committed locally (`dev/v1-complete`, `16522de`) |
-| WO-016 | Post-v1.0 Architectural Audit Hardening: Real SVF CV Wobble Filter, RackType I/O & Pin Directionality, Clip-Transpose Transcription & Lifecycle Safety | Committed locally (`dev/v1-complete`) |
-| WO-016B | Reason-Style Native Hardware Rack Suite: TR-808 Drum Synth, 12-Bit Vintage Sampler, Analog Tape Deck & `rack.add_module` MCP tool | Committed locally (`dev/v1-complete`) |
+| WO-016 | Post-v1.0 Architectural Audit Hardening: Real SVF CV Wobble Filter, RackType I/O & Pin Directionality, Clip-Transpose Transcription & Lifecycle Safety | Committed locally (`dev/v1-complete`, `6ecc571`) |
+| WO-017 | Factory Sound Preset Bank, `.trkpreset` XML Save/Load, `4OSC`/Sampler UI, Multi-Machine Rack & `set_plugin_preset`/`add_rack_machine` MCP | Committed locally (`dev/v1-complete`, `43eb2e0`) |
+| WO-016B | Reason-Style Native Hardware Rack Suite: `Tr808DrumPlugin`, `VintageSamplerPlugin`, `AnalogTapePlugin`, `rack.add_module` & Hardware Presets/Hardening | Verified locally (`dev/v1-complete`, `525d672` + hardening) |
 
 ---
 

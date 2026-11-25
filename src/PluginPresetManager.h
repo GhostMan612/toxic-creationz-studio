@@ -5,6 +5,7 @@
 #include <tracktion_engine/tracktion_engine.h>
 
 #include "CvRackPlugins.h"
+#include "HardwareRackPlugins.h"
 
 namespace te = tracktion::engine;
 

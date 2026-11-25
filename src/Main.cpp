@@ -2817,7 +2817,6 @@ int MainComponent::runHeadlessSmokeTest()
                 tracktion::TimePosition::fromSeconds (0.0), 44100.0, blockN });
             drum->applyToBuffer (te::PluginRenderContext (&drumBuf, 0, blockN, &drumMidi,
                                                           0.0, {}, false, false, false, false));
-            drum->deinitialise();
 
             for (int ch = 0; ch < 5; ++ch)
             {
@@ -2835,6 +2834,29 @@ int MainComponent::runHeadlessSmokeTest()
                 }
             }
 
+            // Closed Hat (42) must choke Open Hat (46), and 2-ch track inserts must render stereo.
+            te::MidiMessageArray chokeMidi;
+            chokeMidi.addMidiMessage (juce::MidiMessage::noteOn (1, 46, static_cast<juce::uint8> (110)), 0.0, te::MPESourceID{});
+            juce::AudioBuffer<float> stereoDrum (2, 128);
+            stereoDrum.clear();
+            drum->applyToBuffer (te::PluginRenderContext (&stereoDrum, 0, 128, &chokeMidi,
+                                                          0.0, {}, false, false, false, false));
+            if (! drum->isOHatActiveForSmokeTest() || stereoDrum.getRMSLevel (0, 0, 128) <= 1e-4f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 TR-808 2-ch OHat render failed" << std::endl;
+                return 1;
+            }
+            chokeMidi.clear();
+            chokeMidi.addMidiMessage (juce::MidiMessage::noteOn (1, 42, static_cast<juce::uint8> (110)), 0.0, te::MPESourceID{});
+            drum->applyToBuffer (te::PluginRenderContext (&stereoDrum, 0, 128, &chokeMidi,
+                                                          0.0, {}, false, false, false, false));
+            if (drum->isOHatActiveForSmokeTest() || ! PluginPresetManager::applyFactoryPreset (*drum, "Sub Shaker 808"))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 TR-808 CHat choke or preset application failed" << std::endl;
+                return 1;
+            }
+
+            drum->deinitialise();
             drumPtr = nullptr;
         }
 
@@ -2870,9 +2892,10 @@ int MainComponent::runHeadlessSmokeTest()
                 if (sampleOut.getSample (0, i) == sampleOut.getSample (0, i - 1))
                     ++repeats;
 
-            if (sampleOut.getRMSLevel (0, 0, blockN) <= 1e-3f || repeats < 20)
+            if (sampleOut.getRMSLevel (0, 0, blockN) <= 1e-3f || repeats < 20
+                || ! PluginPresetManager::applyFactoryPreset (*sampler, "Lo-Fi Crunch (8-Bit / 12 kHz)"))
             {
-                std::cerr << "[SMOKE_TEST] FAIL: WO-016 sampler ZOH staircase missing (repeats="
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 sampler ZOH staircase or preset failed (repeats="
                           << repeats << ")" << std::endl;
                 return 1;
             }
@@ -2912,7 +2935,6 @@ int MainComponent::runHeadlessSmokeTest()
                 tracktion::TimePosition::fromSeconds (0.0), sr, blockN });
             tape->applyToBuffer (te::PluginRenderContext (&tapeBuf, 0, blockN, nullptr,
                                                           0.0, {}, false, false, false, false));
-            tape->deinitialise();
 
             float diff = 0.0f;
             bool finite = true;
@@ -2931,11 +2953,34 @@ int MainComponent::runHeadlessSmokeTest()
 
             if (! finite || tapeBuf.getRMSLevel (0, 0, blockN) <= 1e-3f
                 || diff / static_cast<float> (blockN * 2) < 1e-3f
-                || std::abs (tapeBuf.getRMSLevel (0, 0, blockN) - inputRms) < 1e-4f)
+                || std::abs (tapeBuf.getRMSLevel (0, 0, blockN) - inputRms) < 1e-4f
+                || std::abs (tapeBuf.getSample (2, 0)) > 1e-6f)
             {
-                std::cerr << "[SMOKE_TEST] FAIL: WO-016 tape saturation/wow invalid or unbounded" << std::endl;
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 tape saturation/wow invalid or CV not cleared" << std::endl;
                 return 1;
             }
+
+            // Also verify AnalogTapePlugin processes 2-channel stereo tracks cleanly while initialised.
+            juce::AudioBuffer<float> stereoTape (2, 256);
+            for (int i = 0; i < 256; ++i)
+            {
+                const float s = static_cast<float> (0.4 * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / sr));
+                stereoTape.setSample (0, i, s);
+                stereoTape.setSample (1, i, s);
+            }
+            tape->applyToBuffer (te::PluginRenderContext (&stereoTape, 0, 256, nullptr,
+                                                          0.0, {}, false, false, false, false));
+            if (stereoTape.getRMSLevel (0, 0, 256) <= 1e-3f
+                || ! PluginPresetManager::applyFactoryPreset (*tape, "Lo-Fi Cassette"))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 2-ch track tape processing or preset failed" << std::endl;
+                return 1;
+            }
+
+            // After deinitialise(), applyToBuffer must safely no-op without overflowing ring buffers.
+            tape->deinitialise();
+            tape->applyToBuffer (te::PluginRenderContext (&stereoTape, 0, 256, nullptr,
+                                                          0.0, {}, false, false, false, false));
 
             tapePtr = nullptr;
         }

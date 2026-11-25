@@ -60,6 +60,8 @@ public:
             buildFourOscControls (*synth);
         else if (auto* sampler = dynamic_cast<te::SamplerPlugin*> (&plugin))
             buildSamplerControls (*sampler);
+        else if (auto* vintage = dynamic_cast<VintageSamplerPlugin*> (&plugin))
+            buildVintageSamplerControls (*vintage);
 
         for (int i = 0; i < numParams; ++i)
         {
@@ -213,10 +215,11 @@ public:
                 y += 32;
             }
         }
-        else if (dynamic_cast<te::SamplerPlugin*> (&plugin) != nullptr)
+        else if (dynamic_cast<te::SamplerPlugin*> (&plugin) != nullptr
+                 || dynamic_cast<VintageSamplerPlugin*> (&plugin) != nullptr)
         {
             juce::Rectangle<int> btnRow (8, y, containerW - 16, 26);
-            resetKitButton.setBounds (btnRow.removeFromLeft (120));
+            resetKitButton.setBounds (btnRow.removeFromLeft (128));
             btnRow.removeFromLeft (8);
             addSampleButton.setBounds (btnRow.removeFromLeft (115));
             y += 30;
@@ -260,7 +263,8 @@ private:
     {
         if (dynamic_cast<te::FourOscPlugin*> (&plugin) != nullptr)
             return 6 * 28 + 8;
-        if (dynamic_cast<te::SamplerPlugin*> (&plugin) != nullptr)
+        if (dynamic_cast<te::SamplerPlugin*> (&plugin) != nullptr
+            || dynamic_cast<VintageSamplerPlugin*> (&plugin) != nullptr)
             return 84;
         return 0;
     }
@@ -501,6 +505,52 @@ private:
         syncAllControlsFromPlugin();
     }
 
+    void buildVintageSamplerControls (VintageSamplerPlugin& vintage)
+    {
+        resetKitButton.setButtonText ("Reset Chord Stab");
+        paramsContainer.addAndMakeVisible (resetKitButton);
+        paramsContainer.addAndMakeVisible (addSampleButton);
+        paramsContainer.addAndMakeVisible (samplerZonesLabel);
+
+        samplerZonesLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
+        samplerZonesLabel.setColour (juce::Label::textColourId, juce::Colour (0xffcbd5e1));
+        samplerZonesLabel.setJustificationType (juce::Justification::topLeft);
+
+        resetKitButton.onClick = [this, &vintage]
+        {
+            vintage.resetToStarterStab();
+            syncAllControlsFromPlugin();
+        };
+
+        addSampleButton.onClick = [this, &vintage]
+        {
+            activeChooser = std::make_unique<juce::FileChooser> (
+                "Load WAV into 12-Bit Vintage Sampler",
+                PluginPresetManager::getDefaultSamplerKitDirectory(),
+                "*.wav;*.aif;*.aiff;*.flac");
+
+            juce::Component::SafePointer<GenericTracktionPluginEditor> safeThis (this);
+            activeChooser->launchAsync (
+                juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                [safeThis, &vintage] (const juce::FileChooser& chooser)
+                {
+                    if (safeThis == nullptr)
+                        return;
+
+                    const auto file = chooser.getResult();
+                    safeThis->activeChooser.reset();
+
+                    if (file.existsAsFile())
+                    {
+                        vintage.loadSampleFromFile (file);
+                        safeThis->syncAllControlsFromPlugin();
+                    }
+                });
+        };
+
+        syncAllControlsFromPlugin();
+    }
+
     void syncAllControlsFromPlugin()
     {
         if (auto* synth = dynamic_cast<te::FourOscPlugin*> (&plugin))
@@ -544,6 +594,12 @@ private:
                 summary += "  (Click 'Reset 808 Kit' or '+ Load WAV...')";
 
             samplerZonesLabel.setText (summary, juce::dontSendNotification);
+        }
+        else if (auto* vintage = dynamic_cast<VintageSamplerPlugin*> (&plugin))
+        {
+            samplerZonesLabel.setText ("Loaded sample: " + vintage->getLoadedSampleName()
+                                           + "\nKeys C1..C7 (MIDI 24..96, Root C4 = 60)",
+                                       juce::dontSendNotification);
         }
 
         for (auto& r : rows)

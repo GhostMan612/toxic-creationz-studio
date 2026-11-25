@@ -416,6 +416,8 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
     menu.addSectionHeader ("Built-In Instruments");
     menu.addItem (1, "4OSC Synthesizer");
     menu.addItem (10, "Multi-Sampler (808 + Synth Kit)");
+    menu.addSeparator();
+    menu.addSectionHeader ("Hardware Rack Suite");
     menu.addItem (16, "TR-808 Drum Synth");
     menu.addItem (17, "12-Bit Vintage Sampler");
     menu.addItem (18, "Analog Tape Deck");

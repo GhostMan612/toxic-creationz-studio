@@ -97,6 +97,7 @@ public:
     void initialise (const te::PluginInitialisationInfo& info) override
     {
         lastSampleRate = std::max (8000.0, info.sampleRate);
+        rngSeed = 0x9e3779b9u;
         for (auto& v : voices)
             v = DrumVoice {};
     }
@@ -107,11 +108,12 @@ public:
     {
         auto* buf = fc.destBuffer;
 
-        if (buf == nullptr || buf->getNumChannels() < 5 || fc.bufferNumSamples <= 0
+        if (buf == nullptr || buf->getNumChannels() < 2 || fc.bufferNumSamples <= 0
             || fc.bufferStartSample < 0
             || fc.bufferStartSample + fc.bufferNumSamples > buf->getNumSamples())
             return;
 
+        const int numCh = buf->getNumChannels();
         const int n = fc.bufferNumSamples;
         const int base = fc.bufferStartSample;
         const float sampleInc = static_cast<float> (1.0 / lastSampleRate);
@@ -133,7 +135,11 @@ public:
 
                 if (note == 36)        trigger (voiceKick,   vel);
                 else if (note == 38)   trigger (voiceSnare,  vel);
-                else if (note == 42)   trigger (voiceCHat,   vel);
+                else if (note == 42)
+                {
+                    voices[voiceOHat].active = false; // Authentic 808 CHat chokes OHat
+                    trigger (voiceCHat, vel);
+                }
                 else if (note == 46)   trigger (voiceOHat,   vel);
                 else if (note == 45)   trigger (voiceLowTom, vel);
                 else if (note == 48)   trigger (voiceMidTom, vel);
@@ -169,11 +175,13 @@ public:
 
             buf->setSample (0, base + i, master);
             buf->setSample (1, base + i, master);
-            buf->setSample (2, base + i, kick  * accent);
-            buf->setSample (3, base + i, snare * accent);
-            buf->setSample (4, base + i, (hat * 0.6f + tom) * accent);
+            if (numCh > 2) buf->setSample (2, base + i, kick  * accent);
+            if (numCh > 3) buf->setSample (3, base + i, snare * accent);
+            if (numCh > 4) buf->setSample (4, base + i, (hat * 0.6f + tom) * accent);
         }
     }
+
+    bool isOHatActiveForSmokeTest() const noexcept { return voices[voiceOHat].active; }
 
     void restorePluginStateFromValueTree (const juce::ValueTree& v) override
     {
@@ -208,6 +216,8 @@ private:
     {
         auto& v = voices[static_cast<size_t> (index)];
         v = DrumVoice {};
+        rngSeed = rngSeed * 1664525u + 1013904223u;
+        v.noiseState = (rngSeed != 0u) ? rngSeed : 0x9e3779b9u;
         v.env = juce::jlimit (0.0f, 1.0f, velocity);
         v.active = v.env > 0.0f;
     }
@@ -294,6 +304,7 @@ private:
     juce::CachedValue<float> kickDecayValue, kickToneValue, snareSnappyValue, hatDecayValue, accentValue;
     te::AutomatableParameter::Ptr kickDecayParam, kickToneParam, snareSnappyParam, hatDecayParam, accentParam;
     std::array<DrumVoice, numVoices> voices {};
+    std::uint32_t rngSeed = 0x9e3779b9u;
     double lastSampleRate = 44100.0;
 };
 
@@ -366,7 +377,8 @@ public:
     void initialise (const te::PluginInitialisationInfo& info) override
     {
         lastSampleRate = std::max (8000.0, info.sampleRate);
-        reconstructionLp = 0.0f;
+        reconstructionLpL = 0.0f;
+        reconstructionLpR = 0.0f;
         for (auto& v : voices)
             v = Voice {};
     }
@@ -422,15 +434,30 @@ public:
                 if (note < 24 || note > 96)
                     continue;
 
+                Voice* targetVoice = nullptr;
+                double maxPos = -1.0;
+
                 for (auto& v : voices)
                 {
                     if (! v.active)
                     {
-                        v = Voice {};
-                        v.active = true;
-                        v.note = note;
+                        targetVoice = &v;
                         break;
                     }
+
+                    if (v.pos > maxPos)
+                    {
+                        maxPos = v.pos;
+                        targetVoice = &v;
+                    }
+                }
+
+                if (targetVoice != nullptr)
+                {
+                    *targetVoice = Voice {};
+                    targetVoice->active = true;
+                    targetVoice->note = note;
+                    targetVoice->decimPhase = 1.0;
                 }
             }
         }
@@ -469,19 +496,16 @@ public:
                 const int frame = juce::jlimit (0, numFrames - 1, v.holdFrame);
                 const float l = sampleBuffer.getSample (0, frame);
                 const float r = stereo ? sampleBuffer.getSample (1, frame) : l;
+                mixedL += l;
+                mixedR += r;
+            }
 
-                if (filterOn)
-                {
-                    reconstructionLp += lpCoeff * (l - reconstructionLp);
-                    mixedL += reconstructionLp;
-                    reconstructionLp += lpCoeff * (r - reconstructionLp);
-                    mixedR += reconstructionLp;
-                }
-                else
-                {
-                    mixedL += l;
-                    mixedR += r;
-                }
+            if (filterOn)
+            {
+                reconstructionLpL += lpCoeff * (mixedL - reconstructionLpL);
+                reconstructionLpR += lpCoeff * (mixedR - reconstructionLpR);
+                mixedL = reconstructionLpL;
+                mixedR = reconstructionLpR;
             }
 
             const float ql = std::round (juce::jlimit (-1.0f, 1.0f, mixedL * gain) * quantSteps) / quantSteps;
@@ -494,6 +518,21 @@ public:
     bool loadSampleFromFile (const juce::File& file)
     {
         return loadIntoBuffer (file, true);
+    }
+
+    void resetToStarterStab()
+    {
+        state.removeProperty ("samplePath", getUndoManager());
+        buildStarterStab();
+        edit.pluginChanged (*this);
+    }
+
+    juce::String getLoadedSampleName() const
+    {
+        const juce::String path = state.getProperty ("samplePath", juce::String());
+        if (path.isNotEmpty())
+            return juce::File (path).getFileName();
+        return "Starter Chord Stab (0.65s)";
     }
 
     void setTargetRate (float hz) noexcept   { targetRateValue = juce::jlimit (8000.0f, 44100.0f, hz); targetRateParam->updateFromAttachedValue(); }
@@ -603,7 +642,8 @@ private:
     std::array<Voice, 8> voices {};
     double sourceSampleRate = 44100.0;
     double lastSampleRate = 44100.0;
-    float reconstructionLp = 0.0f;
+    float reconstructionLpL = 0.0f;
+    float reconstructionLpR = 0.0f;
 };
 
 //------------------------------------------------------------------------------
@@ -703,18 +743,23 @@ public:
     {
         ringL.clear();
         ringR.clear();
+        ringSize = 0;
+        writeIndex = 0;
     }
 
     void applyToBuffer (const te::PluginRenderContext& fc) override
     {
         auto* buf = fc.destBuffer;
 
-        if (buf == nullptr || buf->getNumChannels() < 3 || fc.bufferNumSamples <= 0
+        if (buf == nullptr || buf->getNumChannels() < 2 || fc.bufferNumSamples <= 0
             || fc.bufferStartSample < 0
             || fc.bufferStartSample + fc.bufferNumSamples > buf->getNumSamples()
-            || ringSize < 8)
+            || ringSize < 8
+            || static_cast<int> (ringL.size()) < ringSize
+            || static_cast<int> (ringR.size()) < ringSize)
             return;
 
+        const bool hasCvCh = (buf->getNumChannels() >= 3);
         const int n = fc.bufferNumSamples;
         const int base = fc.bufferStartSample;
         const float sr = static_cast<float> (lastSampleRate);
@@ -735,7 +780,7 @@ public:
             // inputs into scalars before writing any output channel.
             const float inL = buf->getSample (0, base + i);
             const float inR = buf->getSample (1, base + i);
-            const float cv  = juce::jlimit (-1.0f, 1.0f, buf->getSample (2, base + i));
+            const float cv  = hasCvCh ? juce::jlimit (-1.0f, 1.0f, buf->getSample (2, base + i)) : 0.0f;
 
             ringL[static_cast<size_t> (writeIndex)] = inL;
             ringR[static_cast<size_t> (writeIndex)] = inR;
@@ -775,6 +820,9 @@ public:
             buf->setSample (0, base + i, inL * (1.0f - mix) + wetL * mix);
             buf->setSample (1, base + i, inR * (1.0f - mix) + wetR * mix);
         }
+
+        if (hasCvCh)
+            buf->clear (2, base, n);
     }
 
     void setDrive (float d) noexcept   { driveValue = juce::jlimit (1.0f, 8.0f, d); driveParam->updateFromAttachedValue(); }

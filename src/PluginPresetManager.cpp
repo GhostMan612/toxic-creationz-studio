@@ -247,6 +247,15 @@ juce::StringArray PluginPresetManager::getFactoryPresetNames (te::Plugin& plugin
     if (dynamic_cast<te::SamplerPlugin*> (&plugin) != nullptr)
         return { "Neon 808 + Synth Kit" };
 
+    if (dynamic_cast<Tr808DrumPlugin*> (&plugin) != nullptr)
+        return { "Classic 808 Boom", "Sub Shaker 808", "Tight Electro 808" };
+
+    if (dynamic_cast<VintageSamplerPlugin*> (&plugin) != nullptr)
+        return { "SP-1200 Grit (12-Bit / 26 kHz)", "Lo-Fi Crunch (8-Bit / 12 kHz)", "Pure ZOH Staircase" };
+
+    if (dynamic_cast<AnalogTapePlugin*> (&plugin) != nullptr)
+        return { "Warm Master Glue", "Lo-Fi Cassette", "Hot Driven Reel" };
+
     if (dynamic_cast<CvWobbleFilterPlugin*> (&plugin) != nullptr)
         return { "Sub Wobble (450 Hz)", "Mid Growl (900 Hz)", "Screamer Sweep (1.8 kHz)" };
 
@@ -646,6 +655,102 @@ bool PluginPresetManager::applyFactoryPreset (te::Plugin& plugin, const juce::St
             phaser->depth.setValue (9.0f, &um);
             phaser->rate.setValue (0.95f, &um);
             phaser->feedbackGain.setValue (0.85f, &um);
+            return true;
+        }
+        return false;
+    }
+
+    if (auto* tr808 = dynamic_cast<Tr808DrumPlugin*> (&plugin))
+    {
+        um.beginNewTransaction ("Load Preset: " + trimmed);
+        if (trimmed == "Classic 808 Boom")
+        {
+            setParamIfPresent (*tr808, "kickDecay", 0.48f);
+            setParamIfPresent (*tr808, "kickTone", 50.0f);
+            setParamIfPresent (*tr808, "snareSnappy", 0.65f);
+            setParamIfPresent (*tr808, "hatDecay", 0.14f);
+            setParamIfPresent (*tr808, "accent", 0.60f);
+            return true;
+        }
+        if (trimmed == "Sub Shaker 808")
+        {
+            setParamIfPresent (*tr808, "kickDecay", 0.95f);
+            setParamIfPresent (*tr808, "kickTone", 42.0f);
+            setParamIfPresent (*tr808, "snareSnappy", 0.78f);
+            setParamIfPresent (*tr808, "hatDecay", 0.10f);
+            setParamIfPresent (*tr808, "accent", 0.80f);
+            return true;
+        }
+        if (trimmed == "Tight Electro 808")
+        {
+            setParamIfPresent (*tr808, "kickDecay", 0.22f);
+            setParamIfPresent (*tr808, "kickTone", 64.0f);
+            setParamIfPresent (*tr808, "snareSnappy", 0.50f);
+            setParamIfPresent (*tr808, "hatDecay", 0.08f);
+            setParamIfPresent (*tr808, "accent", 0.45f);
+            return true;
+        }
+        return false;
+    }
+
+    if (auto* vintage = dynamic_cast<VintageSamplerPlugin*> (&plugin))
+    {
+        um.beginNewTransaction ("Load Preset: " + trimmed);
+        if (trimmed == "SP-1200 Grit (12-Bit / 26 kHz)")
+        {
+            setParamIfPresent (*vintage, "bitDepth", 12.0f);
+            setParamIfPresent (*vintage, "targetRate", 26040.0f);
+            setParamIfPresent (*vintage, "filterCutoff", 12500.0f);
+            setParamIfPresent (*vintage, "gain", 0.90f);
+            return true;
+        }
+        if (trimmed == "Lo-Fi Crunch (8-Bit / 12 kHz)")
+        {
+            setParamIfPresent (*vintage, "bitDepth", 8.0f);
+            setParamIfPresent (*vintage, "targetRate", 12000.0f);
+            setParamIfPresent (*vintage, "filterCutoff", 6500.0f);
+            setParamIfPresent (*vintage, "gain", 0.95f);
+            return true;
+        }
+        if (trimmed == "Pure ZOH Staircase")
+        {
+            setParamIfPresent (*vintage, "bitDepth", 10.0f);
+            setParamIfPresent (*vintage, "targetRate", 14000.0f);
+            setParamIfPresent (*vintage, "filterCutoff", 18000.0f);
+            setParamIfPresent (*vintage, "gain", 0.85f);
+            return true;
+        }
+        return false;
+    }
+
+    if (auto* tape = dynamic_cast<AnalogTapePlugin*> (&plugin))
+    {
+        um.beginNewTransaction ("Load Preset: " + trimmed);
+        if (trimmed == "Warm Master Glue")
+        {
+            setParamIfPresent (*tape, "drive", 1.8f);
+            setParamIfPresent (*tape, "wow", 0.10f);
+            setParamIfPresent (*tape, "flutter", 0.08f);
+            setParamIfPresent (*tape, "bias", 0.08f);
+            setParamIfPresent (*tape, "mix", 0.65f);
+            return true;
+        }
+        if (trimmed == "Lo-Fi Cassette")
+        {
+            setParamIfPresent (*tape, "drive", 3.6f);
+            setParamIfPresent (*tape, "wow", 0.55f);
+            setParamIfPresent (*tape, "flutter", 0.38f);
+            setParamIfPresent (*tape, "bias", 0.18f);
+            setParamIfPresent (*tape, "mix", 1.0f);
+            return true;
+        }
+        if (trimmed == "Hot Driven Reel")
+        {
+            setParamIfPresent (*tape, "drive", 6.2f);
+            setParamIfPresent (*tape, "wow", 0.20f);
+            setParamIfPresent (*tape, "flutter", 0.15f);
+            setParamIfPresent (*tape, "bias", 0.22f);
+            setParamIfPresent (*tape, "mix", 0.85f);
             return true;
         }
         return false;
