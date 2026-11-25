@@ -26,6 +26,7 @@ ModularRackComponent::ModularRackComponent (te::Engine& engineRef)
     addAndMakeVisible (rackSelector);
     addAndMakeVisible (addLfoButton);
     addAndMakeVisible (addWobbleButton);
+    addAndMakeVisible (addSplitterButton);
     addAndMakeVisible (connectModeButton);
     addAndMakeVisible (clearRackButton);
     addAndMakeVisible (rackInfoLabel);
@@ -38,6 +39,7 @@ ModularRackComponent::ModularRackComponent (te::Engine& engineRef)
 
     addLfoButton.onClick = [this] { addCvPluginToRack (CvLfoPlugin::xmlTypeName); };
     addWobbleButton.onClick = [this] { addCvPluginToRack (CvWobbleFilterPlugin::xmlTypeName); };
+    addSplitterButton.onClick = [this] { addCvPluginToRack (CvUtilityPlugin::xmlTypeName); };
 
     connectModeButton.onClick = [this]
     {
@@ -239,8 +241,11 @@ juce::Rectangle<float> ModularRackComponent::getPinRectInCanvas (int nodeIndex, 
 
     const auto& n = nodes.getReference (nodeIndex);
     const float px = n.rect.getX() + (pinIndex == 0 ? 6.0f : (float) nodeWidth - 14.0f);
+    const float py = (pinIndex <= 1)
+                         ? (float) pinY
+                         : (float) (pinY + juce::jmin (3, pinIndex - 1) * 14);
 
-    return juce::Rectangle<float> (px, n.rect.getY() + (float) pinY, (float) pinSize, (float) pinSize);
+    return juce::Rectangle<float> (px, n.rect.getY() + py, (float) pinSize, (float) pinSize);
 }
 
 juce::Rectangle<float> ModularRackComponent::getPinRectInRack (int nodeIndex, int pinIndex) const
@@ -343,6 +348,7 @@ void ModularRackComponent::resized()
     toolbar.removeFromLeft (6);
     addLfoButton.setBounds (toolbar.removeFromLeft (80));
     addWobbleButton.setBounds (toolbar.removeFromLeft (90));
+    addSplitterButton.setBounds (toolbar.removeFromLeft (94));
     connectModeButton.setBounds (toolbar.removeFromLeft (100));
     clearRackButton.setBounds (toolbar.removeFromLeft (90));
     rackInfoLabel.setBounds (toolbar);
@@ -470,7 +476,8 @@ void ModularRackComponent::rebuildFromRack()
         node.plugin = plugin;
         node.rect = slot.toFloat();
         node.name = plugin->getName();
-        node.isCvSource = dynamic_cast<CvLfoPlugin*> (plugin) != nullptr;
+        node.isCvSource = (dynamic_cast<CvLfoPlugin*> (plugin) != nullptr
+                           || dynamic_cast<CvUtilityPlugin*> (plugin) != nullptr);
         nodes.add (node);
 
         auto view = std::make_unique<NodeView> (*plugin, node.name, node.isCvSource);
@@ -562,9 +569,19 @@ void ModularRackComponent::handleNodeClick (int nodeIndex, NodeView& view, const
     if (! connectMode)
         return;
 
+    juce::StringArray ins, outs;
+    view.plugin.getChannelNames (&ins, &outs);
+    const int numRightPins = juce::jlimit (1, 4, outs.size());
+
     int pin = -1;
-    if (view.getPinRect (0).contains (e.position))        pin = 0;
-    else if (view.getPinRect (1).contains (e.position))   pin = 1;
+    for (int p = 0; p <= numRightPins; ++p)
+    {
+        if (view.getPinRect (p).contains (e.position))
+        {
+            pin = p;
+            break;
+        }
+    }
 
     if (pin < 0)
         return;
@@ -644,9 +661,13 @@ void ModularRackComponent::NodeView::paint (juce::Graphics& g)
     g.setFont (juce::Font (juce::FontOptions (13.0f)));
     g.drawText (name, getLocalBounds().reduced (6), juce::Justification::topLeft);
 
+    juce::StringArray ins, outs;
+    plugin.getChannelNames (&ins, &outs);
+    const int numRightPins = juce::jlimit (1, 4, outs.size());
+
     g.setColour (pinColour);
-    g.fillEllipse ((float) getPinRect (0).getX(), (float) pinY, (float) pinSize, (float) pinSize);
-    g.fillEllipse ((float) getPinRect (1).getX(), (float) pinY, (float) pinSize, (float) pinSize);
+    for (int p = 0; p <= numRightPins; ++p)
+        g.fillEllipse (getPinRect (p));
 }
 
 void ModularRackComponent::NodeView::mouseDown (const juce::MouseEvent& e)
@@ -658,5 +679,8 @@ void ModularRackComponent::NodeView::mouseDown (const juce::MouseEvent& e)
 juce::Rectangle<float> ModularRackComponent::NodeView::getPinRect (int pinIndex) const
 {
     const float px = (pinIndex == 0) ? 6.0f : (float) getWidth() - 14.0f;
-    return juce::Rectangle<float> (px, (float) pinY, (float) pinSize, (float) pinSize);
+    const float py = (pinIndex <= 1)
+                         ? (float) pinY
+                         : (float) (pinY + juce::jmin (3, pinIndex - 1) * 14);
+    return juce::Rectangle<float> (px, py, (float) pinSize, (float) pinSize);
 }

@@ -105,8 +105,7 @@ MainComponent::MainComponent()
     if (! headlessSmokeTest)
         engine.getDeviceManager().initialise (0, 2);
 
-    engine.getPluginManager().createBuiltInType<CvLfoPlugin>();
-    engine.getPluginManager().createBuiltInType<CvWobbleFilterPlugin>();
+    registerCvRackPlugins (engine);
     loadCachedPlugins();
 
     // Provision the starter riff pack once for interactive sessions. The
@@ -1217,6 +1216,7 @@ void MainComponent::timerCallback()
 {
     reapRetiredScanThreads();
     updateTransportPositionReadout();
+    mixerComponent.refreshMeters();
 
     if (edit != nullptr && edit->getTransport().isPlaying())
     {

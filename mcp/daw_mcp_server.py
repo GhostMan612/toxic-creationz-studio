@@ -9,10 +9,20 @@ DAW's native DawIpcServer on 127.0.0.1:9450. Start the DAW first, then run:
 
 import asyncio
 import json
+from pathlib import Path
+import re
+import sys
+import time
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
+
+_MCP_DIR = str(Path(__file__).resolve().parent)
+if _MCP_DIR not in sys.path:
+    sys.path.insert(0, _MCP_DIR)
+
+from ai_audio_worker import generate_stem
 
 mcp = FastMCP("Toxic Creationz Studio Co-Producer")
 
@@ -20,6 +30,11 @@ DAW_HOST = "127.0.0.1"
 DAW_PORT = 9450
 
 _rpc_counter = 0
+
+
+def get_generated_stems_dir() -> Path:
+    """Directory where out-of-process generated AI stems are stored."""
+    return Path.home() / "Documents" / "Toxic Creationz Studio" / "GeneratedStems"
 
 
 class MidiNote(BaseModel):
@@ -267,6 +282,64 @@ async def export_master_wav(
     if end_beat is not None:
         params["end_beat"] = max(0.0, end_beat)
     return await send_daw_rpc("audio.export_wav", params, timeout=60.0)
+
+
+@mcp.tool()
+async def set_track_eq(
+    track_index: int,
+    low_db: float | None = None,
+    mid_db: float | None = None,
+    high_db: float | None = None,
+) -> dict[str, Any]:
+    """Insert or update the 3-band EQ (Low/Mid/High in dB, -18.0 to +18.0) on a DAW track."""
+    params: dict[str, Any] = {"track_index": track_index}
+    if low_db is not None:
+        params["low_db"] = max(-18.0, min(18.0, low_db))
+    if mid_db is not None:
+        params["mid_db"] = max(-18.0, min(18.0, mid_db))
+    if high_db is not None:
+        params["high_db"] = max(-18.0, min(18.0, high_db))
+    return await send_daw_rpc("mixer.set_eq", params)
+
+
+@mcp.tool()
+async def generate_ai_audio_stem(
+    prompt: str,
+    track_index: int = 0,
+    start_beat: float = 0.0,
+    duration_sec: float = 4.0,
+    key: str = "Am",
+    bpm: float = 124.0,
+    backend: str = "auto",
+    clip_name: str = "",
+    auto_tempo: bool = True,
+) -> dict[str, Any]:
+    """Generate an AI WAV stem out-of-process and import it onto a DAW timeline track."""
+    stems_dir = get_generated_stems_dir()
+    stems_dir.mkdir(parents=True, exist_ok=True)
+
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", prompt.strip()).strip("_")[:32] or "ai_stem"
+    out_wav = stems_dir / f"{slug}_{int(time.time() * 1000)}.wav"
+
+    gen_meta = await asyncio.to_thread(
+        generate_stem,
+        prompt,
+        duration_sec,
+        out_wav,
+        backend,
+        key,
+        bpm,
+    )
+
+    import_params: dict[str, Any] = {
+        "track_index": track_index,
+        "file_path": gen_meta["output_path"],
+        "start_beat": max(0.0, start_beat),
+        "auto_tempo": auto_tempo,
+        "clip_name": clip_name or slug,
+    }
+    import_res = await send_daw_rpc("audio.import_file", import_params, timeout=15.0)
+    return {"generation": gen_meta, "import": import_res}
 
 
 if __name__ == "__main__":

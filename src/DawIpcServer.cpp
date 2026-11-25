@@ -277,6 +277,12 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
                 tObj->setProperty ("pan", vol->getPan());
             }
 
+            auto* eq = tracks[i]->getEqualiserPlugin();
+            tObj->setProperty ("has_eq", eq != nullptr);
+            tObj->setProperty ("eq_low_db",  eq != nullptr ? eq->loGainValue.get()   : 0.0f);
+            tObj->setProperty ("eq_mid_db",  eq != nullptr ? eq->midGainValue1.get() : 0.0f);
+            tObj->setProperty ("eq_high_db", eq != nullptr ? eq->hiGainValue.get()   : 0.0f);
+
             trackList.add (juce::var (tObj));
         }
 
@@ -913,6 +919,61 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         res->setProperty ("output_path", outFile.getFullPathName());
         res->setProperty ("file_size_bytes", outFile.getSize());
         res->setProperty ("duration_seconds", range.getLength().inSeconds());
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // 13. mixer.set_eq (insert or update 3-band EQ on a track)
+    if (method == "mixer.set_eq")
+    {
+        const int trackIdx = static_cast<int> (params.getProperty ("track_index", 0));
+        auto tracks = te::getAudioTracks (*edit);
+
+        if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "Invalid track_index");
+
+        auto* track = tracks[trackIdx];
+        edit->getUndoManager().beginNewTransaction ("MCP Set Track EQ");
+
+        auto* eq = track->getEqualiserPlugin();
+
+        if (eq == nullptr)
+        {
+            if (auto eqPlugin = edit->getPluginCache().createNewPlugin (te::EqualiserPlugin::xmlTypeName, {}))
+                track->pluginList.insertPlugin (eqPlugin, getInsertIndexBeforeTerminalPlugins (*track), nullptr);
+
+            eq = track->getEqualiserPlugin();
+        }
+
+        if (eq == nullptr)
+            return makeErrorResponse (id, -32603, "Failed to insert EqualiserPlugin");
+
+        if (params.hasProperty ("low_db"))
+        {
+            eq->loGainValue = juce::jlimit (-18.0f, 18.0f, static_cast<float> (params["low_db"]));
+            if (eq->loGain != nullptr) eq->loGain->updateFromAttachedValue();
+        }
+
+        if (params.hasProperty ("mid_db"))
+        {
+            eq->midGainValue1 = juce::jlimit (-18.0f, 18.0f, static_cast<float> (params["mid_db"]));
+            if (eq->midGain1 != nullptr) eq->midGain1->updateFromAttachedValue();
+        }
+
+        if (params.hasProperty ("high_db"))
+        {
+            eq->hiGainValue = juce::jlimit (-18.0f, 18.0f, static_cast<float> (params["high_db"]));
+            if (eq->hiGain != nullptr) eq->hiGain->updateFromAttachedValue();
+        }
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP updated 3-band EQ on track " + juce::String (trackIdx + 1));
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("track_index", trackIdx);
+        res->setProperty ("has_eq", true);
+        res->setProperty ("low_db",  eq->loGainValue.get());
+        res->setProperty ("mid_db",  eq->midGainValue1.get());
+        res->setProperty ("high_db", eq->hiGainValue.get());
         return makeResultResponse (id, juce::var (res));
     }
 
