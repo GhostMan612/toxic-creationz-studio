@@ -1,7 +1,8 @@
 ## Pipeline State
 
-- Merged (PRs #1-#10): WO-001 through WO-010 on `main` (`377c51c`).
-- Open PR (#11): WO-011 (`feat/wo-011-v1-rc-eq-cv-worker-docs`, `918625a`) — v1.0 RC.
+- Merged (PRs #1-#11): WO-001 through WO-011 on `main` (`c632f8c`, PR #11 merge of WO-011 `918625a`).
+- Merged (PR #12): WO-012 through WO-020 from `dev/v1-complete` into `main` — continuous-build batch
+  reconciled; zero open PRs remain.
 - Continuous Dev (`dev/v1-complete`, branched from `918625a`): `WO-012` (`4268ada`), `WO-013` (`cc59e83`),
   `WO-014` (`08a89a1`), `WO-015` (`16522de`), `WO-016` (`6ecc571`), `WO-017` (`43eb2e0`),
   `Hardware Rack Suite` (`525d672` + `0780725`), `WO-018` (`d424c5e`), `WO-019` (`e5000ab`)
@@ -19,7 +20,9 @@
   `PlatformConfig.h`, `cross-platform-build.yml`), 5/5 Release
   `--smoke-test` (`PASS`), isolated ASAN `RelWithDebInfo` `--smoke-test` (`exit 0`, clean), `28/28` Python
   `unittest` (`OK`), and portable Release zip `dist/ToxicCreationzStudio-win64.zip`.
-- Workflow: Local development on `dev/v1-complete` (no PRs opened during continuous build).
+- Workflow: Local development on `dev/v1-complete` (no PRs opened during continuous build). Muse is a
+  post-completion PR doctor only — engaged after a full section is built and coded, never alongside
+  development of a specific module. LongCat 2.5 is the sole local writer for work orders.
 - Smoke convention: Release build + `--smoke-test`; all temp dirs under
   `%TEMP%`, never `%LOCALAPPDATA%\hermes`.
 - Engine quirk surfaced by WO-008 (resolved in WO-009): `insertWaveClip` can
@@ -42,19 +45,20 @@
 | WO-008 | Phase 5 Audacity-Style Non-Destructive Waveform Editor & Bounce-to-Take DSP | Merged to `main` (`2f1264f`, PR #8) |
 | WO-009 | Phase 6 Session Portability (`filePathResolver`), Master Mixdown Export (`Export WAV`) & MCP Rack/Stem RPCs | Merged to `main` (`e9fe611`, PR #9) |
 | WO-010 | Phase 7 Two-Row Studio Header, Metronome/Loop Transport, Virtual MIDI Step-Rec & Windows Packaging | Merged to `main` (`377c51c`, PR #10) |
-| WO-011 | v1.0 Release Candidate: 1-to-4 CV Splitter, Track 3-Band EQ & Metering, Hybrid AI Worker & Production Docs | In review (`feat/wo-011-v1-rc-eq-cv-worker-docs`, `918625a`, PR #11) |
-| WO-012 | Live Audio & MIDI Recording, Per-Track Record Arming & 1-Bar Count-In | Committed locally (`dev/v1-complete`, `4268ada`) |
-| WO-013 | Automation Lanes, Aux Send/Return FX Bus, Zoomable Views & Studio Ergonomics | Committed locally (`dev/v1-complete`, `cc59e83`) |
-| WO-014 | YIN Audio-to-MIDI Pitch Transcription, Waveform Editor `To MIDI`, MCP Transcription Tool & Final v1.0 Packaging | Committed locally (`dev/v1-complete`, `08a89a1`) |
-| WO-015 | Live Studio QA Polish: Plugin Editor Windows, Timeline Vertical Scroll, Wave-to-MIDI Switch, QWERTY Focus & Mixer Aux Sends | Committed locally (`dev/v1-complete`, `16522de`) |
-| WO-016 | Post-v1.0 Architectural Audit Hardening: Real SVF CV Wobble Filter, RackType I/O & Pin Directionality, Clip-Transpose Transcription & Lifecycle Safety | Committed locally (`dev/v1-complete`, `6ecc571`) |
-| WO-017 | Factory Sound Preset Bank, `.trkpreset` XML Save/Load, `4OSC`/Sampler UI, Multi-Machine Rack & `set_plugin_preset`/`add_rack_machine` MCP | Committed locally (`dev/v1-complete`, `43eb2e0`) |
-| WO-016B | Reason-Style Native Hardware Rack Suite: `Tr808DrumPlugin`, `VintageSamplerPlugin`, `AnalogTapePlugin`, `rack.add_module` & Hardware Presets/Hardening | Committed locally (`dev/v1-complete`, `0780725`) |
-| WO-018 | AI Co-Producer Scaling: `midi.generate_progression`, `midi.quantize_scale`, `mixer.auto_balance_lufs`, `arrangement.duplicate_section` & Cloud/Demucs Stem Worker | Verified locally (`dev/v1-complete`) |
-| WO-019 | Advanced Audio DSP & Recording Polish: `SidechainCompressorPlugin` Pin 3/4 ducking, multi-take loop comping (`recording.comp_takes`), polyphonic Constant-Q Audio-to-MIDI + `basic_pitch` fallback | Verified locally (`dev/v1-complete`) |
-| WO-020 | Cross-Platform CMake (MSVC guards, macOS/Linux/Android-Oboe), `tcs_core` / `tcs_core_isolation`, `PlatformConfig.h` & `cross-platform-build.yml` | Verified locally (`dev/v1-complete`) |
+| WO-011 | v1.0 Release Candidate: 1-to-4 CV Splitter, Track 3-Band EQ & Metering, Hybrid AI Worker & Production Docs | Merged to `main` (`c632f8c`, PR #11) |
+| WO-012 | Live Audio & MIDI Recording, Per-Track Record Arming & 1-Bar Count-In | Merged to `main` (`dev/v1-complete`, `4268ada`, PR #12) |
+| WO-013 | Automation Lanes, Aux Send/Return FX Bus, Zoomable Views & Studio Ergonomics | Merged to `main` (`dev/v1-complete`, `cc59e83`, PR #12) |
+| WO-014 | YIN Audio-to-MIDI Pitch Transcription, Waveform Editor `To MIDI`, MCP Transcription Tool & Final v1.0 Packaging | Merged to `main` (`dev/v1-complete`, `08a89a1`, PR #12) |
+| WO-015 | Live Studio QA Polish: Plugin Editor Windows, Timeline Vertical Scroll, Wave-to-MIDI Switch, QWERTY Focus & Mixer Aux Sends | Merged to `main` (`dev/v1-complete`, `16522de`, PR #12) |
+| WO-016 | Post-v1.0 Architectural Audit Hardening: Real SVF CV Wobble Filter, RackType I/O & Pin Directionality, Clip-Transpose Transcription & Lifecycle Safety | Merged to `main` (`dev/v1-complete`, `6ecc571`, PR #12) |
+| WO-017 | Factory Sound Preset Bank, `.trkpreset` XML Save/Load, `4OSC`/Sampler UI, Multi-Machine Rack & `set_plugin_preset`/`add_rack_machine` MCP | Merged to `main` (`dev/v1-complete`, `43eb2e0`, PR #12) |
+| WO-016B | Reason-Style Native Hardware Rack Suite: `Tr808DrumPlugin`, `VintageSamplerPlugin`, `AnalogTapePlugin`, `rack.add_module` & Hardware Presets/Hardening | Merged to `main` (`dev/v1-complete`, `0780725`, PR #12) |
+| WO-018 | AI Co-Producer Scaling: `midi.generate_progression`, `midi.quantize_scale`, `mixer.auto_balance_lufs`, `arrangement.duplicate_section` & Cloud/Demucs Stem Worker | Merged to `main` (`dev/v1-complete`, `d424c5e`, PR #12) |
+| WO-019 | Advanced Audio DSP & Recording Polish: `SidechainCompressorPlugin` Pin 3/4 ducking, multi-take loop comping (`recording.comp_takes`), polyphonic Constant-Q Audio-to-MIDI + `basic_pitch` fallback | Merged to `main` (`dev/v1-complete`, `e5000ab`, PR #12) |
+| WO-020 | Cross-Platform CMake (MSVC guards, macOS/Linux/Android-Oboe), `tcs_core` / `tcs_core_isolation`, `PlatformConfig.h` & `cross-platform-build.yml` | Merged to `main` (`dev/v1-complete`, `dbe72a4`, PR #12) |
 
-**Phase 6+ Master Expansion Map (WO-016 → WO-020): COMPLETE.** All five work orders are implemented, locally verified and pushed on `dev/v1-complete`; no PRs opened during continuous build.
+**Phase 6+ Master Expansion Map (WO-016 → WO-020): COMPLETE.** All five work orders are implemented,
+verified and merged to `main` via PR #12 (the WO-012–WO-020 continuous-build batch); no PRs remain open.
 
 ---
 
