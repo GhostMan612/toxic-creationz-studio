@@ -666,6 +666,7 @@ class McpWorkerTests(unittest.TestCase):
                 res = transcribe_polyphonic_basic_pitch(src_wav, Path(tmp) / "triad.mid")
 
         self.assertEqual(res["backend_used"], "cpp_polyphonic_fallback")
+        self.assertEqual(res["status"], "unavailable")
         self.assertIn("basic_pitch unavailable", res["fallback_reason"])
         self.assertEqual(res["note_count"], 0)
         self.assertEqual(res["notes"], [])
@@ -699,6 +700,11 @@ class McpWorkerTests(unittest.TestCase):
             self.assertIn(definition, isolation_block)
         self.assertIn("target_link_libraries(tcs_core PUBLIC atomic)", cmake_text)
         self.assertIn("target_link_libraries(AIDAW PRIVATE atomic)", cmake_text)
+        # Android Oboe must be applied to tcs_core: TCS_BUILD_DESKTOP_APP is
+        # forced OFF on Android, so an AIDAW-scoped define is unreachable.
+        self.assertIn("set(TCS_ANDROID_OBOE_DEFINITIONS JUCE_USE_ANDROID_OBOE=1 JUCE_PLUGINHOST_VST3=0)", cmake_text)
+        self.assertIn("${TCS_ANDROID_OBOE_DEFINITIONS}", cmake_text)
+        self.assertNotIn("elseif(ANDROID)", cmake_text)
 
     def test_cross_platform_workflow_parses(self) -> None:
         workflow = _MCP_DIR.parent / ".github" / "workflows" / "cross-platform-build.yml"
@@ -710,9 +716,35 @@ class McpWorkerTests(unittest.TestCase):
             self.assertIn(marker, text)
         self.assertNotIn("runs-on: macos-14", text)
         self.assertNotIn("runs-on: windows-latest", text)
+        self.assertIn("pull_request:", text)
         self.assertIn("tcs_core_isolation AIDAW", text)
         for apt_dep in ("libxi-dev", "libcurl4-openssl-dev", "libxext-dev"):
             self.assertIn(apt_dep, text)
+
+    def test_cv_blueprint_modules_are_registered(self) -> None:
+        header = (_MCP_DIR.parent / "src" / "CvRackPlugins.h").read_text(encoding="utf-8")
+        for marker in (
+            "class CvEnvelopeFollowerPlugin",
+            "class CvStepModulatorPlugin",
+            'xmlTypeName = "cv_envelope_follower"',
+            'xmlTypeName = "cv_step_modulator"',
+            "pm.createBuiltInType<CvEnvelopeFollowerPlugin>()",
+            "pm.createBuiltInType<CvStepModulatorPlugin>()",
+        ):
+            self.assertIn(marker, header)
+        self.assertNotIn("(float)", header)  # locked zero-warning invariant
+
+    def test_windows_workflow_validates_packaged_zip(self) -> None:
+        text = (_MCP_DIR.parent / ".github" / "workflows" / "windows-build.yml").read_text(encoding="utf-8")
+        self.assertIn("Validate Packaged Artifact", text)
+        self.assertIn("ZipFile]::OpenRead", text)
+        self.assertIn("Toxic Creationz Studio.exe", text)
+
+    def test_package_script_rejects_non_pe_executable(self) -> None:
+        text = (_MCP_DIR.parent / "scripts" / "package-windows.ps1").read_text(encoding="utf-8")
+        self.assertIn("$Header[0] -ne 0x4D", text)
+        self.assertIn("$Header[1] -ne 0x5A", text)
+        self.assertIn("ZipFile]::OpenRead", text)
 
 
 if __name__ == "__main__":

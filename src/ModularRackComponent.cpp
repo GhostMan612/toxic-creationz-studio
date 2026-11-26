@@ -610,7 +610,9 @@ void ModularRackComponent::rebuildFromRack()
         node.name = plugin->getName();
         if (dynamic_cast<CvLfoPlugin*> (plugin) != nullptr
             || dynamic_cast<CvUtilityPlugin*> (plugin) != nullptr
-            || dynamic_cast<CvWobbleFilterPlugin*> (plugin) != nullptr)
+            || dynamic_cast<CvWobbleFilterPlugin*> (plugin) != nullptr
+            || dynamic_cast<CvEnvelopeFollowerPlugin*> (plugin) != nullptr
+            || dynamic_cast<CvStepModulatorPlugin*> (plugin) != nullptr)
         {
             node.role = NodeRole::cvSource;
         }
@@ -770,6 +772,8 @@ void ModularRackComponent::showAddMachineMenu()
     menu.addItem (20, "CV LFO");
     menu.addItem (21, "CV Wobble Filter (SVF)");
     menu.addItem (22, "CV 1-to-4 Splitter");
+    menu.addItem (24, "CV Envelope Follower");
+    menu.addItem (25, "CV Step Modulator");
 
     const auto vstTypes = engine.getPluginManager().knownPluginList.getTypes();
     if (! vstTypes.isEmpty())
@@ -811,6 +815,8 @@ void ModularRackComponent::showAddMachineMenu()
             case 20: safeThis->addMachineToRack (CvLfoPlugin::xmlTypeName); break;
             case 21: safeThis->addMachineToRack (CvWobbleFilterPlugin::xmlTypeName); break;
             case 22: safeThis->addMachineToRack (CvUtilityPlugin::xmlTypeName); break;
+            case 24: safeThis->addMachineToRack (CvEnvelopeFollowerPlugin::xmlTypeName); break;
+            case 25: safeThis->addMachineToRack (CvStepModulatorPlugin::xmlTypeName); break;
             default:
                 if (chosenId >= 100)
                 {

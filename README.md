@@ -1,6 +1,6 @@
 # Toxic Creationz Studio — AI DAW
 
-A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**, featuring live audio & MIDI recording with 1-bar count-in, VST3 plugin hosting + built-in Reverb/Delay & Aux FX buses, an FL Studio-style zoomable piano roll, Reason-style modular audio/MIDI/CV racks, time-stretched riff BGM layering, Audacity-style non-destructive waveform DSP, zero-dependency C++ YIN audio-to-MIDI pitch transcription, drawable track automation lanes, master WAV mixdown export, live stereo channel metering with 3-band EQ, dark studio theming, and an out-of-process **Python FastMCP AI Co-Producer** over a local JSON-RPC 2.0 TCP bridge (`127.0.0.1:9450`).
+A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**, featuring live audio & MIDI recording with 1-bar count-in, VST3 plugin hosting + built-in Reverb/Delay & Aux FX buses, an FL Studio-style zoomable piano roll, Reason-style modular audio/MIDI/CV racks (LFO, wobble filter, splitter, envelope follower, step modulator), time-stretched riff BGM layering, Audacity-style non-destructive waveform DSP, C++ YIN monophonic and polyphonic Constant-Q audio-to-MIDI transcription, sidechain ducking, multi-take loop comping, drawable track automation lanes, master WAV mixdown export, live stereo channel metering with 3-band EQ, dark studio theming, cross-platform `tcs_core` isolation (macOS / Linux / Android-Oboe), and an out-of-process **Python FastMCP AI Co-Producer** over a local JSON-RPC 2.0 TCP bridge (`127.0.0.1:9450`).
 
 ```text
 +-------------------------------------------------------------------+
@@ -25,7 +25,7 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 
 ---
 
-## Implemented Work Orders (`WO-001` through `WO-017`)
+## Implemented Work Orders (`WO-001` through `WO-020`)
 
 | Phase | Highlights |
 | --- | --- |
@@ -47,6 +47,9 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 | **WO-017** | `PluginPresetManager` factory preset bank & `.trkpreset` save/load (`8` `4OSC` synth patches + CV/FX presets), `4OSC` oscillator/unison/voice/FX editor strip, `Multi-Sampler (808 + Synth Kit)` (`SamplerPlugin` + WAV loader), multi-machine `+ Machine` Modular Rack & Mixer inserts (`Compressor`, `Chorus`, `Phaser`, `LowPass`, `PitchShift`), and `set_plugin_preset` / `add_rack_machine` MCP tools. |
 | **Hardware Rack Suite** | Zero-allocation native hardware modules (`Tr808DrumPlugin` 6-voice/5-out synth with CV Accent & hi-hat choke, `VintageSamplerPlugin` 12-bit DAC + ZOH decimation + stereo LPF + WAV loader, `AnalogTapePlugin` wow/flutter + 85 Hz head bump + asymmetric saturation), track/rack integration, factory presets, and `add_rack_module` / `create_instrument_track` MCP support. |
 | **WO-018** | AI Co-Producer Scaling: Roman-numeral voice-led `midi.generate_progression`, `midi.quantize_scale`, peak-headroom-safe `mixer.auto_balance_lufs`, section-trimming `arrangement.duplicate_section` (`mute_drums`), optional Suno/ElevenLabs/Demucs adapters + offline 4-band stereo stem splitter (`separate_audio_stems`). |
+| **WO-019** | Advanced audio DSP & recording polish: `SidechainCompressorPlugin` Pin 3/4 ducking with 3 factory presets, multi-take loop comping (`recording.comp_takes`), polyphonic Constant-Q audio-to-MIDI with a `basic_pitch` offline fallback. |
+| **WO-020** | Cross-platform CMake (MSVC/GCC/Clang guards), `tcs_core` / `tcs_core_isolation`, `PlatformConfig.h`, Oboe-aware Android core, `macos-15` + `ubuntu-22.04` CI matrix, and the VST3-free core boundary proof. |
+| **Sweep Reconciliation** | Restored the missing briefing CV **Envelope Follower** and **8-Step Modulator** modules, fixed the unreachable Android Oboe define, hardened the portable zip against zero-filled executables, and made cross-platform CI run on pull requests. |
 
 ---
 
@@ -110,9 +113,9 @@ python mcp/daw_mcp_server.py
 
 - **Session, Recording & Transport:** `get_session_state`, `control_transport` (`play`, `stop`, `record`, `bpm`, `beat`, `click`, `loop`, `loop_start_beat`, `loop_end_beat`, `count_in_bars`), `list_recording_inputs`
 - **Tracks, Chords & Piano Roll:** `create_instrument_track` (`4osc`, `tr808`, `sampler`, `tape`, `none`), `generate_chord_progression` (voice-led Roman numerals), `quantize_track_to_scale` (scale pitch + beat grid), `write_piano_roll_notes`, `get_piano_roll_notes`, `duplicate_arrangement_section`
-- **Mixer, EQ, FX Sends, Presets & Automation:** `set_mixer_channel` (volume, pan, mute, solo, record arm, input device), `auto_balance_mix_lufs` (gain-match tracks toward target LUFS with peak headroom safety), `set_plugin_preset` (list/apply built-in synth, FX & hardware factory presets), `set_track_eq` (`low_db`, `mid_db`, `high_db` in `[-18, +18]` dB), `configure_fx_send` (Aux Send to shared Reverb/Delay return bus), `write_track_automation`, `get_track_automation`
-- **Modular Rack:** `get_modular_racks`, `add_rack_machine` (`4osc`, `sampler`, `tr808`, `vintage_sampler`, `tape`, `compressor`, `chorus`, `phaser`, `lowpass`, `pitchshift`, `reverb`, `delay`, `eq`, `cv_lfo`, `cv_wobble`, `cv_splitter`), `add_rack_module` (placed CV/hardware modules with pin introspection), `patch_modular_rack`
-- **Audio, Pitch Transcription, Stems, BGM & Export:** `generate_bgm_arrangement`, `process_audio_clip`, `transcribe_audio_to_midi` (YIN monophonic audio-to-MIDI into a new or existing MIDI track), `generate_ai_audio_stem` (Arioso / Suno / ElevenLabs / offline synth), `separate_audio_stems` (Demucs or offline 4-band stereo stem splitter + DAW import), `import_audio_stem`, `export_master_wav`
+- **Mixer, EQ, FX Sends, Presets & Automation:** `set_mixer_channel` (volume, pan, mute, solo, record arm, input device), `auto_balance_mix_lufs` (RMS/peak-based loudness estimate with peak-headroom safety; not ITU-R BS.1770 gated LUFS), `set_plugin_preset` (list/apply built-in synth, FX & hardware factory presets), `set_track_eq` (`low_db`, `mid_db`, `high_db` in `[-18, +18]` dB), `configure_fx_send` (Aux Send to shared Reverb/Delay return bus), `write_track_automation`, `get_track_automation`
+- **Modular Rack:** `get_modular_racks`, `add_rack_machine` (`4osc`, `sampler`, `tr808`, `vintage_sampler`, `tape`, `compressor`, `chorus`, `phaser`, `lowpass`, `pitchshift`, `reverb`, `delay`, `eq`, `cv_lfo`, `cv_wobble`, `cv_splitter`, `cv_envelope`, `cv_step`), `add_rack_module` (placed CV/hardware modules with pin introspection), `patch_modular_rack`
+- **Audio, Pitch Transcription, Stems, BGM & Export:** `generate_bgm_arrangement`, `process_audio_clip`, `transcribe_audio_to_midi` (YIN monophonic or polyphonic Constant-Q audio-to-MIDI into a new or existing MIDI track), `comp_track_takes` (multi-take loop comping), `generate_ai_audio_stem` (Arioso / Suno / ElevenLabs / offline synth), `separate_audio_stems` (Demucs or offline 4-band stereo stem splitter + DAW import), `import_audio_stem`, `export_master_wav`
 
 `generate_ai_audio_stem` delegates WAV synthesis to `mcp/ai_audio_worker.py` (automatically using `arioso` when installed, or falling back to a stereo 44.1 kHz key/tempo-synced synthesizer), saves stems to `~/Documents/Toxic Creationz Studio/GeneratedStems/`, and imports them cleanly via `audio.import_file`.
 
@@ -122,7 +125,8 @@ python mcp/daw_mcp_server.py
 
 ```text
 CMakeLists.txt                       # JUCE 9 + Tracktion Engine build configuration
-.github/workflows/windows-build.yml  # Windows CI build, --smoke-test, Python unit tests & zip artifact
+.github/workflows/windows-build.yml  # Windows CI build, --smoke-test, Python unit tests, zip validate & artifact
+.github/workflows/cross-platform-build.yml # macOS-15 / Ubuntu-22.04 core-isolation + MCP tests on PRs & main
 scripts/package-windows.ps1          # Portable Win64 release zipper (exe + mcp + README)
 docs/SHARED_BRIEF.md                 # Pipeline status & Work Order engineering records
 mcp/
@@ -141,7 +145,7 @@ src/
   MixerComponent.h/.cpp              # Channel strips, 3-band EQ, Reverb/Delay inserts, Aux sends, meters, rec arm
   RecordingManager.h/.cpp            # Live Wave/MIDI device enumeration, arming, virtual MIDI & count-in
   AutomationManager.h/.cpp           # Tracktion AutomationCurve & AuxSend/AuxReturn FX bus helpers
-  CvRackPlugins.h                    # Built-in CvLfoPlugin, CvWobbleFilterPlugin & CvUtilityPlugin (1-to-4)
+  CvRackPlugins.h                    # CvLFO, Wobble SVF, 1-to-4 Splitter, Envelope Follower & 8-Step Modulator
   HardwareRackPlugins.h              # Built-in TR-808 Drum Synth, 12-Bit Vintage Sampler & Analog Tape Deck
   ModularRackComponent.h/.cpp        # Reason-style te::RackType patchbay GUI
   RiffLibrary.h/.cpp                 # Starter riff pack provisioner & key/energy metadata

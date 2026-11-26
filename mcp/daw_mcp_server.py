@@ -491,7 +491,7 @@ async def add_rack_machine(
     machine_type: str = "4osc",
     rack_index: int = 0,
 ) -> dict[str, Any]:
-    """Insert a synth, sampler, effect, or CV utility ('4osc', 'sampler', 'compressor', 'chorus', 'phaser', 'lowpass', 'pitchshift', 'reverb', 'delay', 'eq', 'cv_lfo', 'cv_wobble', 'cv_splitter') into a modular rack."""
+    """Insert a synth, sampler, effect, or CV utility ('4osc', 'sampler', 'compressor', 'chorus', 'phaser', 'lowpass', 'pitchshift', 'reverb', 'delay', 'eq', 'cv_lfo', 'cv_wobble', 'cv_splitter', 'cv_envelope', 'cv_step') into a modular rack."""
     return await send_daw_rpc(
         "rack.add_machine",
         {
@@ -510,8 +510,8 @@ async def add_rack_module(
 ) -> dict[str, Any]:
     """Insert a CV or hardware module into a modular rack.
 
-    module_type: 'cv_lfo', 'cv_filter', 'cv_splitter', 'tr808', 'sampler',
-    'tape', or '4osc'. x/y are normalised 0..1 rack positions.
+    module_type: 'cv_lfo', 'cv_filter', 'cv_splitter', 'cv_envelope', 'cv_step',
+    'tr808', 'sampler', 'tape', or '4osc'. x/y are normalised 0..1 rack positions.
     """
     return await send_daw_rpc(
         "rack.add_module",
