@@ -8,7 +8,213 @@
 #include "WaveformEditorComponent.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <vector>
+
+namespace
+{
+std::vector<int> getScaleIntervals (const juce::String& rawScale, bool allowPentatonic)
+{
+    const auto s = rawScale.trim().toLowerCase();
+    if (s == "major" || s == "ionian")
+        return { 0, 2, 4, 5, 7, 9, 11 };
+    if (s == "dorian")
+        return { 0, 2, 3, 5, 7, 9, 10 };
+    if (s == "phrygian")
+        return { 0, 1, 3, 5, 7, 8, 10 };
+    if (allowPentatonic && (s == "pentatonic_minor" || s == "minor_pentatonic"))
+        return { 0, 3, 5, 7, 10 };
+    if (s == "minor" || s == "natural_minor" || s == "aeolian")
+        return { 0, 2, 3, 5, 7, 8, 10 };
+    return {};
+}
+
+bool parseRomanChordToken (const juce::String& rawToken,
+                           int keyPc,
+                           const std::vector<int>& scale,
+                           std::vector<int>& outPitchClasses)
+{
+    outPitchClasses.clear();
+    if (scale.size() < 7)
+        return false;
+
+    juce::String t = rawToken.trim();
+    if (t.isEmpty())
+        return false;
+
+    int accidental = 0;
+    while (t.startsWithChar ('b') || t.startsWithChar ('#'))
+    {
+        accidental += (t[0] == 'b') ? -1 : 1;
+        t = t.substring (1);
+    }
+
+    int len = 0;
+    while (len < t.length())
+    {
+        const auto ch = juce::CharacterFunctions::toUpperCase (t[len]);
+        if (ch == 'I' || ch == 'V')
+            ++len;
+        else
+            break;
+    }
+
+    if (len == 0)
+        return false;
+
+    const auto romanPart = t.substring (0, len);
+    const auto romanUpper = romanPart.toUpperCase();
+    int degree = -1;
+    if (romanUpper == "I")        degree = 0;
+    else if (romanUpper == "II")  degree = 1;
+    else if (romanUpper == "III") degree = 2;
+    else if (romanUpper == "IV")  degree = 3;
+    else if (romanUpper == "V")   degree = 4;
+    else if (romanUpper == "VI")  degree = 5;
+    else if (romanUpper == "VII") degree = 6;
+    else                          return false;
+
+    const auto suffix = t.substring (len).trim().toLowerCase();
+    const bool isLower = (romanPart == romanPart.toLowerCase());
+
+    const int rootPc = (keyPc + scale[static_cast<size_t> (degree)] + accidental + 120) % 12;
+    int thirdInterval = ((scale[static_cast<size_t> ((degree + 2) % 7)] + (degree + 2 >= 7 ? 12 : 0))
+                         - scale[static_cast<size_t> (degree)]);
+    int fifthInterval = ((scale[static_cast<size_t> ((degree + 4) % 7)] + (degree + 4 >= 7 ? 12 : 0))
+                         - scale[static_cast<size_t> (degree)]);
+
+    if (isLower && thirdInterval > 3)
+        thirdInterval = 3;
+    else if (! isLower && thirdInterval < 4 && ! suffix.contains ("dim"))
+        thirdInterval = 4;
+
+    if (suffix.contains ("dim"))
+    {
+        thirdInterval = 3;
+        fifthInterval = 6;
+    }
+
+    outPitchClasses.push_back (rootPc);
+    outPitchClasses.push_back ((rootPc + thirdInterval) % 12);
+    outPitchClasses.push_back ((rootPc + fifthInterval) % 12);
+
+    if (suffix.contains ("maj7"))
+        outPitchClasses.push_back ((rootPc + 11) % 12);
+    else if (suffix.contains ("m7") || suffix.contains ("7"))
+    {
+        if (suffix.contains ("m7"))
+            outPitchClasses[1] = (rootPc + 3) % 12;
+        outPitchClasses.push_back ((rootPc + 10) % 12);
+    }
+
+    return true;
+}
+
+std::vector<int> buildVoicedChord (const std::vector<int>& pcs,
+                                   int baseOctaveMidi,
+                                   const std::vector<int>& prevNotes,
+                                   bool voiceLead)
+{
+    std::vector<int> baseNotes;
+    baseNotes.reserve (pcs.size());
+
+    for (size_t i = 0; i < pcs.size(); ++i)
+    {
+        int midi = baseOctaveMidi + pcs[i];
+        while (midi < baseOctaveMidi)
+            midi += 12;
+        if (i > 0 && midi <= baseNotes.back())
+            midi += 12;
+        baseNotes.push_back (juce::jlimit (24, 96, midi));
+    }
+
+    if (! voiceLead || prevNotes.empty() || baseNotes.empty())
+        return baseNotes;
+
+    int prevSum = 0;
+    for (int n : prevNotes)
+        prevSum += n;
+    const double prevCentroid = static_cast<double> (prevSum) / static_cast<double> (prevNotes.size());
+
+    // Generate compact inversions by octave-shifting each tone around prevCentroid.
+    std::vector<int> best = baseNotes;
+    double bestCost = 1.0e9;
+
+    const int nTones = static_cast<int> (baseNotes.size());
+    std::vector<std::vector<int>> candidates (static_cast<size_t> (nTones));
+    for (int t = 0; t < nTones; ++t)
+    {
+        const int pc = baseNotes[static_cast<size_t> (t)] % 12;
+        for (int oct = 2; oct <= 6; ++oct)
+        {
+            const int note = oct * 12 + pc;
+            if (note >= 36 && note <= 88)
+                candidates[static_cast<size_t> (t)].push_back (note);
+        }
+    }
+
+    std::vector<int> cur (static_cast<size_t> (nTones), 60);
+    auto search = [&] (auto& self, int idx) -> void
+    {
+        if (idx == nTones)
+        {
+            auto sorted = cur;
+            std::sort (sorted.begin(), sorted.end());
+            if (sorted.back() - sorted.front() > 16)
+                return;
+
+            double motion = 0.0;
+            double curSum = 0.0;
+            for (int i = 0; i < nTones; ++i)
+            {
+                const int ref = prevNotes[static_cast<size_t> (std::min (i, static_cast<int> (prevNotes.size()) - 1))];
+                motion += std::abs (sorted[static_cast<size_t> (i)] - ref);
+                curSum += sorted[static_cast<size_t> (i)];
+            }
+            const double centroidDiff = std::abs ((curSum / nTones) - prevCentroid);
+            const double totalCost = motion + 0.35 * centroidDiff;
+            if (totalCost < bestCost)
+            {
+                bestCost = totalCost;
+                best = sorted;
+            }
+            return;
+        }
+
+        for (int note : candidates[static_cast<size_t> (idx)])
+        {
+            cur[static_cast<size_t> (idx)] = note;
+            self (self, idx + 1);
+        }
+    };
+
+    search (search, 0);
+    return best;
+}
+
+int snapMidiPitchToScale (int pitch, int keyPc, const std::vector<int>& scale)
+{
+    auto isInScale = [&] (int p)
+    {
+        const int rel = ((p - keyPc) % 12 + 12) % 12;
+        return std::find (scale.begin(), scale.end(), rel) != scale.end();
+    };
+
+    if (isInScale (pitch))
+        return pitch;
+
+    for (int d = 1; d <= 6; ++d)
+    {
+        if (pitch - d >= 0 && isInScale (pitch - d))
+            return pitch - d; // tie-break downward
+        if (pitch + d <= 127 && isInScale (pitch + d))
+            return pitch + d;
+    }
+
+    return pitch;
+}
+} // namespace
 
 DawIpcServer::DawIpcServer (RiffLibrary& targetRiffLibrary,
                             RecordingManager& targetRecordingManager)
@@ -177,6 +383,8 @@ juce::String DawIpcServer::enqueueAndWaitForMessageThread (const juce::String& r
                 timeoutMs = 30000;
             else if (reqMethod == "audio.transcribe_to_midi")
                 timeoutMs = 15000;
+            else if (reqMethod == "mixer.auto_balance_lufs" || reqMethod == "arrangement.duplicate_section")
+                timeoutMs = 10000;
         }
     }
 
@@ -1423,6 +1631,579 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         out->setProperty ("name", plugin->getName());
         out->setProperty ("inputs", inputs);
         out->setProperty ("outputs", outputs);
+        return makeResultResponse (id, juce::var (out));
+    }
+
+    // 22. midi.generate_progression (Roman-numeral voice-led chord generator)
+    if (method == "midi.generate_progression")
+    {
+        const int trackIdx = static_cast<int> (params.getProperty ("track_index", 0));
+        auto tracks = te::getAudioTracks (*edit);
+        if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "Invalid track_index");
+
+        const juce::String keyName   = params.getProperty ("key", "C").toString().trim();
+        const juce::String scaleName = params.getProperty ("scale", "minor").toString().trim().toLowerCase();
+        const auto scale = getScaleIntervals (scaleName, false);
+        if (scale.size() < 7)
+            return makeErrorResponse (id, -32602, "Unsupported scale for chord generation: " + scaleName);
+
+        const int keyPc = RiffLibrary::parseKeyPitchClass (keyName);
+        const double startBeat     = std::max (0.0, static_cast<double> (params.getProperty ("start_beat", 0.0)));
+        const double beatsPerChord = std::clamp (static_cast<double> (params.getProperty ("beats_per_chord", 4.0)), 0.25, 32.0);
+        const int octave           = juce::jlimit (1, 7, static_cast<int> (params.getProperty ("octave", 4)));
+        const int velocity         = juce::jlimit (1, 127, static_cast<int> (params.getProperty ("velocity", 96)));
+        const bool voiceLead       = static_cast<bool> (params.getProperty ("voice_lead", true));
+
+        juce::StringArray tokens;
+        if (const auto* arr = params.getProperty ("progression", juce::var()).getArray())
+        {
+            for (const auto& item : *arr)
+            {
+                const auto tok = item.toString().trim();
+                if (tok.isNotEmpty())
+                    tokens.add (tok);
+            }
+        }
+        if (tokens.isEmpty())
+            tokens = juce::StringArray { "i", "VI", "III", "VII" };
+
+        std::vector<std::vector<int>> chordPcsList;
+        chordPcsList.reserve (static_cast<size_t> (tokens.size()));
+        for (const auto& tok : tokens)
+        {
+            std::vector<int> pcs;
+            if (! parseRomanChordToken (tok, keyPc, scale, pcs))
+                return makeErrorResponse (id, -32602, "Invalid Roman chord token: " + tok);
+            chordPcsList.push_back (std::move (pcs));
+        }
+
+        const double endBeat = startBeat + beatsPerChord * static_cast<double> (chordPcsList.size());
+        const tracktion::TimeRange targetRange {
+            edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (startBeat)),
+            edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (endBeat))
+        };
+
+        auto* track = tracks[trackIdx];
+        auto& um = edit->getUndoManager();
+        um.beginNewTransaction ("MCP Generate Chord Progression");
+
+        te::MidiClip* midiClip = nullptr;
+        for (auto* c : track->getClips())
+        {
+            if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+            {
+                const double cStart = edit->tempoSequence.toBeats (mc->getPosition().getStart()).inBeats();
+                const double cEnd   = edit->tempoSequence.toBeats (mc->getPosition().getEnd()).inBeats();
+                if (cEnd > startBeat - 1e-4 && cStart <= startBeat + 1e-4)
+                {
+                    midiClip = mc;
+                    break;
+                }
+            }
+        }
+
+        if (midiClip == nullptr)
+        {
+            midiClip = dynamic_cast<te::MidiClip*> (
+                track->insertNewClip (te::TrackItem::Type::midi, "AI Chords", targetRange, nullptr));
+        }
+        else if (midiClip->getPosition().getEnd() < targetRange.getEnd())
+        {
+            midiClip->setEnd (targetRange.getEnd(), true);
+        }
+
+        if (midiClip == nullptr)
+            return makeErrorResponse (id, -32603, "Failed to create or resolve MidiClip");
+
+        const double clipOriginBeat = edit->tempoSequence.toBeats (midiClip->getPosition().getStart()).inBeats();
+        auto& seq = midiClip->getSequence();
+        const int baseOctaveMidi = (octave + 1) * 12;
+
+        std::vector<int> prevVoicing;
+        int notesWritten = 0;
+
+        for (size_t cIdx = 0; cIdx < chordPcsList.size(); ++cIdx)
+        {
+            const auto voiced = buildVoicedChord (chordPcsList[cIdx], baseOctaveMidi, prevVoicing, voiceLead);
+            const double localStartBeat = std::max (0.0, (startBeat + static_cast<double> (cIdx) * beatsPerChord) - clipOriginBeat);
+            const double noteLenBeats = std::max (0.125, beatsPerChord * 0.95);
+
+            for (int pitch : voiced)
+            {
+                seq.addNote (pitch,
+                             tracktion::BeatPosition::fromBeats (localStartBeat),
+                             tracktion::BeatDuration::fromBeats (noteLenBeats),
+                             velocity,
+                             0,
+                             &um);
+                ++notesWritten;
+            }
+
+            prevVoicing = voiced;
+        }
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP generated " + juce::String (chordPcsList.size()) + " chords on track " + juce::String (trackIdx + 1));
+
+        auto* out = new juce::DynamicObject();
+        out->setProperty ("track_index", trackIdx);
+        out->setProperty ("chords_written", static_cast<int> (chordPcsList.size()));
+        out->setProperty ("notes_written", notesWritten);
+        out->setProperty ("start_beat", startBeat);
+        out->setProperty ("end_beat", endBeat);
+        return makeResultResponse (id, juce::var (out));
+    }
+
+    // 23. midi.quantize_scale (snap MIDI pitch to key/scale and timing to beat grid)
+    if (method == "midi.quantize_scale")
+    {
+        const int trackIdx = static_cast<int> (params.getProperty ("track_index", 0));
+        auto tracks = te::getAudioTracks (*edit);
+        if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "Invalid track_index");
+
+        const juce::String keyName   = params.getProperty ("key", "C").toString().trim();
+        const juce::String scaleName = params.getProperty ("scale", "minor").toString().trim().toLowerCase();
+        const auto scale = getScaleIntervals (scaleName, true);
+        if (scale.empty())
+            return makeErrorResponse (id, -32602, "Unsupported scale: " + scaleName);
+
+        const int keyPc        = RiffLibrary::parseKeyPitchClass (keyName);
+        const double gridBeats = std::clamp (static_cast<double> (params.getProperty ("grid_beats", 0.25)), 0.03125, 4.0);
+        const bool snapPitch   = static_cast<bool> (params.getProperty ("snap_pitch", true));
+        const bool snapTiming  = static_cast<bool> (params.getProperty ("snap_timing", true));
+
+        auto* track = tracks[trackIdx];
+        auto& um = edit->getUndoManager();
+        um.beginNewTransaction ("MCP Scale & Timing Quantize");
+
+        int notesChecked = 0;
+        int pitchSnapped = 0;
+        int timingSnapped = 0;
+
+        for (auto* c : track->getClips())
+        {
+            auto* mc = dynamic_cast<te::MidiClip*> (c);
+            if (mc == nullptr)
+                continue;
+
+            const double clipStartBeat = edit->tempoSequence.toBeats (mc->getPosition().getStart()).inBeats();
+            const double clipEndBeat   = edit->tempoSequence.toBeats (mc->getPosition().getEnd()).inBeats();
+            double maxNeededEndBeat = clipEndBeat;
+
+            juce::Array<te::MidiNote*> notesCopy;
+            for (auto* n : mc->getSequence().getNotes())
+                notesCopy.add (n);
+
+            for (auto* note : notesCopy)
+            {
+                if (note == nullptr)
+                    continue;
+
+                ++notesChecked;
+
+                if (snapPitch)
+                {
+                    const int origPitch = note->getNoteNumber();
+                    const int snapped   = snapMidiPitchToScale (origPitch, keyPc, scale);
+                    if (snapped != origPitch)
+                    {
+                        note->setNoteNumber (snapped, &um);
+                        ++pitchSnapped;
+                    }
+                }
+
+                if (snapTiming)
+                {
+                    const double origLocal = note->getStartBeat().inBeats();
+                    const double absBeat   = clipStartBeat + origLocal;
+                    const double quantAbs  = std::max (clipStartBeat, std::round (absBeat / gridBeats) * gridBeats);
+                    const double newLocal  = std::max (0.0, quantAbs - clipStartBeat);
+                    const double lenBeats  = std::max (0.03125, note->getLengthBeats().inBeats());
+
+                    if (std::abs (newLocal - origLocal) > 1e-4)
+                    {
+                        note->setStartAndLength (tracktion::BeatPosition::fromBeats (newLocal),
+                                                 tracktion::BeatDuration::fromBeats (lenBeats),
+                                                 &um);
+                        ++timingSnapped;
+                        maxNeededEndBeat = std::max (maxNeededEndBeat, clipStartBeat + newLocal + lenBeats);
+                    }
+                }
+            }
+
+            if (maxNeededEndBeat > clipEndBeat + 1e-4)
+                mc->setEnd (edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (maxNeededEndBeat)), true);
+        }
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP quantized " + juce::String (notesChecked) + " MIDI notes to " + keyName + " " + scaleName);
+
+        auto* out = new juce::DynamicObject();
+        out->setProperty ("track_index", trackIdx);
+        out->setProperty ("notes_checked", notesChecked);
+        out->setProperty ("pitch_snapped", pitchSnapped);
+        out->setProperty ("timing_snapped", timingSnapped);
+        return makeResultResponse (id, juce::var (out));
+    }
+
+    // 24. mixer.auto_balance_lufs (gain-match non-muted tracks toward target_lufs)
+    if (method == "mixer.auto_balance_lufs")
+    {
+        const float targetLufs = juce::jlimit (-40.0f, -3.0f, static_cast<float> (params.getProperty ("target_lufs", -14.0)));
+        const float minGainDb  = juce::jlimit (-60.0f, 6.0f, static_cast<float> (params.getProperty ("min_gain_db", -18.0)));
+        const float maxGainDb  = juce::jlimit (minGainDb, 6.0f, static_cast<float> (params.getProperty ("max_gain_db", 6.0)));
+        const float headroomDb = juce::jlimit (-12.0f, 0.0f, static_cast<float> (params.getProperty ("headroom_db", -1.0)));
+
+        auto tracks = te::getAudioTracks (*edit);
+        auto& um = edit->getUndoManager();
+        um.beginNewTransaction ("MCP Auto-Balance LUFS");
+
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+
+        juce::Array<juce::var> adjustedArr;
+
+        for (int i = 0; i < tracks.size(); ++i)
+        {
+            auto* track = tracks[i];
+            if (track == nullptr || track->isMuted (false))
+                continue;
+
+            auto* vol = track->getVolumePlugin();
+            if (vol == nullptr)
+                continue;
+
+            float measuredRmsDb  = -18.0f;
+            float measuredPeakDb = -6.0f;
+            bool measuredFromAudio = false;
+
+            double sumSquares = 0.0;
+            juce::int64 totalFrames = 0;
+            float maxAbsPeak = 0.0f;
+
+            for (auto* c : track->getClips())
+            {
+                auto* wc = dynamic_cast<te::WaveAudioClip*> (c);
+                if (wc == nullptr)
+                    continue;
+
+                const auto wavFile = wc->getSourceFileReference().getFile();
+                if (! wavFile.existsAsFile())
+                    continue;
+
+                if (auto reader = std::unique_ptr<juce::AudioFormatReader> (fm.createReaderFor (wavFile)))
+                {
+                    if (reader->lengthInSamples > 0 && reader->numChannels > 0)
+                    {
+                        const int toRead = static_cast<int> (std::min<juce::int64> (65536, reader->lengthInSamples));
+                        const int numCh  = std::min (2, static_cast<int> (reader->numChannels));
+                        juce::AudioBuffer<float> tmp (numCh, toRead);
+                        if (reader->read (&tmp, 0, toRead, 0, true, numCh > 1))
+                        {
+                            const float clipGain = wc->getGain();
+                            for (int ch = 0; ch < numCh; ++ch)
+                            {
+                                const float* data = tmp.getReadPointer (ch);
+                                for (int s = 0; s < toRead; ++s)
+                                {
+                                    const float v = data[s] * clipGain;
+                                    sumSquares += static_cast<double> (v) * static_cast<double> (v);
+                                    maxAbsPeak = std::max (maxAbsPeak, std::abs (v));
+                                }
+                            }
+                            totalFrames += static_cast<juce::int64> (toRead) * numCh;
+                        }
+                    }
+                }
+            }
+
+            if (totalFrames > 0)
+            {
+                const float rms = static_cast<float> (std::sqrt (sumSquares / static_cast<double> (totalFrames)));
+                measuredRmsDb  = juce::jlimit (-60.0f, 0.0f, juce::Decibels::gainToDecibels (std::max (1.0e-4f, rms)) - 0.691f);
+                measuredPeakDb = juce::jlimit (-60.0f, 0.0f, juce::Decibels::gainToDecibels (std::max (1.0e-4f, maxAbsPeak)));
+                measuredFromAudio = true;
+            }
+            else if (auto* meter = track->pluginList.findFirstPluginOfType<te::LevelMeterPlugin>())
+            {
+                te::LevelMeasurer::Client tmpClient;
+                meter->measurer.addClient (tmpClient);
+                const float lDb = tmpClient.getAndClearAudioLevel (0).dB;
+                const float rDb = tmpClient.getAndClearAudioLevel (1).dB;
+                meter->measurer.removeClient (tmpClient);
+                const float activeDb = std::max (lDb, rDb);
+                if (std::isfinite (activeDb) && activeDb > -55.0f)
+                {
+                    measuredRmsDb  = juce::jlimit (-60.0f, 0.0f, activeDb - 0.691f);
+                    measuredPeakDb = juce::jlimit (-60.0f, 0.0f, activeDb);
+                    measuredFromAudio = true;
+                }
+            }
+
+            if (! measuredFromAudio)
+            {
+                // MIDI/synth velocity density proxy when transport is idle
+                double velSum = 0.0;
+                int noteCnt = 0;
+                for (auto* c : track->getClips())
+                {
+                    if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                    {
+                        for (auto* n : mc->getSequence().getNotes())
+                        {
+                            velSum += static_cast<double> (n->getVelocity()) / 127.0;
+                            ++noteCnt;
+                        }
+                    }
+                }
+
+                if (noteCnt > 0)
+                {
+                    const float avgVel = juce::jlimit (0.1f, 1.0f, static_cast<float> (velSum / noteCnt));
+                    measuredRmsDb  = juce::jlimit (-36.0f, -6.0f, -20.0f + 12.0f * avgVel);
+                    measuredPeakDb = measuredRmsDb + 6.0f;
+                }
+            }
+
+            const float curVolDb     = std::isfinite (vol->getVolumeDb()) ? vol->getVolumeDb() : 0.0f;
+            const float desiredGain  = targetLufs - measuredRmsDb;
+            const float peakCapGain  = headroomDb - measuredPeakDb;
+            const float safeApplied  = juce::jlimit (minGainDb, maxGainDb, std::min (desiredGain, peakCapGain));
+            juce::ignoreUnused (curVolDb);
+
+            vol->setVolumeDb (safeApplied);
+
+            auto* tObj = new juce::DynamicObject();
+            tObj->setProperty ("track_index", i);
+            tObj->setProperty ("name", track->getName());
+            tObj->setProperty ("measured_db", measuredRmsDb);
+            tObj->setProperty ("applied_db", safeApplied);
+            adjustedArr.add (juce::var (tObj));
+        }
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP auto-balanced " + juce::String (adjustedArr.size()) + " tracks toward " + juce::String (targetLufs, 1) + " LUFS");
+
+        auto* out = new juce::DynamicObject();
+        out->setProperty ("target_lufs", targetLufs);
+        out->setProperty ("tracks_adjusted", adjustedArr);
+        return makeResultResponse (id, juce::var (out));
+    }
+
+    // 25. arrangement.duplicate_section (copy trimmed MIDI & audio regions to dest_beat)
+    if (method == "arrangement.duplicate_section")
+    {
+        const double startBeat = static_cast<double> (params.getProperty ("start_beat", 0.0));
+        const double endBeat   = static_cast<double> (params.getProperty ("end_beat", 0.0));
+        const double destBeat  = static_cast<double> (params.getProperty ("dest_beat", 0.0));
+        const bool muteDrums   = static_cast<bool> (params.getProperty ("mute_drums", false));
+
+        if (! std::isfinite (startBeat) || ! std::isfinite (endBeat) || ! std::isfinite (destBeat)
+            || startBeat < 0.0 || endBeat <= startBeat || destBeat < 0.0)
+        {
+            return makeErrorResponse (id, -32602, "Invalid start_beat/end_beat/dest_beat range");
+        }
+
+        auto allTracks = te::getAudioTracks (*edit);
+        std::vector<int> targetIndices;
+
+        if (const auto* idxArr = params.getProperty ("track_indices", juce::var()).getArray())
+        {
+            for (const auto& item : *idxArr)
+            {
+                const int idx = static_cast<int> (item);
+                if (! juce::isPositiveAndBelow (idx, allTracks.size()))
+                    return makeErrorResponse (id, -32602, "Invalid track index in track_indices");
+                if (std::find (targetIndices.begin(), targetIndices.end(), idx) == targetIndices.end())
+                    targetIndices.push_back (idx);
+            }
+        }
+        else
+        {
+            for (int i = 0; i < allTracks.size(); ++i)
+                targetIndices.push_back (i);
+        }
+
+        struct CapturedNote
+        {
+            int pitch = 60;
+            double startBeat = 0.0;
+            double lengthBeats = 0.25;
+            int velocity = 100;
+            int colourIdx = 0;
+        };
+
+        struct CapturedClip
+        {
+            te::AudioTrack* track = nullptr;
+            bool isMidi = true;
+            juce::String name;
+            double segStartBeat = 0.0;
+            double segEndBeat = 0.0;
+            double clipStartBeat = 0.0;
+            std::vector<CapturedNote> notes;
+            juce::File wavFile;
+            double existingOffsetSec = 0.0;
+            bool autoTempo = false;
+            bool autoPitch = false;
+            float pitchChange = 0.0f;
+            float gainDb = 0.0f;
+            double loopBeats = 0.0;
+        };
+
+        std::vector<CapturedClip> snapshots;
+
+        for (int tIdx : targetIndices)
+        {
+            auto* track = allTracks[tIdx];
+            if (track == nullptr)
+                continue;
+
+            if (muteDrums)
+            {
+                const auto lowerName = track->getName().toLowerCase();
+                if (lowerName.contains ("drum") || lowerName.contains ("808")
+                    || track->pluginList.findFirstPluginOfType<Tr808DrumPlugin>() != nullptr)
+                {
+                    continue;
+                }
+            }
+
+            for (auto* c : track->getClips())
+            {
+                const double cStart = edit->tempoSequence.toBeats (c->getPosition().getStart()).inBeats();
+                const double cEnd   = edit->tempoSequence.toBeats (c->getPosition().getEnd()).inBeats();
+                const double segStart = std::max (startBeat, cStart);
+                const double segEnd   = std::min (endBeat, cEnd);
+
+                if (segEnd <= segStart + 1e-4)
+                    continue;
+
+                if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                {
+                    CapturedClip snap;
+                    snap.track = track;
+                    snap.isMidi = true;
+                    snap.name = mc->getName();
+                    snap.segStartBeat = segStart;
+                    snap.segEndBeat = segEnd;
+                    snap.clipStartBeat = cStart;
+
+                    for (auto* note : mc->getSequence().getNotes())
+                    {
+                        const double absNoteStart = cStart + note->getStartBeat().inBeats();
+                        const double absNoteEnd   = absNoteStart + note->getLengthBeats().inBeats();
+                        if (absNoteEnd <= segStart + 1e-4 || absNoteStart >= segEnd - 1e-4)
+                            continue;
+
+                        const double clampedStart = std::max (absNoteStart, segStart);
+                        const double clampedEnd   = std::min (absNoteEnd, segEnd);
+                        if (clampedEnd <= clampedStart + 1e-4)
+                            continue;
+
+                        CapturedNote cn;
+                        cn.pitch = note->getNoteNumber();
+                        cn.startBeat = clampedStart - segStart;
+                        cn.lengthBeats = std::max (0.03125, clampedEnd - clampedStart);
+                        cn.velocity = note->getVelocity();
+                        cn.colourIdx = note->getColour();
+                        snap.notes.push_back (cn);
+                    }
+
+                    snapshots.push_back (std::move (snap));
+                }
+                else if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+                {
+                    const auto file = wc->getSourceFileReference().getFile();
+                    if (! file.existsAsFile())
+                        continue;
+
+                    CapturedClip snap;
+                    snap.track = track;
+                    snap.isMidi = false;
+                    snap.name = wc->getName();
+                    snap.segStartBeat = segStart;
+                    snap.segEndBeat = segEnd;
+                    snap.clipStartBeat = cStart;
+                    snap.wavFile = file;
+                    snap.existingOffsetSec = wc->getPosition().getOffset().inSeconds();
+                    snap.autoTempo = wc->getAutoTempo();
+                    snap.autoPitch = wc->getAutoPitch();
+                    snap.pitchChange = wc->getPitchChange();
+                    snap.gainDb = wc->getGainDB();
+                    snap.loopBeats = wc->getLoopInfo().getNumBeats();
+                    snapshots.push_back (std::move (snap));
+                }
+            }
+        }
+
+        auto& um = edit->getUndoManager();
+        um.beginNewTransaction ("MCP Duplicate Arrangement Section");
+
+        int clipsDuplicated = 0;
+
+        for (const auto& snap : snapshots)
+        {
+            const double newStartBeat = destBeat + (snap.segStartBeat - startBeat);
+            const double newEndBeat   = destBeat + (snap.segEndBeat - startBeat);
+            const tracktion::TimeRange newRange {
+                edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (newStartBeat)),
+                edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (newEndBeat))
+            };
+
+            if (snap.isMidi)
+            {
+                if (auto* newMc = dynamic_cast<te::MidiClip*> (
+                        snap.track->insertNewClip (te::TrackItem::Type::midi, snap.name, newRange, nullptr)))
+                {
+                    auto& seq = newMc->getSequence();
+                    for (const auto& cn : snap.notes)
+                    {
+                        seq.addNote (cn.pitch,
+                                     tracktion::BeatPosition::fromBeats (cn.startBeat),
+                                     tracktion::BeatDuration::fromBeats (cn.lengthBeats),
+                                     cn.velocity,
+                                     cn.colourIdx,
+                                     &um);
+                    }
+                    ++clipsDuplicated;
+                }
+            }
+            else
+            {
+                const double trimDeltaSec = (snap.segStartBeat - snap.clipStartBeat)
+                                          * (60.0 / std::max (40.0, edit->tempoSequence.getTempo (0)->getBpm()));
+                const te::ClipPosition clipPos {
+                    newRange,
+                    tracktion::TimeDuration::fromSeconds (std::max (0.0, snap.existingOffsetSec + trimDeltaSec))
+                };
+
+                if (auto newWc = snap.track->insertWaveClip (snap.name, snap.wavFile, clipPos, false))
+                {
+                    newWc->getSourceFileReference().setToFile (
+                        snap.wavFile, te::SourceFileReference::PathStyle::alwaysAbsolute, false);
+                    newWc->setAutoTempo (snap.autoTempo);
+                    newWc->setAutoPitch (snap.autoPitch);
+                    newWc->setPitchChange (snap.pitchChange);
+                    newWc->setGainDB (snap.gainDb);
+                    if (snap.loopBeats > 0.0)
+                        newWc->getLoopInfo().setNumBeats (snap.loopBeats);
+                    ++clipsDuplicated;
+                }
+            }
+        }
+
+        const double destEndBeat = destBeat + (endBeat - startBeat);
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP duplicated " + juce::String (clipsDuplicated) + " clips to beat " + juce::String (destBeat, 1));
+
+        auto* out = new juce::DynamicObject();
+        out->setProperty ("clips_duplicated", clipsDuplicated);
+        out->setProperty ("dest_start_beat", destBeat);
+        out->setProperty ("dest_end_beat", destEndBeat);
         return makeResultResponse (id, juce::var (out));
     }
 

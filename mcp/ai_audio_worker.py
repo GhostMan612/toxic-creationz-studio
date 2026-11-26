@@ -1,8 +1,9 @@
-"""Out-of-process hybrid AI audio stem generator for Toxic Creationz Studio.
+"""Out-of-process hybrid AI audio stem generator & separator for Toxic Creationz Studio.
 
-Tries an optional local `arioso` installation when installed/requested and
-seamlessly falls back to a deterministic zero-dependency stereo 44.1 kHz
-16-bit PCM synthesizer so offline workflows and headless CI stay reliable.
+Tries optional local/cloud integrations (Arioso, Suno, ElevenLabs, Demucs) when
+installed/configured and seamlessly falls back to deterministic zero-dependency
+stereo 44.1 kHz 16-bit PCM synthesis and spectral stem separation so offline
+workflows and headless CI stay reliable.
 """
 
 from __future__ import annotations
@@ -11,8 +12,11 @@ import argparse
 from array import array
 import hashlib
 import math
+import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import wave
 from typing import Any
 
@@ -59,14 +63,14 @@ def _midi_to_hz(midi_note: int) -> float:
 
 def _try_arioso_generate(
     prompt: str, duration_sec: float, output_path: Path
-) -> dict[str, Any] | None:
-    """Best-effort optional Arioso integration; returns None if unavailable."""
+) -> tuple[dict[str, Any] | None, str]:
+    """Best-effort optional Arioso integration; returns (result_or_None, reason)."""
     try:
         import importlib
 
         arioso = importlib.import_module("arioso")
     except Exception:
-        return None
+        return (None, "arioso package not installed")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     clamped_dur = max(0.5, min(60.0, float(duration_sec)))
@@ -77,18 +81,102 @@ def _try_arioso_generate(
             try:
                 fn(prompt=prompt, duration=clamped_dur, output_path=str(output_path))
                 if output_path.is_file() and output_path.stat().st_size > 44:
-                    return {
-                        "backend": "arioso",
-                        "output_path": str(output_path.resolve()),
-                        "sample_rate": 44100,
-                        "channels": 2,
-                        "duration_sec": clamped_dur,
-                        "prompt": prompt,
-                    }
-            except Exception:
-                return None
+                    return (
+                        {
+                            "backend": "arioso",
+                            "backend_used": "arioso",
+                            "fallback_reason": "",
+                            "output_path": str(output_path.resolve()),
+                            "sample_rate": 44100,
+                            "channels": 2,
+                            "duration_sec": clamped_dur,
+                            "prompt": prompt,
+                        },
+                        "",
+                    )
+            except Exception as exc:
+                return (None, f"arioso invocation failed: {exc}")
 
-    return None
+    return (None, "arioso entry point unavailable")
+
+
+def _try_suno_generate(
+    prompt: str, duration_sec: float, output_path: Path
+) -> tuple[dict[str, Any] | None, str]:
+    """Optional lazy Suno adapter requiring SUNO_API_KEY + suno package."""
+    if not os.environ.get("SUNO_API_KEY", "").strip():
+        return (None, "SUNO_API_KEY not set")
+    try:
+        import importlib
+
+        suno_mod = importlib.import_module("suno")
+    except Exception:
+        return (None, "suno package not installed")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    clamped_dur = max(0.5, min(60.0, float(duration_sec)))
+    for fn_name in ("generate_wav", "generate"):
+        fn = getattr(suno_mod, fn_name, None)
+        if callable(fn):
+            try:
+                fn(prompt=prompt, duration=clamped_dur, output_path=str(output_path))
+                if output_path.is_file() and output_path.stat().st_size > 44:
+                    return (
+                        {
+                            "backend": "suno",
+                            "backend_used": "suno",
+                            "fallback_reason": "",
+                            "output_path": str(output_path.resolve()),
+                            "sample_rate": 44100,
+                            "channels": 2,
+                            "duration_sec": clamped_dur,
+                            "prompt": prompt,
+                        },
+                        "",
+                    )
+            except Exception as exc:
+                return (None, f"suno invocation failed: {exc}")
+    return (None, "suno entry point unavailable")
+
+
+def _try_elevenlabs_generate(
+    prompt: str, duration_sec: float, output_path: Path
+) -> tuple[dict[str, Any] | None, str]:
+    """Optional lazy ElevenLabs adapter requiring ELEVENLABS_API_KEY + elevenlabs package."""
+    if not os.environ.get("ELEVENLABS_API_KEY", "").strip():
+        return (None, "ELEVENLABS_API_KEY not set")
+    try:
+        import importlib
+
+        el_mod = importlib.import_module("elevenlabs")
+    except Exception:
+        return (None, "elevenlabs package not installed")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    clamped_dur = max(0.5, min(60.0, float(duration_sec)))
+    for fn_name in ("generate_sound_effect", "generate"):
+        fn = getattr(el_mod, fn_name, None)
+        if callable(fn):
+            try:
+                audio_bytes = fn(text=prompt, duration_seconds=clamped_dur)
+                if isinstance(audio_bytes, (bytes, bytearray)) and len(audio_bytes) > 44:
+                    output_path.write_bytes(bytes(audio_bytes))
+                    return (
+                        {
+                            "backend": "elevenlabs",
+                            "backend_used": "elevenlabs",
+                            "fallback_reason": "",
+                            "output_path": str(output_path.resolve()),
+                            "sample_rate": 44100,
+                            "channels": 2,
+                            "duration_sec": clamped_dur,
+                            "prompt": prompt,
+                        },
+                        "",
+                    )
+            except Exception as exc:
+                return (None, f"elevenlabs invocation failed: {exc}")
+    return (None, "elevenlabs entry point unavailable")
 
 
 def _synthesize_fallback_wav(
@@ -97,6 +185,7 @@ def _synthesize_fallback_wav(
     output_path: Path,
     key: str = "Am",
     bpm: float = 124.0,
+    fallback_reason: str = "",
 ) -> dict[str, Any]:
     """Synthesize a stereo 44.1 kHz 16-bit PCM chord + tempo-synced arp WAV."""
     sample_rate = 44100
@@ -174,6 +263,8 @@ def _synthesize_fallback_wav(
 
     return {
         "backend": "fallback_synth",
+        "backend_used": "fallback_synth",
+        "fallback_reason": fallback_reason,
         "output_path": str(output_path.resolve()),
         "sample_rate": sample_rate,
         "channels": 2,
@@ -192,17 +283,37 @@ def generate_stem(
     key: str = "Am",
     bpm: float = 124.0,
 ) -> dict[str, Any]:
-    """Generate a stereo AI stem WAV file via Arioso or the deterministic synth fallback."""
+    """Generate a stereo AI stem WAV file via optional cloud/local backends or deterministic synth fallback."""
     out_path = Path(output_path)
     norm_backend = backend.lower().strip()
+    reasons: list[str] = []
 
     if norm_backend in ("auto", "arioso"):
-        arioso_result = _try_arioso_generate(prompt, duration_sec, out_path)
-        if arioso_result is not None:
-            return arioso_result
-        if norm_backend == "arioso":
-            raise RuntimeError("Optional 'arioso' package is not installed or unavailable.")
-    elif norm_backend != "fallback":
+        res, reason = _try_arioso_generate(prompt, duration_sec, out_path)
+        if res is not None:
+            return res
+        if reason:
+            reasons.append(reason)
+        if norm_backend == "auto":
+            for adapter in (_try_suno_generate, _try_elevenlabs_generate):
+                res, reason = adapter(prompt, duration_sec, out_path)
+                if res is not None:
+                    return res
+                if reason:
+                    reasons.append(reason)
+    elif norm_backend == "suno":
+        res, reason = _try_suno_generate(prompt, duration_sec, out_path)
+        if res is not None:
+            return res
+        reasons.append(reason)
+    elif norm_backend == "elevenlabs":
+        res, reason = _try_elevenlabs_generate(prompt, duration_sec, out_path)
+        if res is not None:
+            return res
+        reasons.append(reason)
+    elif norm_backend in ("fallback", "offline"):
+        reasons.append(f"explicit {norm_backend} backend selected")
+    else:
         raise ValueError(f"Unsupported backend: {backend!r}")
 
     return _synthesize_fallback_wav(
@@ -211,19 +322,234 @@ def generate_stem(
         output_path=out_path,
         key=key,
         bpm=bpm,
+        fallback_reason="; ".join(reasons),
     )
+
+
+def _read_stereo_wav(wav_path: Path) -> tuple[list[float], list[float], int]:
+    """Read a PCM WAV file and return (left, right, sample_rate) in [-1, 1]."""
+    with wave.open(str(wav_path), "rb") as wf:
+        n_channels = wf.getnchannels()
+        sampwidth = wf.getsampwidth()
+        sample_rate = wf.getframerate()
+        n_frames = wf.getnframes()
+        raw = wf.readframes(n_frames)
+
+    if sampwidth != 2:
+        raise ValueError(f"Only 16-bit PCM WAV input is supported by stdlib splitter (got {sampwidth * 8}-bit).")
+
+    samples = array("h")
+    samples.frombytes(raw)
+    inv_scale = 1.0 / 32768.0
+    left: list[float] = []
+    right: list[float] = []
+
+    if n_channels == 1:
+        left = [s * inv_scale for s in samples]
+        right = list(left)
+    else:
+        for i in range(0, len(samples), n_channels):
+            left.append(samples[i] * inv_scale)
+            right.append(samples[i + 1] * inv_scale)
+
+    return (left, right, sample_rate)
+
+
+def _write_stereo_wav(wav_path: Path, left: list[float], right: list[float], sample_rate: int = 44100) -> None:
+    wav_path.parent.mkdir(parents=True, exist_ok=True)
+    pcm = array("h", [0]) * (len(left) * 2)
+    for i, (lv, rv) in enumerate(zip(left, right)):
+        l_clamped = max(-0.98, min(0.98, lv))
+        r_clamped = max(-0.98, min(0.98, rv))
+        pcm[i * 2] = int(l_clamped * 32767.0)
+        pcm[i * 2 + 1] = int(r_clamped * 32767.0)
+
+    with wave.open(str(wav_path), "wb") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm.tobytes())
+
+
+def _try_demucs_separate(input_path: Path, output_dir: Path) -> tuple[dict[str, str] | None, str]:
+    """Optional lazy Demucs CLI/module separation."""
+    demucs_exe = shutil.which("demucs")
+    if demucs_exe is None:
+        return (None, "demucs executable/package not installed")
+
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [demucs_exe, "-o", str(output_dir), str(input_path)],
+            check=True,
+            capture_output=True,
+            timeout=180,
+        )
+        stem_map: dict[str, str] = {}
+        for stem in ("drums", "bass", "vocals", "other"):
+            found = list(output_dir.rglob(f"{stem}.wav"))
+            if found:
+                stem_map[stem] = str(found[0].resolve())
+        if len(stem_map) == 4:
+            return (stem_map, "")
+        return (None, "demucs completed without all 4 stem WAVs")
+    except Exception as exc:
+        return (None, f"demucs separation failed: {exc}")
+
+
+def separate_stems(
+    input_wav: str | Path,
+    output_dir: str | Path,
+    backend: str = "auto",
+) -> dict[str, Any]:
+    """Separate a stereo WAV into 4 stems (drums, bass, vocals, other).
+
+    Uses Demucs when available and falls back cleanly to a zero-dependency
+    4-band / mid-side + transient offline splitter producing stereo 44.1 kHz
+    16-bit WAV stems.
+    """
+    src_path = Path(input_wav)
+    if not src_path.is_file():
+        raise FileNotFoundError(f"Input WAV not found: {src_path}")
+
+    out_root = Path(output_dir)
+    out_root.mkdir(parents=True, exist_ok=True)
+    norm_backend = backend.lower().strip()
+    if norm_backend not in ("auto", "demucs", "offline", "fallback"):
+        raise ValueError(f"Unsupported stem separation backend: {backend!r}")
+
+    fallback_reason = ""
+    if norm_backend in ("auto", "demucs"):
+        demucs_stems, reason = _try_demucs_separate(src_path, out_root)
+        if demucs_stems is not None:
+            return {
+                "backend": "demucs",
+                "backend_used": "demucs",
+                "fallback_reason": "",
+                "output_dir": str(out_root.resolve()),
+                "sample_rate": 44100,
+                "stems": demucs_stems,
+            }
+        fallback_reason = reason
+    else:
+        fallback_reason = f"explicit {norm_backend} backend selected"
+
+    left, right, src_sr = _read_stereo_wav(src_path)
+    target_sr = 44100
+    if src_sr != target_sr and len(left) > 1:
+        new_len = max(1, int(round(len(left) * target_sr / float(src_sr))))
+        resampled_l: list[float] = []
+        resampled_r: list[float] = []
+        ratio = (len(left) - 1) / float(max(1, new_len - 1))
+        for i in range(new_len):
+            pos = i * ratio
+            idx = min(len(left) - 2, int(pos))
+            frac = pos - idx
+            resampled_l.append(left[idx] * (1.0 - frac) + left[idx + 1] * frac)
+            resampled_r.append(right[idx] * (1.0 - frac) + right[idx + 1] * frac)
+        left, right = resampled_l, resampled_r
+
+    n_frames = len(left)
+    lp_bass_a = 1.0 - math.exp((-2.0 * math.pi * 240.0) / target_sr)
+    lp_vox_a = 1.0 - math.exp((-2.0 * math.pi * 3200.0) / target_sr)
+    lp_env_fast = 1.0 - math.exp((-2.0 * math.pi * 120.0) / target_sr)
+    lp_env_slow = 1.0 - math.exp((-2.0 * math.pi * 12.0) / target_sr)
+
+    bass_l = [0.0] * n_frames
+    bass_r = [0.0] * n_frames
+    vox_l = [0.0] * n_frames
+    vox_r = [0.0] * n_frames
+    drums_l = [0.0] * n_frames
+    drums_r = [0.0] * n_frames
+    other_l = [0.0] * n_frames
+    other_r = [0.0] * n_frames
+
+    s_bass_l = s_bass_r = 0.0
+    s_vox_l = s_vox_r = 0.0
+    env_f = env_s = 0.0
+
+    for i in range(n_frames):
+        in_l = left[i]
+        in_r = right[i]
+        mid = 0.5 * (in_l + in_r)
+        side = 0.5 * (in_l - in_r)
+
+        s_bass_l += lp_bass_a * (in_l - s_bass_l)
+        s_bass_r += lp_bass_a * (in_r - s_bass_r)
+
+        s_vox_l += lp_vox_a * (in_l - s_vox_l)
+        s_vox_r += lp_vox_a * (in_r - s_vox_r)
+        mid_band_l = s_vox_l - s_bass_l
+        mid_band_r = s_vox_r - s_bass_r
+
+        amp = abs(mid)
+        env_f += lp_env_fast * (amp - env_f)
+        env_s += lp_env_slow * (amp - env_s)
+        transient = max(0.0, min(1.0, (env_f - env_s) * 4.0 + 0.18))
+
+        high_l = in_l - s_vox_l
+        high_r = in_r - s_vox_r
+
+        bass_l[i] = s_bass_l * 1.15
+        bass_r[i] = s_bass_r * 1.15
+
+        vox_l[i] = 0.72 * mid_band_l + 0.15 * mid
+        vox_r[i] = 0.72 * mid_band_r + 0.15 * mid
+
+        drums_l[i] = transient * (0.55 * s_bass_l + high_l + 0.25 * mid_band_l)
+        drums_r[i] = transient * (0.55 * s_bass_r + high_r + 0.25 * mid_band_r)
+
+        other_l[i] = (1.0 - 0.5 * transient) * (high_l + side * 0.85) + 0.20 * mid_band_l
+        other_r[i] = (1.0 - 0.5 * transient) * (high_r - side * 0.85) + 0.20 * mid_band_r
+
+    stem_buffers = {
+        "drums": (drums_l, drums_r),
+        "bass": (bass_l, bass_r),
+        "vocals": (vox_l, vox_r),
+        "other": (other_l, other_r),
+    }
+
+    stem_paths: dict[str, str] = {}
+    for stem_name, (sl, sr_buf) in stem_buffers.items():
+        dest = out_root / f"{stem_name}.wav"
+        _write_stereo_wav(dest, sl, sr_buf, target_sr)
+        stem_paths[stem_name] = str(dest.resolve())
+
+    return {
+        "backend": "offline_spectral_splitter",
+        "backend_used": "offline_spectral_splitter",
+        "fallback_reason": fallback_reason,
+        "output_dir": str(out_root.resolve()),
+        "sample_rate": target_sr,
+        "stems": stem_paths,
+    }
 
 
 def _main() -> int:
     parser = argparse.ArgumentParser(description="Toxic Creationz Studio AI audio stem worker")
-    parser.add_argument("--prompt", required=True, help="Text prompt describing the musical stem")
+    parser.add_argument("--action", default="generate", choices=["generate", "separate"])
+    parser.add_argument("--prompt", default="", help="Text prompt describing the musical stem")
     parser.add_argument("--duration", type=float, default=4.0, help="Duration in seconds (0.5-60)")
-    parser.add_argument("--output", required=True, help="Destination WAV file path")
-    parser.add_argument("--backend", default="auto", choices=["auto", "arioso", "fallback"])
+    parser.add_argument("--output", default="", help="Destination WAV file or output directory path")
+    parser.add_argument("--input", default="", help="Source WAV file path for stem separation")
+    parser.add_argument(
+        "--backend",
+        default="auto",
+        choices=["auto", "arioso", "suno", "elevenlabs", "demucs", "offline", "fallback"],
+    )
     parser.add_argument("--key", default="Am", help="Musical key (e.g. Am, Cm, F#m)")
     parser.add_argument("--bpm", type=float, default=124.0, help="Tempo in BPM (40-240)")
 
     args = parser.parse_args()
+    if args.action == "separate":
+        if not args.input or not args.output:
+            raise SystemExit("--input and --output are required for --action separate")
+        sep_res = separate_stems(args.input, args.output, backend=args.backend)
+        print(sep_res["output_dir"])
+        return 0
+
+    if not args.prompt or not args.output:
+        raise SystemExit("--prompt and --output are required for --action generate")
     result = generate_stem(
         prompt=args.prompt,
         duration_sec=args.duration,

@@ -3079,6 +3079,164 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-016 TR-808 multi-out, 12-bit ZOH sampler, analog tape & rack.add_module persistence PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-018 Regression Test: AI Co-Producer Scaling (Chords, Scale, LUFS, Dupe)
+    //===========================================================================
+    {
+        const auto wo018Dir = tempDir.getChildFile ("tcs_wo018_smoke");
+        wo018Dir.deleteRecursively();
+        wo018Dir.createDirectory();
+
+        const auto wo018File = wo018Dir.getChildFile ("Wo018Scaling.tracktionedit");
+        app.createNewSession (wo018File, true, false);
+
+        // 1. midi.generate_progression on track 0 (voice-led i - VI - III - VII in C minor)
+        const auto progResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":201,"method":"midi.generate_progression","params":{"track_index":0,"key":"C","scale":"minor","progression":["i","VI","III","VII"],"start_beat":0.0,"beats_per_chord":2.0,"octave":4,"velocity":96,"voice_lead":true}})"));
+
+        if (! progResp["result"].isObject()
+            || static_cast<int> (progResp["result"]["chords_written"]) != 4
+            || static_cast<int> (progResp["result"]["notes_written"]) != 12)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-018 midi.generate_progression result mismatch" << std::endl;
+            return 1;
+        }
+
+        // 2. midi.quantize_scale on a dedicated MIDI track (out-of-scale pitches & off-grid beats)
+        const auto qTrackResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":202,"method":"track.create","params":{"name":"Quantize Test","plugin_type":"4osc"}})"));
+        const int qTrackIdx = static_cast<int> (qTrackResp["result"]["track_index"]);
+
+        const auto addOffResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            "{\"jsonrpc\":\"2.0\",\"id\":203,\"method\":\"midi.add_notes\",\"params\":{\"track_index\":"
+            + juce::String (qTrackIdx)
+            + ",\"clip_name\":\"Quantize Clip\",\"notes\":[{\"pitch\":66,\"start_beat\":0.11,\"length_beats\":0.5,\"velocity\":100},{\"pitch\":64,\"start_beat\":1.39,\"length_beats\":0.5,\"velocity\":90}]}}"));
+        juce::ignoreUnused (addOffResp);
+
+        const auto qResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            "{\"jsonrpc\":\"2.0\",\"id\":204,\"method\":\"midi.quantize_scale\",\"params\":{\"track_index\":"
+            + juce::String (qTrackIdx)
+            + ",\"key\":\"C\",\"scale\":\"minor\",\"grid_beats\":0.25,\"snap_pitch\":true,\"snap_timing\":true}}"));
+
+        if (! qResp["result"].isObject()
+            || static_cast<int> (qResp["result"]["pitch_snapped"]) < 2
+            || static_cast<int> (qResp["result"]["timing_snapped"]) < 2)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-018 midi.quantize_scale snapped counts too low" << std::endl;
+            return 1;
+        }
+
+        {
+            auto tracks = te::getAudioTracks (*app.edit);
+            int verifiedNotes = 0;
+            for (auto* c : tracks[qTrackIdx]->getClips())
+            {
+                if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                {
+                    for (auto* n : mc->getSequence().getNotes())
+                    {
+                        const int p = n->getNoteNumber();
+                        const double sb = n->getStartBeat().inBeats();
+                        const bool expectedMatch = (p == 65 && std::abs (sb - 0.0) < 1e-4)
+                                                || (p == 63 && std::abs (sb - 1.5) < 1e-4);
+                        if (expectedMatch)
+                            ++verifiedNotes;
+                    }
+                }
+            }
+
+            if (verifiedNotes != 2)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-018 quantized pitch/timing values incorrect (matched "
+                          << verifiedNotes << ")" << std::endl;
+                return 1;
+            }
+        }
+
+        // 3. mixer.auto_balance_lufs clamped finite adjustment
+        const auto lufsResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":205,"method":"mixer.auto_balance_lufs","params":{"target_lufs":-14.0,"min_gain_db":-12.0,"max_gain_db":4.5,"headroom_db":-1.0}})"));
+        const auto* adjArr = lufsResp["result"]["tracks_adjusted"].getArray();
+
+        if (adjArr == nullptr || adjArr->isEmpty())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-018 mixer.auto_balance_lufs returned empty list" << std::endl;
+            return 1;
+        }
+
+        for (auto* t : te::getAudioTracks (*app.edit))
+        {
+            if (auto* vol = t->getVolumePlugin())
+            {
+                const float db = vol->getVolumeDb();
+                if (! std::isfinite (db) || db < -12.01f || db > 4.51f)
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-018 track gain out of bounds (" << db << ")" << std::endl;
+                    return 1;
+                }
+            }
+        }
+
+        // 4. arrangement.duplicate_section + mute_drums + save/reload persistence
+        const auto drumResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":206,"method":"track.create","params":{"name":"808 Drum Track","plugin_type":"tr808"}})"));
+        const int drumTrackIdx = static_cast<int> (drumResp["result"]["track_index"]);
+        app.ipcServer.executeJsonRpcOnMessageThread (
+            "{\"jsonrpc\":\"2.0\",\"id\":207,\"method\":\"midi.add_notes\",\"params\":{\"track_index\":"
+            + juce::String (drumTrackIdx)
+            + ",\"clip_name\":\"Drum Groove\",\"notes\":[{\"pitch\":36,\"start_beat\":0.0,\"length_beats\":0.5,\"velocity\":120}]}}");
+
+        const auto dupResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":208,"method":"arrangement.duplicate_section","params":{"start_beat":0.0,"end_beat":4.0,"dest_beat":8.0,"mute_drums":true}})"));
+
+        if (! dupResp["result"].isObject() || static_cast<int> (dupResp["result"]["clips_duplicated"]) < 2)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-018 arrangement.duplicate_section duplicated too few clips" << std::endl;
+            return 1;
+        }
+
+        app.currentEditFile = wo018File;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        juce::String loadError;
+        if (! app.loadSessionFromFileSafely (wo018File, &loadError))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-018 session reload failed: " << loadError << std::endl;
+            return 1;
+        }
+
+        {
+            auto tracks = te::getAudioTracks (*app.edit);
+            bool foundDuplicatedOnQ = false;
+            bool foundDuplicatedOnDrum = false;
+
+            for (auto* c : tracks[qTrackIdx]->getClips())
+            {
+                const double sb = app.edit->tempoSequence.toBeats (c->getPosition().getStart()).inBeats();
+                if (std::abs (sb - 8.0) < 0.05)
+                    foundDuplicatedOnQ = true;
+            }
+
+            for (auto* c : tracks[drumTrackIdx]->getClips())
+            {
+                const double sb = app.edit->tempoSequence.toBeats (c->getPosition().getStart()).inBeats();
+                if (sb >= 7.9)
+                    foundDuplicatedOnDrum = true;
+            }
+
+            if (! foundDuplicatedOnQ || foundDuplicatedOnDrum)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-018 duplicate_section persistence or mute_drums failed" << std::endl;
+                return 1;
+            }
+        }
+
+        app.createNewSession (sessionFile, true, false);
+        wo018Dir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-018 Harmonic progression, scale quantize, LUFS auto-balance & section duplicator PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -3118,6 +3276,7 @@ int MainComponent::runHeadlessSmokeTest()
                  "CV SVF filter DSP, direction-aware rack pins, clip-transpose transcription, "
                  "factory preset bank, .trkpreset round-trip, Sampler 808 kit, multi-machine rack, "
                  "TR-808, 12-bit ZOH sampler, analog tape saturation & rack.add_module persistence, "
+                 "harmonic progression, scale quantize, LUFS auto-balance, section duplicator, "
                  "and VST3 scanner lifecycle verified."
               << std::endl;
     return 0;

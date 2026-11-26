@@ -22,7 +22,7 @@ _MCP_DIR = str(Path(__file__).resolve().parent)
 if _MCP_DIR not in sys.path:
     sys.path.insert(0, _MCP_DIR)
 
-from ai_audio_worker import generate_stem
+from ai_audio_worker import generate_stem, separate_stems
 
 mcp = FastMCP("Toxic Creationz Studio Co-Producer")
 
@@ -35,6 +35,11 @@ _rpc_counter = 0
 def get_generated_stems_dir() -> Path:
     """Directory where out-of-process generated AI stems are stored."""
     return Path.home() / "Documents" / "Toxic Creationz Studio" / "GeneratedStems"
+
+
+def get_separated_stems_dir() -> Path:
+    """Directory where out-of-process separated stems are stored."""
+    return Path.home() / "Documents" / "Toxic Creationz Studio" / "SeparatedStems"
 
 
 class MidiNote(BaseModel):
@@ -490,6 +495,140 @@ async def add_rack_module(
             "y": y,
         },
     )
+
+
+@mcp.tool()
+async def generate_chord_progression(
+    track_index: int = 0,
+    key: str = "C",
+    scale: str = "minor",
+    progression: list[str] | None = None,
+    start_beat: float = 0.0,
+    beats_per_chord: float = 4.0,
+    octave: int = 4,
+    velocity: int = 96,
+    voice_lead: bool = True,
+) -> dict[str, Any]:
+    """Generate a Roman-numeral voice-led chord progression on a MIDI/instrument track."""
+    return await send_daw_rpc(
+        "midi.generate_progression",
+        {
+            "track_index": max(0, track_index),
+            "key": key.strip() or "C",
+            "scale": scale.strip().lower() or "minor",
+            "progression": progression or ["i", "VI", "III", "VII"],
+            "start_beat": max(0.0, start_beat),
+            "beats_per_chord": max(0.25, min(32.0, beats_per_chord)),
+            "octave": max(1, min(7, octave)),
+            "velocity": max(1, min(127, velocity)),
+            "voice_lead": voice_lead,
+        },
+    )
+
+
+@mcp.tool()
+async def quantize_track_to_scale(
+    track_index: int = 0,
+    key: str = "C",
+    scale: str = "minor",
+    grid_beats: float = 0.25,
+    snap_pitch: bool = True,
+    snap_timing: bool = True,
+) -> dict[str, Any]:
+    """Snap MIDI notes on a track into a musical scale and/or beat grid."""
+    return await send_daw_rpc(
+        "midi.quantize_scale",
+        {
+            "track_index": max(0, track_index),
+            "key": key.strip() or "C",
+            "scale": scale.strip().lower() or "minor",
+            "grid_beats": max(0.03125, min(4.0, grid_beats)),
+            "snap_pitch": snap_pitch,
+            "snap_timing": snap_timing,
+        },
+    )
+
+
+@mcp.tool()
+async def auto_balance_mix_lufs(
+    target_lufs: float = -14.0,
+    max_gain_db: float = 6.0,
+    min_gain_db: float = -18.0,
+    headroom_db: float = -1.0,
+) -> dict[str, Any]:
+    """Gain-balance non-muted mixer tracks toward a target LUFS loudness with headroom clamping."""
+    clamped_min = max(-60.0, min(6.0, min_gain_db))
+    clamped_max = max(clamped_min, min(6.0, max_gain_db))
+    return await send_daw_rpc(
+        "mixer.auto_balance_lufs",
+        {
+            "target_lufs": max(-40.0, min(-3.0, target_lufs)),
+            "max_gain_db": clamped_max,
+            "min_gain_db": clamped_min,
+            "headroom_db": max(-12.0, min(0.0, headroom_db)),
+        },
+        timeout=10.0,
+    )
+
+
+@mcp.tool()
+async def duplicate_arrangement_section(
+    start_beat: float,
+    end_beat: float,
+    dest_beat: float,
+    track_indices: list[int] | None = None,
+    mute_drums: bool = False,
+) -> dict[str, Any]:
+    """Duplicate MIDI and audio clip sections in [start_beat, end_beat) to dest_beat."""
+    params: dict[str, Any] = {
+        "start_beat": max(0.0, start_beat),
+        "end_beat": max(0.25, end_beat),
+        "dest_beat": max(0.0, dest_beat),
+        "mute_drums": mute_drums,
+    }
+    if track_indices is not None:
+        params["track_indices"] = [max(0, i) for i in track_indices]
+    return await send_daw_rpc("arrangement.duplicate_section", params, timeout=10.0)
+
+
+@mcp.tool()
+async def separate_audio_stems(
+    input_wav: str,
+    import_to_daw: bool = True,
+    start_beat: float = 0.0,
+    backend: str = "auto",
+) -> dict[str, Any]:
+    """Separate an audio WAV into drums/bass/vocals/other stems via Demucs or offline splitter and optionally import into tracks."""
+    src = Path(input_wav)
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", src.stem).strip("_")[:32] or "mix"
+    out_dir = get_separated_stems_dir() / f"{slug}_{int(time.time() * 1000)}"
+
+    sep_meta = await asyncio.to_thread(separate_stems, src, out_dir, backend)
+    imported: list[dict[str, Any]] = []
+
+    if import_to_daw:
+        clamped_start = max(0.0, start_beat)
+        for stem_name in ("drums", "bass", "vocals", "other"):
+            stem_path = sep_meta["stems"].get(stem_name)
+            if not stem_path:
+                continue
+            track_res = await send_daw_rpc(
+                "track.create",
+                {"name": f"{slug} ({stem_name.capitalize()})", "plugin_type": "none"},
+            )
+            imp_res = await send_daw_rpc(
+                "audio.import_file",
+                {
+                    "track_index": track_res["track_index"],
+                    "file_path": stem_path,
+                    "start_beat": clamped_start,
+                    "clip_name": f"{slug}_{stem_name}",
+                },
+                timeout=15.0,
+            )
+            imported.append(imp_res)
+
+    return {"separation": sep_meta, "imported": imported}
 
 
 if __name__ == "__main__":
