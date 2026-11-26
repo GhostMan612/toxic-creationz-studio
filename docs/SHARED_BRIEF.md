@@ -12,8 +12,8 @@
   Oboe define (now applied to `tcs_core`), made the `basic_pitch` fallback return an
   explicit `status: unavailable`, hardened `package-windows.ps1` + Windows CI against
   zero-filled executables, enabled cross-platform CI on pull requests, and refreshed
-  the README/Android guide. Known scope boundary: `auto_balance_lufs` is an
-  RMS/peak-based estimate, not BS.1770 gated LUFS; a runnable Android client (JNI/Oboe
+  the README/Android guide. `auto_balance_lufs` now measures BS.1770-style
+  K-weighted gated LUFS via `src/LoudnessMeter.h`; a runnable Android client (JNI/Oboe
   app + touch UI) remains next-phase work, not a WO-020 deliverable.
 - Continuous Dev (`dev/v1-complete`, branched from `918625a`): `WO-012` (`4268ada`), `WO-013` (`cc59e83`),
   `WO-014` (`08a89a1`), `WO-015` (`16522de`), `WO-016` (`6ecc571`), `WO-017` (`43eb2e0`),

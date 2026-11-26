@@ -2,6 +2,7 @@
 #include "AudioToMidiTranscriber.h"
 #include "CoreIsolationCheck.h"
 #include "HardwareRackPlugins.h"
+#include "LoudnessMeter.h"
 #include "PlatformConfig.h"
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
@@ -3540,6 +3541,31 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-020 " << backendName
                   << " backend, VST3=" << TCS_HAS_DESKTOP_VST3
                   << " and isolated core type IDs PASS" << std::endl;
+    }
+
+    //===========================================================================
+    // BS.1770-style K-weighted gated loudness meter regression
+    //===========================================================================
+    {
+        constexpr double sampleRate = 48000.0;
+        constexpr double toneHz = 1000.0;
+        tcs::loudness::KWeightedLoudnessMeter meter (sampleRate, 1);
+
+        for (int i = 0; i < 96000; ++i)
+        {
+            const double t = static_cast<double> (i) / sampleRate;
+            const float sample = static_cast<float> (0.5 * std::sin (juce::MathConstants<double>::twoPi * toneHz * t));
+            meter.processFrame (sample, 0.0f);
+        }
+
+        const double lufs = meter.getLoudnessLufs();
+        if (! std::isfinite (lufs) || lufs < -15.0 || lufs > -4.0)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: BS.1770 meter returned " << lufs << " LUFS for a -6 dBFS tone" << std::endl;
+            return 1;
+        }
+
+        std::cout << "[SMOKE_TEST] BS.1770 K-weighted gated LUFS meter PASS (" << lufs << " LUFS)" << std::endl;
     }
 
     //===========================================================================
