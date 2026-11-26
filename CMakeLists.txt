@@ -78,6 +78,10 @@ target_link_libraries(tcs_core PUBLIC
     juce::juce_events
     juce::juce_recommended_config_flags
 )
+if(UNIX AND NOT APPLE AND NOT ANDROID)
+    # GCC on Linux needs libatomic for 64-bit atomics emitted by tracktion/JUCE.
+    target_link_libraries(tcs_core PUBLIC atomic)
+endif()
 
 #-------------------------------------------------------------------------------
 # 4. Compile-time core-boundary proof. Built with VST3 off and no desktop UI.
@@ -177,6 +181,7 @@ if(TCS_BUILD_DESKTOP_APP)
                 alsa freetype2 x11 xrandr xinerama xcursor gl)
         endif()
         target_compile_definitions(AIDAW PRIVATE JUCE_ALSA=1 JUCE_JACK=1)
+        target_link_libraries(AIDAW PRIVATE atomic)
     elseif(ANDROID)
         target_compile_definitions(AIDAW PRIVATE JUCE_USE_ANDROID_OBOE=1 JUCE_PLUGINHOST_VST3=0)
     endif()

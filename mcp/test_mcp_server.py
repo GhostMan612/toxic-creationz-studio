@@ -697,6 +697,8 @@ class McpWorkerTests(unittest.TestCase):
         isolation_block = cmake_text.split("add_library(tcs_core_isolation STATIC", 1)[1].split("endif()", 1)[0]
         for definition in ("JUCE_USE_CURL=0", "JUCE_WEB_BROWSER=0", "JUCE_PLUGINHOST_VST3=0"):
             self.assertIn(definition, isolation_block)
+        self.assertIn("target_link_libraries(tcs_core PUBLIC atomic)", cmake_text)
+        self.assertIn("target_link_libraries(AIDAW PRIVATE atomic)", cmake_text)
 
     def test_cross_platform_workflow_parses(self) -> None:
         workflow = _MCP_DIR.parent / ".github" / "workflows" / "cross-platform-build.yml"
