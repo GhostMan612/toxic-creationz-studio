@@ -89,6 +89,9 @@ if(TCS_BUILD_CORE_ISOLATION_CHECK)
     target_compile_definitions(tcs_core_isolation PRIVATE
         TCS_ENABLE_DESKTOP_VST3=0
         TCS_CORE_ISOLATION=1
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        JUCE_PLUGINHOST_VST3=0
     )
     target_link_libraries(tcs_core_isolation PUBLIC tcs_core)
 endif()

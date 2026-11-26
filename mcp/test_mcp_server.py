@@ -694,17 +694,23 @@ class McpWorkerTests(unittest.TestCase):
             self.assertIn(option, cmake_text)
         self.assertIn("add_library(tcs_core STATIC", cmake_text)
         self.assertIn("add_library(tcs_core_isolation STATIC", cmake_text)
+        isolation_block = cmake_text.split("add_library(tcs_core_isolation STATIC", 1)[1].split("endif()", 1)[0]
+        for definition in ("JUCE_USE_CURL=0", "JUCE_WEB_BROWSER=0", "JUCE_PLUGINHOST_VST3=0"):
+            self.assertIn(definition, isolation_block)
 
     def test_cross_platform_workflow_parses(self) -> None:
         workflow = _MCP_DIR.parent / ".github" / "workflows" / "cross-platform-build.yml"
         text = workflow.read_text(encoding="utf-8")
 
         self.assertNotIn("\t", text)
-        for marker in ("name:", "on:", "workflow_dispatch:", "jobs:", "runs-on: macos-14",
+        for marker in ("name:", "on:", "workflow_dispatch:", "jobs:", "runs-on: macos-15",
                        "runs-on: ubuntu-22.04", "python3 -B -m unittest discover"):
             self.assertIn(marker, text)
+        self.assertNotIn("runs-on: macos-14", text)
         self.assertNotIn("runs-on: windows-latest", text)
         self.assertIn("tcs_core_isolation AIDAW", text)
+        for apt_dep in ("libxi-dev", "libcurl4-openssl-dev", "libxext-dev"):
+            self.assertIn(apt_dep, text)
 
 
 if __name__ == "__main__":
