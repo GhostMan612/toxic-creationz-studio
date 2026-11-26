@@ -1536,6 +1536,8 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         else if (rawType == "cv_lfo") xmlType = CvLfoPlugin::xmlTypeName;
         else if (rawType == "cv_wobble") xmlType = CvWobbleFilterPlugin::xmlTypeName;
         else if (rawType == "cv_splitter") xmlType = CvUtilityPlugin::xmlTypeName;
+        else if (rawType == "cv_envelope" || rawType == "cv_envelope_follower") xmlType = CvEnvelopeFollowerPlugin::xmlTypeName;
+        else if (rawType == "cv_step" || rawType == "cv_step_modulator") xmlType = CvStepModulatorPlugin::xmlTypeName;
         else if (rawType == "sidechain_comp") xmlType = SidechainCompressorPlugin::xmlTypeName;
         else
             return makeErrorResponse (id, -32602, "Unsupported machine_type: " + rawType);
@@ -1603,6 +1605,8 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         if (rawType == "cv_lfo")                        xmlType = CvLfoPlugin::xmlTypeName;
         else if (rawType == "cv_filter" || rawType == "cv_wobble") xmlType = CvWobbleFilterPlugin::xmlTypeName;
         else if (rawType == "cv_splitter")               xmlType = CvUtilityPlugin::xmlTypeName;
+        else if (rawType == "cv_envelope" || rawType == "cv_envelope_follower") xmlType = CvEnvelopeFollowerPlugin::xmlTypeName;
+        else if (rawType == "cv_step" || rawType == "cv_step_modulator") xmlType = CvStepModulatorPlugin::xmlTypeName;
         else if (rawType == "tr808")                     xmlType = Tr808DrumPlugin::xmlTypeName;
         else if (rawType == "sampler")                   xmlType = VintageSamplerPlugin::xmlTypeName;
         else if (rawType == "tape")                      xmlType = AnalogTapePlugin::xmlTypeName;

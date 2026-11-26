@@ -542,6 +542,7 @@ def transcribe_polyphonic_basic_pitch(
 
     midi_path = Path(output_midi) if output_midi else src.with_suffix(".mid")
     fallback: dict[str, Any] = {
+        "status": "unavailable",
         "backend_used": "cpp_polyphonic_fallback",
         "fallback_reason": "",
         "input_wav": str(src),
@@ -579,6 +580,7 @@ def transcribe_polyphonic_basic_pitch(
             written = ""
 
         return {
+            "status": "ok",
             "backend_used": "basic_pitch",
             "fallback_reason": "",
             "input_wav": str(src),

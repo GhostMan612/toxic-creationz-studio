@@ -3,6 +3,18 @@
 - Merged (PRs #1-#11): WO-001 through WO-011 on `main` (`c632f8c`, PR #11 merge of WO-011 `918625a`).
 - Merged (PR #12): WO-012 through WO-020 from `dev/v1-complete` into `main` — continuous-build batch
   reconciled; zero open PRs remain.
+- Merged (PRs #13-#16): cross-platform CI repairs — Linux XInput2 headers, `macos-15`
+  runner label, Linux core-isolation build fixes, and `libatomic` link. `main` @ `3ef620c`
+  is green on both Windows and cross-platform workflows.
+- Full repo sweep / reconciliation (local on `fix/repo-sweep-reconciliation`): verified
+  WO-001..WO-020 against source; restored the two unimplemented briefing CV modules
+  (`CvEnvelopeFollowerPlugin`, `CvStepModulatorPlugin`), fixed the unreachable Android
+  Oboe define (now applied to `tcs_core`), made the `basic_pitch` fallback return an
+  explicit `status: unavailable`, hardened `package-windows.ps1` + Windows CI against
+  zero-filled executables, enabled cross-platform CI on pull requests, and refreshed
+  the README/Android guide. `auto_balance_lufs` now measures BS.1770-style
+  K-weighted gated LUFS via `src/LoudnessMeter.h`; a runnable Android client (JNI/Oboe
+  app + touch UI) remains next-phase work, not a WO-020 deliverable.
 - Continuous Dev (`dev/v1-complete`, branched from `918625a`): `WO-012` (`4268ada`), `WO-013` (`cc59e83`),
   `WO-014` (`08a89a1`), `WO-015` (`16522de`), `WO-016` (`6ecc571`), `WO-017` (`43eb2e0`),
   `Hardware Rack Suite` (`525d672` + `0780725`), `WO-018` (`d424c5e`), `WO-019` (`e5000ab`)

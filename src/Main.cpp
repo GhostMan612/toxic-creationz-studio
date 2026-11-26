@@ -3568,6 +3568,40 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] BS.1770 K-weighted gated LUFS meter PASS (" << lufs << " LUFS)" << std::endl;
     }
 
+    //===========================================================================
+    // Blueprint Reconciliation: original briefing CV modules never implemented
+    //===========================================================================
+    {
+        auto* edit = app.edit.get();
+        auto blueprintRack = edit->getRackList().addNewRack();
+        blueprintRack->rackName = "CV Blueprint Modules";
+
+        auto envPtr  = edit->getPluginCache().createNewPlugin (CvEnvelopeFollowerPlugin::xmlTypeName, {});
+        auto stepPtr = edit->getPluginCache().createNewPlugin (CvStepModulatorPlugin::xmlTypeName, {});
+
+        if (envPtr == nullptr || stepPtr == nullptr
+            || dynamic_cast<CvEnvelopeFollowerPlugin*> (envPtr.get()) == nullptr
+            || dynamic_cast<CvStepModulatorPlugin*> (stepPtr.get()) == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: CV envelope follower / step modulator failed to instantiate" << std::endl;
+            return 1;
+        }
+
+        if (! blueprintRack->addPlugin (envPtr,  { 0.22f, 0.30f }, false)
+            || ! blueprintRack->addPlugin (stepPtr, { 0.52f, 0.30f }, false)
+            || blueprintRack->getPlugins().size() != 2)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: CV blueprint modules could not be added to the rack" << std::endl;
+            return 1;
+        }
+
+        envPtr = nullptr;
+        stepPtr = nullptr;
+        blueprintRack = nullptr;
+
+        std::cout << "[SMOKE_TEST] CV envelope follower & 8-step modulator blueprint modules PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -3609,7 +3643,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "TR-808, 12-bit ZOH sampler, analog tape saturation & rack.add_module persistence, "
                  "harmonic progression, scale quantize, LUFS auto-balance, section duplicator, "
                  "sidechain Pin 3/4 ducking, multi-take comping, polyphonic audio-to-MIDI, "
-                 "cross-platform core isolation, and VST3 scanner lifecycle verified."
+                 "cross-platform core isolation, VST3 scanner lifecycle, and the original CV envelope/step "
+                 "blueprint modules verified."
               << std::endl;
     return 0;
 }

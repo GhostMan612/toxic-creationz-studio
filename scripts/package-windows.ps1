@@ -10,6 +10,18 @@ if (-not (Test-Path $ExePath)) {
     throw "Compiled executable not found at $ExePath"
 }
 
+# A zero-filled / partially linked exe passes Test-Path but silently poisons
+# the portable release. Verify the PE MZ signature before packaging.
+$Stream = [System.IO.File]::OpenRead((Resolve-Path $ExePath).Path)
+try {
+    $Header = New-Object byte[] 2
+    if ($Stream.Read($Header, 0, 2) -ne 2 -or $Header[0] -ne 0x4D -or $Header[1] -ne 0x5A) {
+        throw "Compiled executable is not a valid PE image: $ExePath"
+    }
+} finally {
+    $Stream.Dispose()
+}
+
 $StageDir = Join-Path $OutputDir "ToxicCreationzStudio-win64"
 $ZipPath  = Join-Path $OutputDir "ToxicCreationzStudio-win64.zip"
 
@@ -28,4 +40,13 @@ if (Test-Path "README.md") {
 }
 
 Compress-Archive -Path "$StageDir\*" -DestinationPath $ZipPath -Force
+
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$Archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $ZipPath).Path)
+try {
+    if ($Archive.Entries.Count -lt 1) { throw "Release zip has no entries: $ZipPath" }
+} finally {
+    $Archive.Dispose()
+}
+
 Write-Host "[PACKAGE] Created $ZipPath ($((Get-Item $ZipPath).Length) bytes)" -ForegroundColor Green
