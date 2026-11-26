@@ -714,6 +714,15 @@ class McpWorkerTests(unittest.TestCase):
         for apt_dep in ("libxi-dev", "libcurl4-openssl-dev", "libxext-dev"):
             self.assertIn(apt_dep, text)
 
+    def test_lufs_meter_is_bs1770_gated(self) -> None:
+        header = (_MCP_DIR.parent / "src" / "LoudnessMeter.h").read_text(encoding="utf-8")
+        for marker in ("makeHighShelf", "makeHighPass", "1681.974f", "38.0f",
+                       "absoluteGate", "relativeGate", "-0.691"):
+            self.assertIn(marker, header)
+        server = (_MCP_DIR.parent / "src" / "DawIpcServer.cpp").read_text(encoding="utf-8")
+        self.assertIn("KWeightedLoudnessMeter", server)
+        self.assertIn("bs1770_k_weighted_gated", server)
+
 
 if __name__ == "__main__":
     unittest.main()

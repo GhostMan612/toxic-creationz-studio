@@ -3,6 +3,7 @@
 #include "AudioToMidiTranscriber.h"
 #include "AutomationManager.h"
 #include "HardwareRackPlugins.h"
+#include "LoudnessMeter.h"
 #include "MixdownExporter.h"
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
@@ -1887,13 +1888,12 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
             if (vol == nullptr)
                 continue;
 
-            float measuredRmsDb  = -18.0f;
+            float measuredLufsDb = -18.0f;
             float measuredPeakDb = -6.0f;
             bool measuredFromAudio = false;
 
-            double sumSquares = 0.0;
-            juce::int64 totalFrames = 0;
             float maxAbsPeak = 0.0f;
+            std::unique_ptr<tcs::loudness::KWeightedLoudnessMeter> meter;
 
             for (auto* c : track->getClips())
             {
@@ -1915,40 +1915,40 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
                         if (reader->read (&tmp, 0, toRead, 0, true, numCh > 1))
                         {
                             const float clipGain = wc->getGain();
-                            for (int ch = 0; ch < numCh; ++ch)
+                            if (meter == nullptr)
+                                meter = std::make_unique<tcs::loudness::KWeightedLoudnessMeter> (reader->sampleRate, numCh);
+
+                            const float* l = tmp.getReadPointer (0);
+                            const float* r = numCh > 1 ? tmp.getReadPointer (1) : nullptr;
+                            for (int s = 0; s < toRead; ++s)
                             {
-                                const float* data = tmp.getReadPointer (ch);
-                                for (int s = 0; s < toRead; ++s)
-                                {
-                                    const float v = data[s] * clipGain;
-                                    sumSquares += static_cast<double> (v) * static_cast<double> (v);
-                                    maxAbsPeak = std::max (maxAbsPeak, std::abs (v));
-                                }
+                                const float lv = l[s] * clipGain;
+                                const float rv = r != nullptr ? r[s] * clipGain : 0.0f;
+                                maxAbsPeak = std::max (maxAbsPeak, std::max (std::abs (lv), std::abs (rv)));
+                                meter->processFrame (lv, rv);
                             }
-                            totalFrames += static_cast<juce::int64> (toRead) * numCh;
                         }
                     }
                 }
             }
 
-            if (totalFrames > 0)
+            if (meter != nullptr)
             {
-                const float rms = static_cast<float> (std::sqrt (sumSquares / static_cast<double> (totalFrames)));
-                measuredRmsDb  = juce::jlimit (-60.0f, 0.0f, juce::Decibels::gainToDecibels (std::max (1.0e-4f, rms)) - 0.691f);
+                measuredLufsDb = juce::jlimit (-70.0f, 0.0f, static_cast<float> (meter->getLoudnessLufs()));
                 measuredPeakDb = juce::jlimit (-60.0f, 0.0f, juce::Decibels::gainToDecibels (std::max (1.0e-4f, maxAbsPeak)));
                 measuredFromAudio = true;
             }
-            else if (auto* meter = track->pluginList.findFirstPluginOfType<te::LevelMeterPlugin>())
+            else if (auto* levelMeterPlugin = track->pluginList.findFirstPluginOfType<te::LevelMeterPlugin>())
             {
                 te::LevelMeasurer::Client tmpClient;
-                meter->measurer.addClient (tmpClient);
+                levelMeterPlugin->measurer.addClient (tmpClient);
                 const float lDb = tmpClient.getAndClearAudioLevel (0).dB;
                 const float rDb = tmpClient.getAndClearAudioLevel (1).dB;
-                meter->measurer.removeClient (tmpClient);
+                levelMeterPlugin->measurer.removeClient (tmpClient);
                 const float activeDb = std::max (lDb, rDb);
                 if (std::isfinite (activeDb) && activeDb > -55.0f)
                 {
-                    measuredRmsDb  = juce::jlimit (-60.0f, 0.0f, activeDb - 0.691f);
+                    measuredLufsDb  = juce::jlimit (-60.0f, 0.0f, activeDb - 0.691f);
                     measuredPeakDb = juce::jlimit (-60.0f, 0.0f, activeDb);
                     measuredFromAudio = true;
                 }
@@ -1974,13 +1974,13 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
                 if (noteCnt > 0)
                 {
                     const float avgVel = juce::jlimit (0.1f, 1.0f, static_cast<float> (velSum / noteCnt));
-                    measuredRmsDb  = juce::jlimit (-36.0f, -6.0f, -20.0f + 12.0f * avgVel);
-                    measuredPeakDb = measuredRmsDb + 6.0f;
+                    measuredLufsDb  = juce::jlimit (-36.0f, -6.0f, -20.0f + 12.0f * avgVel);
+                    measuredPeakDb = measuredLufsDb + 6.0f;
                 }
             }
 
             const float curVolDb     = std::isfinite (vol->getVolumeDb()) ? vol->getVolumeDb() : 0.0f;
-            const float desiredGain  = targetLufs - measuredRmsDb;
+            const float desiredGain  = targetLufs - measuredLufsDb;
             const float peakCapGain  = headroomDb - measuredPeakDb;
             const float safeApplied  = juce::jlimit (minGainDb, maxGainDb, std::min (desiredGain, peakCapGain));
             juce::ignoreUnused (curVolDb);
@@ -1990,7 +1990,7 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
             auto* tObj = new juce::DynamicObject();
             tObj->setProperty ("track_index", i);
             tObj->setProperty ("name", track->getName());
-            tObj->setProperty ("measured_db", measuredRmsDb);
+            tObj->setProperty ("measured_db", measuredLufsDb);
             tObj->setProperty ("applied_db", safeApplied);
             adjustedArr.add (juce::var (tObj));
         }
@@ -2000,6 +2000,7 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
 
         auto* out = new juce::DynamicObject();
         out->setProperty ("target_lufs", targetLufs);
+        out->setProperty ("measurement", "bs1770_k_weighted_gated");
         out->setProperty ("tracks_adjusted", adjustedArr);
         return makeResultResponse (id, juce::var (out));
     }
