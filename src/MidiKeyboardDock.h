@@ -17,12 +17,15 @@ public:
 
     void setEdit (te::Edit* newEdit);
     void syncFromEdit();
+    void focusKeyboard();
+    void focusGained (FocusChangeType cause) override;
 
     // Deterministic helper used by Step Rec and --smoke-test.
     bool recordStepNote (int midiNoteNumber, int velocity = 105, double stepBeats = 0.5);
 
     std::function<void()> onNotesRecorded;
     std::function<double()> getStepBeatsCallback;
+    std::function<void (const juce::MidiMessage&)> onLiveMidiMessage;
 
     void paint (juce::Graphics& g) override;
     void resized() override;

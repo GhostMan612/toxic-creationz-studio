@@ -5,6 +5,7 @@
 #include <tracktion_engine/tracktion_engine.h>
 
 #include "RiffLibrary.h"
+#include "RecordingManager.h"
 
 #include <atomic>
 #include <deque>
@@ -27,7 +28,7 @@ namespace te = tracktion::engine;
 class DawIpcServer : private juce::Thread
 {
 public:
-    explicit DawIpcServer (RiffLibrary& targetRiffLibrary);
+    DawIpcServer (RiffLibrary& targetRiffLibrary, RecordingManager& targetRecordingManager);
     ~DawIpcServer() override;
 
     void setEdit (te::Edit* newEdit);
@@ -72,12 +73,16 @@ private:
     static juce::String makeErrorResponse (const juce::var& id, int code, const juce::String& msg);
 
     RiffLibrary& riffLibrary;
+    RecordingManager& recordingManager;
     te::Edit* edit = nullptr;
 
     juce::StreamingSocket serverSocket;
 
     std::atomic<bool> listening { false };
     std::atomic<int> boundPort { 0 };
+    std::shared_ptr<std::atomic<bool>> aliveFlag { std::make_shared<std::atomic<bool>> (true) };
+
+    static constexpr size_t maxJsonFrameBytes = 4 * 1024 * 1024;
 
     std::mutex queueMutex;
     std::deque<PendingRpcRequest> pendingQueue;

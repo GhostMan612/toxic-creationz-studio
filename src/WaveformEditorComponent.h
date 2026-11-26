@@ -52,6 +52,7 @@ public:
     static juce::File getDefaultTakesDirectory (const juce::File& currentEditFile);
 
     std::function<void (const juce::String& /*statusMessage*/)> onWaveformBounced;
+    std::function<void (int /*trackIndex*/, tracktion::EditItemID /*clipID*/, int /*noteCount*/)> onTranscribedToMidi;
     std::function<juce::File()> getTakesDirectoryCallback;
 
     void paint (juce::Graphics& g) override;
@@ -84,12 +85,13 @@ private:
     double dragAnchorNorm = 0.0;
 
     juce::Label titleLabel;
-    juce::TextButton normalizeButton { "Normalize" };
-    juce::TextButton reverseButton   { "Reverse" };
+    juce::TextButton normalizeButton { "Norm" };
+    juce::TextButton reverseButton   { "Rev" };
     juce::TextButton fadeInButton    { "Fade In" };
     juce::TextButton fadeOutButton   { "Fade Out" };
     juce::TextButton silenceButton   { "Silence" };
-    juce::TextButton selectAllButton { "Select All" };
+    juce::TextButton selectAllButton { "All" };
+    juce::TextButton toMidiButton    { "To MIDI" };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveformEditorComponent)
 };

@@ -1,4 +1,9 @@
 #include "MixerComponent.h"
+#include "AutomationManager.h"
+#include "CvRackPlugins.h"
+#include "HardwareRackPlugins.h"
+#include "PluginPresetManager.h"
+#include "SidechainCompressorPlugin.h"
 
 //==============================================================================
 // ChannelStrip
@@ -19,13 +24,19 @@ MixerComponent::ChannelStrip::ChannelStrip (MixerComponent& ownerMixer,
 
     addAndMakeVisible (muteButton);
     addAndMakeVisible (soloButton);
+    addAndMakeVisible (armButton);
     addAndMakeVisible (addPluginButton);
+    addAndMakeVisible (inputSelector);
 
     muteButton.setClickingTogglesState (true);
     soloButton.setClickingTogglesState (true);
+    armButton.setClickingTogglesState (true);
     muteButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffd9534f));
     soloButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xfff0ad4e));
     soloButton.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+    armButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffdc2626));
+    armButton.setTooltip ("Arm track for recording");
+    inputSelector.setTooltip ("Track recording input source");
 
     muteButton.onClick = [this]
     {
@@ -43,6 +54,30 @@ MixerComponent::ChannelStrip::ChannelStrip (MixerComponent& ownerMixer,
         if (auto* t = resolveTrack())
         {
             t->setSolo (soloButton.getToggleState());
+
+            if (owner.onMixerChanged != nullptr)
+                owner.onMixerChanged();
+        }
+    };
+
+    armButton.onClick = [this]
+    {
+        if (auto* t = resolveTrack())
+        {
+            RecordingManager::setTrackArmed (edit, *t, armButton.getToggleState());
+            syncState();
+
+            if (owner.onMixerChanged != nullptr)
+                owner.onMixerChanged();
+        }
+    };
+
+    inputSelector.onChange = [this]
+    {
+        if (auto* t = resolveTrack())
+        {
+            if (owner.recordingManager != nullptr)
+                owner.recordingManager->setTrackInputName (edit, *t, inputSelector.getText());
 
             if (owner.onMixerChanged != nullptr)
                 owner.onMixerChanged();
@@ -225,6 +260,29 @@ void MixerComponent::ChannelStrip::syncState()
     titleLabel.setText (juce::String (trackIndex + 1) + ". " + t->getName(), juce::dontSendNotification);
     muteButton.setToggleState (t->isMuted (false), juce::dontSendNotification);
     soloButton.setToggleState (t->isSolo (false), juce::dontSendNotification);
+    armButton.setToggleState (RecordingManager::isTrackArmed (*t), juce::dontSendNotification);
+
+    juce::StringArray options;
+    if (owner.recordingManager != nullptr)
+    {
+        options = owner.recordingManager->getAllInputOptions();
+    }
+    else
+    {
+        options.add ("None");
+        options.add ("Virtual MIDI");
+    }
+
+    const juce::String currentInput = RecordingManager::getTrackInputName (*t);
+    if (! options.contains (currentInput))
+        options.add (currentInput);
+
+    inputSelector.clear (juce::dontSendNotification);
+    for (int i = 0; i < options.size(); ++i)
+        inputSelector.addItem (options[i], i + 1);
+
+    const int chosenIdx = std::max (0, options.indexOf (currentInput));
+    inputSelector.setSelectedId (chosenIdx + 1, juce::dontSendNotification);
 
     if (auto* vol = t->getVolumePlugin())
     {
@@ -282,8 +340,8 @@ void MixerComponent::ChannelStrip::pollMeter()
 
 int MixerComponent::ChannelStrip::getMinimumHeight() const
 {
-    // Title + M/S/add row + 21px per plugin slot + 3 EQ rows + pan + minimum fader + dB label + insets.
-    return 191 + 21 * static_cast<int> (pluginSlots.size());
+    // Title + M/S/R/add row + input picker + 21px per plugin slot + 3 EQ rows + pan + minimum fader + dB label + insets.
+    return 215 + 21 * static_cast<int> (pluginSlots.size());
 }
 
 void MixerComponent::ChannelStrip::rebuildPluginSlots()
@@ -358,9 +416,34 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
     juce::PopupMenu menu;
     menu.addSectionHeader ("Built-In Instruments");
     menu.addItem (1, "4OSC Synthesizer");
+    menu.addItem (10, "Multi-Sampler (808 + Synth Kit)");
+    menu.addSeparator();
+    menu.addSectionHeader ("Hardware Rack Suite");
+    menu.addItem (16, "TR-808 Drum Synth");
+    menu.addItem (17, "12-Bit Vintage Sampler");
+    menu.addItem (18, "Analog Tape Deck");
+    menu.addItem (19, "Sidechain Compressor");
     menu.addSeparator();
     menu.addSectionHeader ("Built-In Effects");
     menu.addItem (2, "4-Band Equaliser (EQ)");
+    menu.addItem (11, "Compressor");
+    menu.addItem (12, "Chorus");
+    menu.addItem (13, "Phaser");
+    menu.addItem (14, "Low-Pass Filter");
+    menu.addItem (15, "Pitch Shifter");
+    menu.addItem (3, "Reverb");
+    menu.addItem (4, "Delay");
+    menu.addSeparator();
+    menu.addSectionHeader ("Aux FX Buses");
+    menu.addItem (5, "Aux Send -> FX Bus 1 (Reverb)");
+    menu.addItem (6, "Aux Send -> FX Bus 2 (Delay)");
+    menu.addSeparator();
+    menu.addSectionHeader ("Modular Racks");
+    menu.addItem (49, "Insert New CV Wobble Rack");
+
+    const auto& existingRacks = edit.getRackList().getTypes();
+    for (int i = 0; i < existingRacks.size() && i < 40; ++i)
+        menu.addItem (50 + i, "Rack: " + existingRacks.getUnchecked (i)->rackName.get());
 
     const auto vstTypes = engine.getPluginManager().knownPluginList.getTypes();
 
@@ -402,6 +485,111 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
                 safeThis->edit.getUndoManager().beginNewTransaction ("Add Track EQ");
                 if (auto eq = safeThis->edit.getPluginCache().createNewPlugin (te::EqualiserPlugin::xmlTypeName, {}))
                     tr->pluginList.insertPlugin (eq, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
+            }
+        }
+        else if (chosenId == 3)
+        {
+            safeThis->edit.getUndoManager().beginNewTransaction ("Add Reverb");
+            if (auto rev = safeThis->edit.getPluginCache().createNewPlugin (te::ReverbPlugin::xmlTypeName, {}))
+                tr->pluginList.insertPlugin (rev, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
+        }
+        else if (chosenId == 4)
+        {
+            safeThis->edit.getUndoManager().beginNewTransaction ("Add Delay");
+            if (auto dly = safeThis->edit.getPluginCache().createNewPlugin (te::DelayPlugin::xmlTypeName, {}))
+                tr->pluginList.insertPlugin (dly, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
+        }
+        else if (chosenId == 10)
+        {
+            safeThis->edit.getUndoManager().beginNewTransaction ("Add Multi-Sampler");
+            if (auto smp = safeThis->edit.getPluginCache().createNewPlugin (te::SamplerPlugin::xmlTypeName, {}))
+            {
+                if (auto* samplerPtr = dynamic_cast<te::SamplerPlugin*> (smp.get()))
+                    PluginPresetManager::seedStarterSamplerKit (*samplerPtr);
+                tr->pluginList.insertPlugin (smp, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
+            }
+        }
+        else if (chosenId == 19)
+        {
+            safeThis->edit.getUndoManager().beginNewTransaction ("Add Sidechain Compressor");
+            if (auto comp = safeThis->edit.getPluginCache().createNewPlugin (SidechainCompressorPlugin::xmlTypeName, {}))
+                tr->pluginList.insertPlugin (comp, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
+        }
+        else if (chosenId >= 16 && chosenId <= 18)
+        {
+            const char* hwTypeName = Tr808DrumPlugin::xmlTypeName;
+            if (chosenId == 17) hwTypeName = VintageSamplerPlugin::xmlTypeName;
+            else if (chosenId == 18) hwTypeName = AnalogTapePlugin::xmlTypeName;
+
+            safeThis->edit.getUndoManager().beginNewTransaction ("Add Hardware Rack Machine");
+            if (auto hw = safeThis->edit.getPluginCache().createNewPlugin (hwTypeName, {}))
+                tr->pluginList.insertPlugin (hw, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
+        }
+        else if (chosenId >= 11 && chosenId <= 15)
+        {
+            const char* fxTypeName = te::CompressorPlugin::xmlTypeName;
+            if (chosenId == 12) fxTypeName = te::ChorusPlugin::xmlTypeName;
+            else if (chosenId == 13) fxTypeName = te::PhaserPlugin::xmlTypeName;
+            else if (chosenId == 14) fxTypeName = te::LowPassPlugin::xmlTypeName;
+            else if (chosenId == 15) fxTypeName = te::PitchShiftPlugin::xmlTypeName;
+
+            safeThis->edit.getUndoManager().beginNewTransaction ("Add Built-In Effect");
+            if (auto fx = safeThis->edit.getPluginCache().createNewPlugin (fxTypeName, {}))
+                tr->pluginList.insertPlugin (fx, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
+        }
+        else if (chosenId == 5 || chosenId == 6)
+        {
+            auto* ownerPtr = &safeThis->owner;
+            const int busIdx = (chosenId == 5) ? 0 : 1;
+            const juce::String fxType = (chosenId == 5) ? "reverb" : "delay";
+            const float wetLevel = (chosenId == 5) ? 0.35f : 0.30f;
+
+            AutomationManager::configureFxSend (safeThis->edit, *tr, busIdx, -6.0f, fxType, wetLevel);
+            ownerPtr->rebuildStrips();
+
+            if (ownerPtr->onMixerChanged != nullptr)
+                ownerPtr->onMixerChanged();
+
+            return;
+        }
+        else if (chosenId == 49)
+        {
+            safeThis->edit.getUndoManager().beginNewTransaction ("Insert New CV Wobble Rack");
+
+            if (auto newRack = safeThis->edit.getRackList().addNewRack())
+            {
+                newRack->rackName = "Track " + juce::String (safeThis->trackIndex + 1) + " CV Wobble Rack";
+                auto lfoPtr    = safeThis->edit.getPluginCache().createNewPlugin (CvLfoPlugin::xmlTypeName, {});
+                auto wobblePtr = safeThis->edit.getPluginCache().createNewPlugin (CvWobbleFilterPlugin::xmlTypeName, {});
+
+                if (lfoPtr != nullptr && wobblePtr != nullptr)
+                {
+                    const auto lfoID    = lfoPtr->itemID;
+                    const auto wobbleID = wobblePtr->itemID;
+                    newRack->addPlugin (lfoPtr,    { 0.14f, 0.22f }, false);
+                    newRack->addPlugin (wobblePtr, { 0.54f, 0.22f }, false);
+
+                    newRack->addConnection ({}, 1, wobbleID, 1);
+                    newRack->addConnection ({}, 2, wobbleID, 2);
+                    newRack->addConnection (lfoID, 1, wobbleID, 3);
+                    newRack->addConnection (wobbleID, 1, {}, 1);
+                    newRack->addConnection (wobbleID, 2, {}, 2);
+                }
+
+                tr->pluginList.insertPlugin (te::RackInstance::create (*newRack),
+                                             MixerComponent::getInsertIndexForNewPlugin (*tr));
+            }
+        }
+        else if (chosenId >= 50 && chosenId < 90)
+        {
+            const int rackIdx = chosenId - 50;
+            const auto& racks = safeThis->edit.getRackList().getTypes();
+
+            if (juce::isPositiveAndBelow (rackIdx, racks.size()))
+            {
+                safeThis->edit.getUndoManager().beginNewTransaction ("Insert Modular Rack");
+                tr->pluginList.insertPlugin (te::RackInstance::create (*racks.getUnchecked (rackIdx)),
+                                             MixerComponent::getInsertIndexForNewPlugin (*tr));
             }
         }
         else if (chosenId >= 100)
@@ -472,12 +660,16 @@ void MixerComponent::ChannelStrip::resized()
     area.removeFromTop (3);
 
     auto btnRow = area.removeFromTop (20);
-    muteButton.setBounds (btnRow.removeFromLeft (24));
+    muteButton.setBounds (btnRow.removeFromLeft (22));
+    btnRow.removeFromLeft (3);
+    soloButton.setBounds (btnRow.removeFromLeft (22));
+    btnRow.removeFromLeft (3);
+    armButton.setBounds (btnRow.removeFromLeft (22));
     btnRow.removeFromLeft (4);
-    soloButton.setBounds (btnRow.removeFromLeft (24));
-    btnRow.removeFromLeft (6);
     addPluginButton.setBounds (btnRow);
 
+    area.removeFromTop (4);
+    inputSelector.setBounds (area.removeFromTop (20));
     area.removeFromTop (4);
 
     // All slots are laid out; if a strip needs more height than the pane
@@ -537,6 +729,12 @@ void MixerComponent::setEdit (te::Edit* newEdit)
     rebuildStrips();
 }
 
+void MixerComponent::setRecordingManager (RecordingManager* manager)
+{
+    recordingManager = manager;
+    rebuildStrips();
+}
+
 void MixerComponent::refreshMeters()
 {
     if (edit == nullptr)
@@ -567,23 +765,7 @@ void MixerComponent::rebuildStrips()
 
 int MixerComponent::getInsertIndexForNewPlugin (te::AudioTrack& track)
 {
-    int index = 0;
-
-    for (auto* plugin : track.pluginList)
-    {
-        // The terminal utilities sit at the end of the chain; a new insert
-        // goes just before the first of them. If there are none, the index
-        // is past the end and insertPlugin appends.
-        if (dynamic_cast<te::VolumeAndPanPlugin*> (plugin) != nullptr
-            || dynamic_cast<te::LevelMeterPlugin*> (plugin) != nullptr)
-        {
-            break;
-        }
-
-        ++index;
-    }
-
-    return index;
+    return AutomationManager::getInsertIndexBeforeTerminalPlugins (track);
 }
 
 void MixerComponent::paint (juce::Graphics& g)

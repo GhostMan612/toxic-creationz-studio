@@ -1,10 +1,12 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_dsp/juce_dsp.h>
 #include <tracktion_engine/tracktion_engine.h>
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 
 namespace te = tracktion::engine;
 
@@ -107,21 +109,32 @@ private:
     float phase = 0.0f;
 };
 
-// Combines two input channels (L/R) with a depth-controlled blend, used for
-// phase-vocoder style stereo wobble.
+// Reason-style CV-modulated State-Variable TPT filter. Takes stereo audio (L/R)
+// on pins 1/2 and an optional mono CV modulation source on pin 3 ("CV In"),
+// sweeping filter cutoff exponentially (+/- 3 octaves scaled by Wobble Depth).
 class CvWobbleFilterPlugin : public te::Plugin
 {
 public:
     explicit CvWobbleFilterPlugin (te::PluginCreationInfo info) : te::Plugin (info)
     {
-        depthValue.referTo (state, juce::Identifier ("wobbleDepth"), nullptr, 0.35f);
-        depthParam = addParam ("wobbleDepth", TRANS("Wobble Depth"), { 0.0f, 1.0f });
+        depthValue.referTo     (state, juce::Identifier ("wobbleDepth"), nullptr, 0.5f);
+        cutoffValue.referTo    (state, juce::Identifier ("cutoffHz"),    nullptr, 900.0f);
+        resonanceValue.referTo (state, juce::Identifier ("resonance"),   nullptr, 1.8f);
+
+        depthParam     = addParam ("wobbleDepth", TRANS("Wobble Depth"), { 0.0f, 1.0f });
+        cutoffParam    = addParam ("cutoffHz",    TRANS("Cutoff (Hz)"),  { 80.0f, 12000.0f });
+        resonanceParam = addParam ("resonance",   TRANS("Resonance"),    { 0.5f, 6.0f });
+
         depthParam->attachToCurrentValue (depthValue);
+        cutoffParam->attachToCurrentValue (cutoffValue);
+        resonanceParam->attachToCurrentValue (resonanceValue);
     }
 
     ~CvWobbleFilterPlugin() override
     {
-        if (depthParam != nullptr) depthParam->detachFromCurrentValue();
+        if (depthParam != nullptr)     depthParam->detachFromCurrentValue();
+        if (cutoffParam != nullptr)    cutoffParam->detachFromCurrentValue();
+        if (resonanceParam != nullptr) resonanceParam->detachFromCurrentValue();
         notifyListenersOfDeletion();
     }
 
@@ -131,20 +144,33 @@ public:
 
     void getChannelNames (juce::StringArray* ins, juce::StringArray* outs) override
     {
-        if (ins)   { ins->add ("L"); ins->add ("R"); }
+        if (ins)  { ins->add ("L"); ins->add ("R"); ins->add ("CV In"); }
         if (outs) { outs->add ("L"); outs->add ("R"); }
     }
 
     te::Plugin::BusLayout getBusses() const override
     {
-        return te::Plugin::BusLayout::singleInOut (te::ChannelConfiguration::stereo(),
+        return te::Plugin::BusLayout::singleInOut (te::ChannelConfiguration::discreteChannels (3),
                                                    te::ChannelConfiguration::stereo());
     }
 
     int getNumOutputChannelsGivenInputs (int) override { return 2; }
 
-    void initialise (const te::PluginInitialisationInfo&) override {}
-    void deinitialise() override {}
+    void initialise (const te::PluginInitialisationInfo& info) override
+    {
+        lastSampleRate = std::max (8000.0, info.sampleRate);
+        svfFilter.reset();
+        svfFilter.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
+
+        const juce::uint32 maxBlock = static_cast<juce::uint32> (std::max (16, info.blockSizeSamples));
+        svfFilter.prepare ({ lastSampleRate, maxBlock, 2 });
+    }
+
+    void deinitialise() override
+    {
+        svfFilter.reset();
+    }
+
     void applyToBuffer (const te::PluginRenderContext& fc) override
     {
         if (fc.destBuffer == nullptr
@@ -160,20 +186,41 @@ public:
         auto* buf = fc.destBuffer;
         const int n = fc.bufferNumSamples;
         const int base = fc.bufferStartSample;
-        const float depth = (float) depthParam->getCurrentValue();
+
+        const float baseCutoff = cutoffParam != nullptr ? static_cast<float> (cutoffParam->getCurrentValue()) : 900.0f;
+        const float reso       = resonanceParam != nullptr ? static_cast<float> (resonanceParam->getCurrentValue()) : 1.8f;
+        const float depth      = depthParam != nullptr ? static_cast<float> (depthParam->getCurrentValue()) : 0.5f;
+        const bool hasCvCh     = (buf->getNumChannels() >= 3);
+        const float maxSafeHz  = static_cast<float> (lastSampleRate * 0.45);
+
+        svfFilter.setResonance (juce::jlimit (0.5f, 6.0f, reso));
 
         for (int i = 0; i < n; ++i)
         {
+            if ((i & 7) == 0)
+            {
+                const float cv = hasCvCh ? juce::jlimit (-1.0f, 1.0f, buf->getSample (2, base + i)) : 0.0f;
+                const float modCutoff = juce::jlimit (60.0f, maxSafeHz,
+                                                      baseCutoff * std::pow (2.0f, cv * depth * 3.0f));
+                svfFilter.setCutoffFrequency (modCutoff);
+            }
+
             const float l = buf->getSample (0, base + i);
             const float r = buf->getSample (1, base + i);
-            buf->setSample (0, base + i, r * depth + l * (1.0f - depth));
-            buf->setSample (1, base + i, l * depth + r * (1.0f - depth));
+            buf->setSample (0, base + i, svfFilter.processSample (0, l));
+            buf->setSample (1, base + i, svfFilter.processSample (1, r));
         }
+
+        if (hasCvCh)
+            buf->clear (2, base, n);
     }
 
     void restorePluginStateFromValueTree (const juce::ValueTree& v) override
     {
-        te::copyPropertiesToCachedValues (v, depthValue);
+        te::copyPropertiesToCachedValues (v, depthValue, cutoffValue, resonanceValue);
+
+        for (auto* p : getAutomatableParameters())
+            p->updateFromAttachedValue();
     }
 
     static inline const char* xmlTypeName = "cv_wobble_filter";
@@ -181,8 +228,10 @@ public:
     juce::String getPluginType() override { return xmlTypeName; }
 
 private:
-    juce::CachedValue<float> depthValue;
-    te::AutomatableParameter::Ptr depthParam;
+    juce::CachedValue<float> depthValue, cutoffValue, resonanceValue;
+    te::AutomatableParameter::Ptr depthParam, cutoffParam, resonanceParam;
+    juce::dsp::StateVariableTPTFilter<float> svfFilter;
+    double lastSampleRate = 44100.0;
 };
 
 // Reason-style 1-to-4 CV attenuverter & polarity splitter. Captures the mono

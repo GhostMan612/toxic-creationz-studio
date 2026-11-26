@@ -3,6 +3,8 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <tracktion_engine/tracktion_engine.h>
 
+#include "RecordingManager.h"
+
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -18,6 +20,7 @@ public:
     ~MixerComponent() override;
 
     void setEdit (te::Edit* newEdit);
+    void setRecordingManager (RecordingManager* manager);
     void rebuildStrips();
     void refreshMeters();
 
@@ -68,7 +71,9 @@ private:
         juce::Label titleLabel;
         juce::TextButton muteButton      { "M" };
         juce::TextButton soloButton      { "S" };
+        juce::TextButton armButton       { "R" };
         juce::TextButton addPluginButton { "+ Plugin" };
+        juce::ComboBox inputSelector;
         juce::Label eqLowLabel           { {}, "Lo" };
         juce::Label eqMidLabel           { {}, "Mid" };
         juce::Label eqHighLabel          { {}, "Hi" };
@@ -95,6 +100,7 @@ private:
 
     te::Engine& engine;
     te::Edit* edit = nullptr;
+    RecordingManager* recordingManager = nullptr;
 
     juce::Viewport viewport;
     juce::Component stripsContainer;

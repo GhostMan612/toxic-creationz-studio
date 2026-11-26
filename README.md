@@ -1,11 +1,13 @@
 # Toxic Creationz Studio — AI DAW
 
-A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**, featuring VST3 plugin hosting, an FL Studio-style piano roll, Reason-style modular audio/MIDI/CV racks, time-stretched riff BGM layering, Audacity-style non-destructive waveform DSP, master WAV mixdown export, live stereo channel metering with 3-band EQ, and an out-of-process **Python FastMCP AI Co-Producer** over a local JSON-RPC 2.0 TCP bridge (`127.0.0.1:9450`).
+A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**, featuring live audio & MIDI recording with 1-bar count-in, VST3 plugin hosting + built-in Reverb/Delay & Aux FX buses, an FL Studio-style zoomable piano roll, Reason-style modular audio/MIDI/CV racks, time-stretched riff BGM layering, Audacity-style non-destructive waveform DSP, zero-dependency C++ YIN audio-to-MIDI pitch transcription, drawable track automation lanes, master WAV mixdown export, live stereo channel metering with 3-band EQ, dark studio theming, and an out-of-process **Python FastMCP AI Co-Producer** over a local JSON-RPC 2.0 TCP bridge (`127.0.0.1:9450`).
 
 ```text
 +-------------------------------------------------------------------+
 | Toxic Creationz Studio (C++20 / JUCE 9 / Tracktion Engine)        |
-|  Timeline + Piano Roll + Waveform Editor + 3-Band EQ Mixer/Meters |
+|  Timeline + Drawable Automation + Zoomable Piano Roll + Dark UI   |
+|  Waveform Editor (Bounce-to-Take DSP + YIN Audio-to-MIDI)         |
+|  3-Band EQ / Aux FX Bus / Live Meters / VST3 / Live Rec + Count-In|
 |  Modular CV/Audio Rack (LFO, Wobble, 1-to-4 Splitter) + BGM Solver|
 |  Master Mixdown Renderer (te::Renderer) + Virtual MIDI Step Rec   |
 +---------------------------------+---------------------------------+
@@ -19,11 +21,11 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 +-------------------------------------------------------------------+
 ```
 
-> Keeping Python AI workers and optional generative models strictly out-of-process across localhost TCP keeps the C++ desktop engine modular and free of Python runtime coupling.
+> Keeping Python AI workers and optional generative models strictly out-of-process across localhost TCP keeps the C++ core cleanly modular and free of Python runtime coupling.
 
 ---
 
-## Implemented Work Orders (`WO-001` through `WO-011`)
+## Implemented Work Orders (`WO-001` through `WO-017`)
 
 | Phase | Highlights |
 | --- | --- |
@@ -33,10 +35,28 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 | **WO-005** | Reason-style `ModularRackComponent` backed by `te::RackType` with virtual cable patching (`CvLfoPlugin`, `CvWobbleFilterPlugin`) and grid collision avoidance. |
 | **WO-006** | Riff-layering `BgmArrangementSolver`, starter WAV riff pack provisioner (`RiffLibrary`), and time-stretched / pitch-shifted `WaveAudioClip` arrangement. |
 | **WO-007** | Native TCP JSON-RPC 2.0 server (`DawIpcServer` on `127.0.0.1:9450`) and FastMCP bridge (`mcp/daw_mcp_server.py`). |
-| **WO-008** | Non-destructive `WaveformEditorComponent` with selection scrubbing and bounce-to-take DSP (`Normalize`, `Reverse`, `Fade In`, `Fade Out`, `Silence`, `Trim`, `Split`) plus `audio.process_clip`. |
+| **WO-008** | Non-destructive `WaveformEditorComponent` with selection scrubbing and bounce-to-take DSP (`Norm`, `Rev`, `Fade In`, `Fade Out`, `Silence`, `All`) plus `audio.process_clip`. |
 | **WO-009** | Portable relative audio resolution (`Edit::filePathResolver`), `MixdownExporter` stereo WAV mixdowns (`Export WAV` / `audio.export_wav`), and MCP rack patching (`rack.get_state`, `rack.patch`) + stem import (`audio.import_file`). |
 | **WO-010** | Two-row `1280x820` studio header, metronome `Click` & `Loop` range transport, `MidiKeyboardDock` (live synth audition + quantized `Step Rec`), and `scripts/package-windows.ps1` release archiving. |
 | **WO-011** | `CvUtilityPlugin` 1-to-4 CV attenuverter/splitter (`+ CV Splitter`), per-track `te::EqualiserPlugin` 3-band EQ (`mixer.set_eq`), live L/R `LevelMeterPlugin` mixer metering, and out-of-process hybrid AI audio worker (`mcp/ai_audio_worker.py`). |
+| **WO-012** | Live audio & MIDI recording via `RecordingManager`, per-track record arm (`R`), input monitoring, hardware audio/MIDI + `Virtual MIDI` input routing, 1-bar transport `Count-In`, and `recording.list_inputs` MCP support. |
+| **WO-013** | `StudioLookAndFeel` dark studio theme, `AutomationManager` (`te::AutomationCurve` overlay + `Auto` lane editor), shared `Aux Send` / `Aux Return` FX bus with built-in Reverb & Delay, zoomable timeline & piano roll, and keyboard shortcuts. |
+| **WO-014** | Zero-dependency C++ **YIN** monophonic pitch transcription (`AudioToMidiTranscriber`), Waveform Editor `To MIDI` button, `audio.transcribe_to_midi` MCP tool (`transcribe_audio_to_midi`), and final v1.0 packaging. |
+| **WO-015** | `StudioUIBehaviour` & `StudioPluginWindow` (native VST3 + generic plugin editors), `ArrangementView` vertical track scroll, `Wave Edit` → `To MIDI` auto-switch, QWERTY virtual-keys focus routing, and Mixer `Aux FX Buses` menu items. |
+| **WO-016** | Real CV-modulated `StateVariableTPTFilter` in `CvWobbleFilterPlugin`, direction-aware `ModularRackComponent` Audio/CV + Rack I/O jacks & Mixer rack insert, clip-transpose/stretch-aware `AudioToMidiTranscriber`, `DawIpcServer` alive/frame guards, and window-close unsaved guard. |
+| **WO-017** | `PluginPresetManager` factory preset bank & `.trkpreset` save/load (`8` `4OSC` synth patches + CV/FX presets), `4OSC` oscillator/unison/voice/FX editor strip, `Multi-Sampler (808 + Synth Kit)` (`SamplerPlugin` + WAV loader), multi-machine `+ Machine` Modular Rack & Mixer inserts (`Compressor`, `Chorus`, `Phaser`, `LowPass`, `PitchShift`), and `set_plugin_preset` / `add_rack_machine` MCP tools. |
+| **Hardware Rack Suite** | Zero-allocation native hardware modules (`Tr808DrumPlugin` 6-voice/5-out synth with CV Accent & hi-hat choke, `VintageSamplerPlugin` 12-bit DAC + ZOH decimation + stereo LPF + WAV loader, `AnalogTapePlugin` wow/flutter + 85 Hz head bump + asymmetric saturation), track/rack integration, factory presets, and `add_rack_module` / `create_instrument_track` MCP support. |
+| **WO-018** | AI Co-Producer Scaling: Roman-numeral voice-led `midi.generate_progression`, `midi.quantize_scale`, peak-headroom-safe `mixer.auto_balance_lufs`, section-trimming `arrangement.duplicate_section` (`mute_drums`), optional Suno/ElevenLabs/Demucs adapters + offline 4-band stereo stem splitter (`separate_audio_stems`). |
+
+---
+
+## Keyboard Shortcuts & Zoom Controls
+
+- **`Space`**: Toggle Play / Stop (or stop active recording)
+- **`Ctrl + Z`** / **`Ctrl + Y`** (or **`Ctrl + Shift + Z`**): Undo / Redo
+- **`Ctrl + S`**: Save session
+- **`Ctrl + =`** (or **`Ctrl + +`**) / **`Ctrl + -`**: Horizontal zoom in / out across Timeline and Piano Roll
+- **`Ctrl + Mouse Wheel`**: Zoom timeline or piano roll at cursor; **`Shift + Mouse Wheel`** (or horizontal wheel): scroll beat offset
 
 ---
 
@@ -88,11 +108,11 @@ python mcp/daw_mcp_server.py
 
 ### Exposed MCP Tools
 
-- **Session & Transport:** `get_session_state`, `control_transport` (`play`, `stop`, `bpm`, `beat`, `click`, `loop`, `loop_start_beat`, `loop_end_beat`)
-- **Tracks & Piano Roll:** `create_instrument_track`, `write_piano_roll_notes`, `get_piano_roll_notes`
-- **Mixer & EQ:** `set_mixer_channel`, `set_track_eq` (`low_db`, `mid_db`, `high_db` in `[-18, +18]` dB)
-- **Modular Rack:** `get_modular_racks`, `patch_modular_rack`
-- **Audio, BGM & Export:** `generate_bgm_arrangement`, `process_audio_clip`, `generate_ai_audio_stem`, `import_audio_stem`, `export_master_wav`
+- **Session, Recording & Transport:** `get_session_state`, `control_transport` (`play`, `stop`, `record`, `bpm`, `beat`, `click`, `loop`, `loop_start_beat`, `loop_end_beat`, `count_in_bars`), `list_recording_inputs`
+- **Tracks, Chords & Piano Roll:** `create_instrument_track` (`4osc`, `tr808`, `sampler`, `tape`, `none`), `generate_chord_progression` (voice-led Roman numerals), `quantize_track_to_scale` (scale pitch + beat grid), `write_piano_roll_notes`, `get_piano_roll_notes`, `duplicate_arrangement_section`
+- **Mixer, EQ, FX Sends, Presets & Automation:** `set_mixer_channel` (volume, pan, mute, solo, record arm, input device), `auto_balance_mix_lufs` (gain-match tracks toward target LUFS with peak headroom safety), `set_plugin_preset` (list/apply built-in synth, FX & hardware factory presets), `set_track_eq` (`low_db`, `mid_db`, `high_db` in `[-18, +18]` dB), `configure_fx_send` (Aux Send to shared Reverb/Delay return bus), `write_track_automation`, `get_track_automation`
+- **Modular Rack:** `get_modular_racks`, `add_rack_machine` (`4osc`, `sampler`, `tr808`, `vintage_sampler`, `tape`, `compressor`, `chorus`, `phaser`, `lowpass`, `pitchshift`, `reverb`, `delay`, `eq`, `cv_lfo`, `cv_wobble`, `cv_splitter`), `add_rack_module` (placed CV/hardware modules with pin introspection), `patch_modular_rack`
+- **Audio, Pitch Transcription, Stems, BGM & Export:** `generate_bgm_arrangement`, `process_audio_clip`, `transcribe_audio_to_midi` (YIN monophonic audio-to-MIDI into a new or existing MIDI track), `generate_ai_audio_stem` (Arioso / Suno / ElevenLabs / offline synth), `separate_audio_stems` (Demucs or offline 4-band stereo stem splitter + DAW import), `import_audio_stem`, `export_master_wav`
 
 `generate_ai_audio_stem` delegates WAV synthesis to `mcp/ai_audio_worker.py` (automatically using `arioso` when installed, or falling back to a stereo 44.1 kHz key/tempo-synced synthesizer), saves stems to `~/Documents/Toxic Creationz Studio/GeneratedStems/`, and imports them cleanly via `audio.import_file`.
 
@@ -101,27 +121,34 @@ python mcp/daw_mcp_server.py
 ## Repository Layout
 
 ```text
-CMakeLists.txt                   # JUCE 9 + Tracktion Engine build configuration
+CMakeLists.txt                       # JUCE 9 + Tracktion Engine build configuration
 .github/workflows/windows-build.yml  # Windows CI build, --smoke-test, Python unit tests & zip artifact
-scripts/package-windows.ps1      # Portable Win64 release zipper (exe + mcp + README)
-docs/SHARED_BRIEF.md             # Pipeline status & Work Order engineering records
+scripts/package-windows.ps1          # Portable Win64 release zipper (exe + mcp + README)
+docs/SHARED_BRIEF.md                 # Pipeline status & Work Order engineering records
 mcp/
-  daw_mcp_server.py              # FastMCP server speaking JSON-RPC 2.0 over 127.0.0.1:9450
-  ai_audio_worker.py             # Hybrid AI stem generator (Arioso optional + offline synth fallback)
-  test_mcp_server.py             # Zero-dependency unittest suite
-  requirements.txt               # mcp, pydantic
+  daw_mcp_server.py                  # FastMCP server speaking JSON-RPC 2.0 over 127.0.0.1:9450
+  ai_audio_worker.py                 # Hybrid AI stem generator (Arioso optional + offline synth fallback)
+  test_mcp_server.py                 # Zero-dependency unittest suite
+  requirements.txt                   # mcp, pydantic
 src/
-  Main.cpp                       # JUCEApplication + headless --smoke-test regression suite
-  MainComponent.h/.cpp           # Engine/Edit lifecycle, two-row studio header, filePathResolver, IPC
-  ArrangementView.h/.cpp         # Multi-track timeline & loop range editor
-  PianoRollComponent.h/.cpp      # Grid-snapping MIDI editor
-  MixerComponent.h/.cpp          # Channel strips, 3-band EQ controls, live peak meters & VST3 slots
-  CvRackPlugins.h                # Built-in CvLfoPlugin, CvWobbleFilterPlugin & CvUtilityPlugin (1-to-4)
-  ModularRackComponent.h/.cpp    # Reason-style te::RackType patchbay GUI
-  RiffLibrary.h/.cpp             # Starter riff pack provisioner & key/energy metadata
-  BgmGeneratorComponent.h/.cpp   # Generative riff-layering UI & solver
-  DawIpcServer.h/.cpp            # Localhost TCP JSON-RPC 2.0 server
-  WaveformEditorComponent.h/.cpp # Non-destructive waveform viewer & bounce-to-take DSP
-  MixdownExporter.h/.cpp         # Synchronous offline stereo WAV renderer
-  MidiKeyboardDock.h/.cpp        # Virtual QWERTY/click keyboard with live audition & Step Rec
+  Main.cpp                           # JUCEApplication + headless --smoke-test regression suite
+  MainComponent.h/.cpp               # Engine/Edit lifecycle, two-row studio header, shortcuts, IPC
+  StudioLookAndFeel.h                # Dark studio LookAndFeel palette
+  StudioPluginWindow.h               # Native VST3, preset bar, 4OSC/Sampler & generic plugin editors
+  PluginPresetManager.h/.cpp         # Factory preset bank, .trkpreset XML save/load & 808 Sampler kit seeder
+  ArrangementView.h/.cpp             # Zoomable multi-track timeline, loop range, arm pills & automation overlay
+  PianoRollComponent.h/.cpp          # Zoomable grid-snapping MIDI editor
+  MixerComponent.h/.cpp              # Channel strips, 3-band EQ, Reverb/Delay inserts, Aux sends, meters, rec arm
+  RecordingManager.h/.cpp            # Live Wave/MIDI device enumeration, arming, virtual MIDI & count-in
+  AutomationManager.h/.cpp           # Tracktion AutomationCurve & AuxSend/AuxReturn FX bus helpers
+  CvRackPlugins.h                    # Built-in CvLfoPlugin, CvWobbleFilterPlugin & CvUtilityPlugin (1-to-4)
+  HardwareRackPlugins.h              # Built-in TR-808 Drum Synth, 12-Bit Vintage Sampler & Analog Tape Deck
+  ModularRackComponent.h/.cpp        # Reason-style te::RackType patchbay GUI
+  RiffLibrary.h/.cpp                 # Starter riff pack provisioner & key/energy metadata
+  BgmGeneratorComponent.h/.cpp       # Generative riff-layering UI & solver
+  DawIpcServer.h/.cpp                # Localhost TCP JSON-RPC 2.0 server
+  WaveformEditorComponent.h/.cpp     # Non-destructive waveform viewer, bounce-to-take DSP & To MIDI trigger
+  AudioToMidiTranscriber.h/.cpp      # Zero-dependency C++ YIN pitch tracker & MidiClip transcriber
+  MixdownExporter.h/.cpp             # Synchronous offline stereo WAV renderer
+  MidiKeyboardDock.h/.cpp            # Virtual QWERTY/click keyboard with live audition & Step Rec
 ```

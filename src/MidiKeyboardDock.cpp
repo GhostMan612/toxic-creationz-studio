@@ -6,10 +6,13 @@
 MidiKeyboardDock::MidiKeyboardDock()
 {
     setOpaque (true);
+    setWantsKeyboardFocus (true);
 
     keyboardState.addListener (this);
     keyboardComponent.setAvailableRange (36, 84); // C2..C6
     keyboardComponent.setKeyWidth (20.0f);
+    keyboardComponent.setWantsKeyboardFocus (true);
+    keyboardComponent.setKeyPressBaseOctave (4);
     addAndMakeVisible (keyboardComponent);
 
     addAndMakeVisible (titleLabel);
@@ -61,6 +64,17 @@ void MidiKeyboardDock::syncFromEdit()
     repaint();
 }
 
+void MidiKeyboardDock::focusKeyboard()
+{
+    if (keyboardComponent.isShowing())
+        keyboardComponent.grabKeyboardFocus();
+}
+
+void MidiKeyboardDock::focusGained (FocusChangeType)
+{
+    focusKeyboard();
+}
+
 te::AudioTrack* MidiKeyboardDock::resolveTargetTrack() const
 {
     if (edit == nullptr)
@@ -84,6 +98,9 @@ void MidiKeyboardDock::handleNoteOn (juce::MidiKeyboardState*, int midiChannel, 
     const auto msg = juce::MidiMessage::noteOn (midiChannel, midiNoteNumber, velocity);
     track->injectLiveMidiMessage (msg, te::MPESourceID{});
 
+    if (onLiveMidiMessage != nullptr)
+        onLiveMidiMessage (msg);
+
     if (stepRecToggle.getToggleState())
     {
         const int velInt = juce::jlimit (1, 127, static_cast<int> (std::round (velocity * 127.0f)));
@@ -105,6 +122,9 @@ void MidiKeyboardDock::handleNoteOff (juce::MidiKeyboardState*, int midiChannel,
 
     const auto msg = juce::MidiMessage::noteOff (midiChannel, midiNoteNumber, velocity);
     track->injectLiveMidiMessage (msg, te::MPESourceID{});
+
+    if (onLiveMidiMessage != nullptr)
+        onLiveMidiMessage (msg);
 }
 
 bool MidiKeyboardDock::recordStepNote (int midiNoteNumber, int velocity, double stepBeats)

@@ -1,4 +1,11 @@
 #include "MainComponent.h"
+#include "AudioToMidiTranscriber.h"
+#include "CoreIsolationCheck.h"
+#include "HardwareRackPlugins.h"
+#include "PlatformConfig.h"
+#include "PluginPresetManager.h"
+#include "SidechainCompressorPlugin.h"
+#include "StudioPluginWindow.h"
 
 #include <algorithm>
 #include <chrono>
@@ -1581,8 +1588,9 @@ int MainComponent::runHeadlessSmokeTest()
             };
 
             const std::vector<juce::Component*> row2Items {
-                &app.playButton, &app.stopButton, &app.loopToggleButton, &app.clickToggleButton,
-                &app.addTrackButton, &app.undoButton, &app.redoButton,
+                &app.playButton, &app.stopButton, &app.recordButton,
+                &app.loopToggleButton, &app.clickToggleButton, &app.countInButton,
+                &app.autoToggleButton, &app.addTrackButton, &app.undoButton, &app.redoButton,
                 &app.bpmSlider, &app.transportPosLabel, &app.statusLabel
             };
 
@@ -1874,6 +1882,1666 @@ int MainComponent::runHeadlessSmokeTest()
                   << std::endl;
     }
 
+    //===========================================================================
+    // WO-012 Regression: Live Audio/MIDI Recording, Track Arming & Count-In
+    //===========================================================================
+    {
+        // 1. Verify recording.list_inputs, mixer.set_track (armed/input_device), and count_in_bars RPC
+        const auto inputsResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":120,"method":"recording.list_inputs","params":{}})"));
+
+        if (! inputsResp["result"].hasProperty ("audio_inputs")
+            || ! inputsResp["result"].hasProperty ("midi_inputs"))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-012 recording.list_inputs response malformed" << std::endl;
+            return 1;
+        }
+
+        app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":121,"method":"mixer.set_track","params":{"track_index":0,"armed":true,"input_device":"Virtual MIDI"}})");
+        app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":122,"method":"transport.control","params":{"count_in_bars":1}})");
+
+        const auto stateBefore = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":123,"method":"daw.get_state","params":{}})"));
+        const auto* recTracksBefore = stateBefore["result"]["tracks"].getArray();
+
+        if (static_cast<int> (stateBefore["result"]["count_in_bars"]) != 1
+            || recTracksBefore == nullptr || recTracksBefore->isEmpty()
+            || ! static_cast<bool> ((*recTracksBefore)[0]["armed"])
+            || (*recTracksBefore)[0]["input_device"].toString() != "Virtual MIDI")
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-012 arm/input/count-in state mismatch" << std::endl;
+            return 1;
+        }
+
+        // 2. Verify live virtual MIDI capture commits notes inside one Undo transaction & reverts cleanly
+        {
+            const int clipsBefore = te::getAudioTracks (*app.edit)[0]->getClips().size();
+            app.recordingManager.startRecording (true);
+            app.recordingManager.captureLiveMidiMessage (juce::MidiMessage::noteOn (1, 60, 0.85f), 8.0);
+            app.recordingManager.captureLiveMidiMessage (juce::MidiMessage::noteOff (1, 60), 9.0);
+            app.recordingManager.captureLiveMidiMessage (juce::MidiMessage::noteOn (1, 67, 0.90f), 9.0);
+            app.recordingManager.captureLiveMidiMessage (juce::MidiMessage::noteOff (1, 67), 10.0);
+            const int recordedCount = app.recordingManager.stopRecording();
+
+            if (recordedCount != 2 || te::getAudioTracks (*app.edit)[0]->getClips().size() != clipsBefore + 1)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-012 virtual MIDI recording did not commit 2 notes" << std::endl;
+                return 1;
+            }
+
+            app.edit->getUndoManager().undo();
+
+            if (te::getAudioTracks (*app.edit)[0]->getClips().size() != clipsBefore)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-012 Undo did not revert recorded MIDI clip" << std::endl;
+                return 1;
+            }
+        }
+
+        // 3. Verify non-destructive audio take commit writes non-silent stereo WAV, Undo/Redo, & persists
+        const auto recTempDir = tempDir.getChildFile ("tcs_wo012_rec_smoke");
+        recTempDir.deleteRecursively();
+        recTempDir.createDirectory();
+        const auto takesDir = recTempDir.getChildFile ("Takes");
+
+        juce::File committedTakeWav;
+        {
+            constexpr int sr = 44100;
+            juce::AudioBuffer<float> micBuf (2, sr / 2); // 0.5s stereo take
+
+            for (int i = 0; i < micBuf.getNumSamples(); ++i)
+            {
+                const float s = static_cast<float> (
+                    0.4 * std::sin (2.0 * juce::MathConstants<double>::pi * 330.0 * i / sr));
+                micBuf.setSample (0, i, s);
+                micBuf.setSample (1, i, s);
+            }
+
+            auto* track0 = te::getAudioTracks (*app.edit)[0];
+            const int clipsBeforeTake = track0->getClips().size();
+
+            if (! RecordingManager::commitRecordedAudioTake (*app.edit, *track0, micBuf, sr, 0.0, takesDir, &committedTakeWav)
+                || ! committedTakeWav.existsAsFile()
+                || track0->getClips().size() != clipsBeforeTake + 1)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-012 commitRecordedAudioTake failed" << std::endl;
+                return 1;
+            }
+
+            {
+                juce::WavAudioFormat wavFmt;
+                std::unique_ptr<juce::AudioFormatReader> reader (
+                    wavFmt.createReaderFor (committedTakeWav.createInputStream().release(), true));
+
+                if (reader == nullptr
+                    || reader->numChannels != 2
+                    || std::abs (reader->sampleRate - 44100.0) > 0.1
+                    || reader->lengthInSamples != sr / 2)
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-012 committed WAV format mismatch" << std::endl;
+                    return 1;
+                }
+
+                juce::AudioBuffer<float> readBack (2, 1024);
+                reader->read (&readBack, 0, 1024, 0, true, true);
+
+                if (readBack.getMagnitude (0, 1024) < 0.1f)
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-012 committed WAV is unexpectedly silent" << std::endl;
+                    return 1;
+                }
+            }
+
+            app.edit->getUndoManager().undo();
+            if (te::getAudioTracks (*app.edit)[0]->getClips().size() != clipsBeforeTake)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-012 Undo did not remove committed audio take" << std::endl;
+                return 1;
+            }
+
+            app.edit->getUndoManager().redo();
+            if (te::getAudioTracks (*app.edit)[0]->getClips().size() != clipsBeforeTake + 1)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-012 Redo did not restore committed audio take" << std::endl;
+                return 1;
+            }
+        }
+
+        // 4. Verify two-row header still leaves statusLabel >= 180px at 1280x820 with Rec + Count-In
+        app.setSize (1280, 820);
+        app.resized();
+
+        if (app.statusLabel.getWidth() < 180)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-012 statusLabel narrowed below 180px ("
+                      << app.statusLabel.getWidth() << "px)" << std::endl;
+            return 1;
+        }
+
+        // 5. Save/reload persistence check for armed state, count-in, and committed audio take
+        const auto recSessionFile = recTempDir.getChildFile ("RecordingRoundTrip.tracktionedit");
+        app.currentEditFile = recSessionFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        if (! app.loadSessionFromFileSafely (recSessionFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-012 session reload failed" << std::endl;
+            return 1;
+        }
+
+        bool foundTakeAfterReload = false;
+        {
+            auto reloadedTracks = te::getAudioTracks (*app.edit);
+
+            if (reloadedTracks.isEmpty()
+                || ! RecordingManager::isTrackArmed (*reloadedTracks[0])
+                || RecordingManager::getTrackInputName (*reloadedTracks[0]) != "Virtual MIDI"
+                || RecordingManager::getCountInBars (*app.edit) != 1)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-012 arm/input/count-in state did not persist" << std::endl;
+                return 1;
+            }
+
+            for (auto* c : reloadedTracks[0]->getClips())
+                if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+                    if (wc->getSourceFileReference().getFile() == committedTakeWav)
+                        foundTakeAfterReload = true;
+        }
+
+        if (! foundTakeAfterReload)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-012 recorded audio take clip did not persist across reload"
+                      << std::endl;
+            return 1;
+        }
+
+        recTempDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-012 Live audio/MIDI recording, arming & count-in PASS" << std::endl;
+    }
+
+    //===========================================================================
+    // WO-013 Regression: Automation Curves, Aux FX Send Bus, Zoom & Theme
+    //===========================================================================
+    {
+        // 1. Write 3 volume automation points via automation.set_points, read back, Undo & Redo
+        const auto setAutoResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":130,"method":"automation.set_points","params":{"track_index":0,"parameter":"volume","clear_existing":true,"points":[{"beat":0.0,"value":-12.0,"curve":0.0},{"beat":4.0,"value":0.0,"curve":0.0},{"beat":8.0,"value":-6.0,"curve":0.0}]}})"));
+
+        if (static_cast<int> (setAutoResp["result"]["point_count"]) != 3)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 automation.set_points did not write 3 points" << std::endl;
+            return 1;
+        }
+
+        const auto getAutoResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":131,"method":"automation.get_points","params":{"track_index":0,"parameter":"volume"}})"));
+        const auto* autoPts = getAutoResp["result"]["points"].getArray();
+
+        if (autoPts == nullptr || autoPts->size() != 3)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 automation.get_points expected 3 points" << std::endl;
+            return 1;
+        }
+
+        app.edit->getUndoManager().undo();
+        const auto getAfterUndo = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":132,"method":"automation.get_points","params":{"track_index":0,"parameter":"volume"}})"));
+
+        if (getAfterUndo["result"]["points"].getArray() == nullptr
+            || getAfterUndo["result"]["points"].getArray()->size() != 0)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 Undo did not clear automation points" << std::endl;
+            return 1;
+        }
+
+        app.edit->getUndoManager().redo();
+
+        // 2. Configure Aux FX Send bus (Reverb) on Track 0 at -9.0 dB, wet 0.45
+        const auto fxResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":133,"method":"mixer.set_fx_send","params":{"track_index":0,"bus_index":0,"send_db":-9.0,"effect":"reverb","wet_level":0.45}})"));
+        const int fxReturnTrackIdx = static_cast<int> (fxResp["result"]["return_track_index"]);
+
+        if (fxReturnTrackIdx < 0 || std::abs (static_cast<double> (fxResp["result"]["send_db"]) - (-9.0)) > 0.2)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 mixer.set_fx_send did not configure bus 0 at -9.0 dB" << std::endl;
+            return 1;
+        }
+
+        // 3. Verify Arrangement + Piano Roll zoom & clamping, plus 1280x820 layout with Auto toggle
+        const float arrBaseZoom = app.arrangementView.getPixelsPerBeat();
+        app.arrangementView.zoomIn();
+        if (app.arrangementView.getPixelsPerBeat() <= arrBaseZoom)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 ArrangementView zoomIn did not increase pixelsPerBeat"
+                      << std::endl;
+            return 1;
+        }
+        app.arrangementView.zoomOut();
+        app.arrangementView.setPixelsPerBeat (1.0f);
+        if (std::abs (app.arrangementView.getPixelsPerBeat() - 16.0f) > 0.01f)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 ArrangementView min zoom clamp failed" << std::endl;
+            return 1;
+        }
+        app.arrangementView.setPixelsPerBeat (arrBaseZoom);
+
+        const float prBaseZoom = app.pianoRoll.getPixelsPerBeat();
+        app.pianoRoll.zoomIn();
+        if (app.pianoRoll.getPixelsPerBeat() <= prBaseZoom)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 PianoRollComponent zoomIn did not increase pixelsPerBeat"
+                      << std::endl;
+            return 1;
+        }
+        app.pianoRoll.zoomOut();
+        app.pianoRoll.setPixelsPerBeat (999.0f);
+        if (std::abs (app.pianoRoll.getPixelsPerBeat() - 160.0f) > 0.01f)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 PianoRollComponent max zoom clamp failed" << std::endl;
+            return 1;
+        }
+        app.pianoRoll.setPixelsPerBeat (prBaseZoom);
+
+        app.setSize (1280, 820);
+        app.resized();
+
+        if (app.statusLabel.getWidth() < 180)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 statusLabel too narrow at 1280x820 ("
+                      << app.statusLabel.getWidth() << "px)" << std::endl;
+            return 1;
+        }
+
+        // 4. Verify automation points and AuxSend/AuxReturn+Reverb survive save/reload
+        const auto wo013TempDir = tempDir.getChildFile ("tcs_wo013_smoke");
+        wo013TempDir.deleteRecursively();
+        wo013TempDir.createDirectory();
+        const auto wo013SessionFile = wo013TempDir.getChildFile ("AutoFxRoundTrip.tracktionedit");
+
+        app.currentEditFile = wo013SessionFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        if (! app.loadSessionFromFileSafely (wo013SessionFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 session reload failed" << std::endl;
+            return 1;
+        }
+
+        const auto reloadedAuto = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":134,"method":"automation.get_points","params":{"track_index":0,"parameter":"volume"}})"));
+
+        bool foundAuxSend = false;
+        bool foundAuxReturn = false;
+        bool foundWetReverb = false;
+
+        {
+            auto reloadedTracks = te::getAudioTracks (*app.edit);
+
+            for (auto* p : reloadedTracks[0]->pluginList)
+                if (auto* s = dynamic_cast<te::AuxSendPlugin*> (p))
+                    if (std::abs (s->getGainDb() - (-9.0f)) <= 0.2f)
+                        foundAuxSend = true;
+
+            if (juce::isPositiveAndBelow (fxReturnTrackIdx, reloadedTracks.size()))
+            {
+                for (auto* p : reloadedTracks[fxReturnTrackIdx]->pluginList)
+                {
+                    if (dynamic_cast<te::AuxReturnPlugin*> (p) != nullptr)
+                        foundAuxReturn = true;
+                    if (auto* r = dynamic_cast<te::ReverbPlugin*> (p))
+                        if (std::abs (r->wetValue.get() - 0.45f) <= 0.02f)
+                            foundWetReverb = true;
+                }
+            }
+        }
+
+        const auto* reloadedAutoPts = reloadedAuto["result"]["points"].getArray();
+
+        if (reloadedAutoPts == nullptr || reloadedAutoPts->size() != 3
+            || ! foundAuxSend || ! foundAuxReturn || ! foundWetReverb)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-013 automation curve or Aux Send/Return FX did not persist"
+                      << std::endl;
+            return 1;
+        }
+
+        wo013TempDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-013 Automation curves, Aux FX bus, zoom & studio theme PASS" << std::endl;
+    }
+
+    //===========================================================================
+    // WO-014 Regression Test: YIN Audio-to-MIDI Pitch Transcription, Undo & Reload
+    //===========================================================================
+    {
+        const auto wo014TempDir = tempDir.getChildFile ("tcs_wo014_smoke");
+        wo014TempDir.deleteRecursively();
+        wo014TempDir.createDirectory();
+        const auto melodyWavFile = wo014TempDir.getChildFile ("TestMelody_ACEA.wav");
+
+        // 1. Synthesize a 4-note monophonic melody (A4=69, C5=72, E5=76, A5=81), 1 beat each at session BPM
+        const double sessionBpm  = app.edit->tempoSequence.getTempo (0)->getBpm();
+        const double secPerBeat  = 60.0 / std::max (40.0, sessionBpm);
+        constexpr int sr         = 44100;
+        const int samplesPerNote = static_cast<int> (std::round (secPerBeat * sr));
+        const int gapSamples     = static_cast<int> (std::round (0.02 * sr)); // 20ms articulation gap
+        const int expectedMidi[4] = { 69, 72, 76, 81 };
+
+        {
+            juce::AudioBuffer<float> melBuf (2, samplesPerNote * 4);
+            melBuf.clear();
+
+            for (int n = 0; n < 4; ++n)
+            {
+                const double freq = 440.0 * std::pow (2.0, (static_cast<double> (expectedMidi[n]) - 69.0) / 12.0);
+                const int startS = n * samplesPerNote;
+                const int activeS = std::max (1, samplesPerNote - gapSamples);
+
+                for (int i = 0; i < activeS; ++i)
+                {
+                    const float env = std::min (1.0f, std::min (static_cast<float> (i) / 200.0f,
+                                                                static_cast<float> (activeS - 1 - i) / 200.0f));
+                    const float sample = static_cast<float> (
+                        0.5 * std::sin (2.0 * juce::MathConstants<double>::pi * freq * i / sr)) * env;
+                    melBuf.setSample (0, startS + i, sample);
+                    melBuf.setSample (1, startS + i, sample);
+                }
+            }
+
+            auto fs = std::make_unique<juce::FileOutputStream> (melodyWavFile);
+            fs->setPosition (0);
+            fs->truncate();
+            std::unique_ptr<juce::OutputStream> os (fs.release());
+            juce::WavAudioFormat fmt;
+            auto writer = fmt.createWriterFor (os, juce::AudioFormatWriterOptions{}
+                                                       .withSampleRate (sr)
+                                                       .withNumChannels (2)
+                                                       .withBitsPerSample (16));
+
+            if (writer == nullptr || ! writer->writeFromAudioSampleBuffer (melBuf, 0, melBuf.getNumSamples()))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-014 could not write TestMelody_ACEA.wav" << std::endl;
+                return 1;
+            }
+        }
+
+        // 2. Insert melody WAV onto a dedicated source track so clip_index 0 is deterministic
+        int sourceTrackIdx = -1;
+        {
+            auto tracks = te::getAudioTracks (*app.edit);
+            app.edit->ensureNumberOfAudioTracks (tracks.size() + 1);
+            tracks = te::getAudioTracks (*app.edit);
+            sourceTrackIdx = tracks.size() - 1;
+            auto* srcTrack = tracks[sourceTrackIdx];
+            srcTrack->setName ("Vocal Sketch");
+
+            const tracktion::TimeRange r {
+                tracktion::TimePosition::fromSeconds (0.0),
+                tracktion::TimePosition::fromSeconds (secPerBeat * 4.0)
+            };
+
+            if (auto wc = srcTrack->insertWaveClip ("MelodyTake", melodyWavFile, te::ClipPosition { r, {} }, false))
+            {
+                wc->getSourceFileReference().setToFile (
+                    melodyWavFile, te::SourceFileReference::PathStyle::alwaysAbsolute, false);
+            }
+        }
+
+        // 3. Transcribe via audio.transcribe_to_midi RPC into a new 4OSC track
+        const auto transResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            juce::String (R"({"jsonrpc":"2.0","id":140,"method":"audio.transcribe_to_midi","params":{"track_index":)")
+            + juce::String (sourceTrackIdx)
+            + R"(,"clip_index":0,"target_track_index":-1,"quantize_beats":0.25,"min_note_beats":0.25}})"));
+
+        const int transcribedTrackIdx = static_cast<int> (transResp["result"]["target_track_index"]);
+        const auto* transNotes = transResp["result"]["notes"].getArray();
+
+        if (transcribedTrackIdx < 0 || transNotes == nullptr || transNotes->size() != 4)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-014 expected 4 transcribed MIDI notes, got "
+                      << (transNotes != nullptr ? transNotes->size() : -1) << std::endl;
+            return 1;
+        }
+
+        for (int i = 0; i < 4; ++i)
+        {
+            const int gotPitch = static_cast<int> ((*transNotes)[i]["pitch"]);
+
+            if (gotPitch != expectedMidi[i])
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-014 note " << i << " pitch mismatch: expected "
+                          << expectedMidi[i] << ", got " << gotPitch << std::endl;
+                return 1;
+            }
+        }
+
+        // 4. Verify Undo removes transcribed MIDI notes and Redo restores them
+        app.edit->getUndoManager().undo();
+        {
+            auto tracks = te::getAudioTracks (*app.edit);
+
+            if (juce::isPositiveAndBelow (transcribedTrackIdx, tracks.size()))
+            {
+                int remaining = 0;
+
+                for (auto* c : tracks[transcribedTrackIdx]->getClips())
+                    if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                        remaining += mc->getSequence().getNumNotes();
+
+                if (remaining != 0)
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-014 Undo did not clear transcribed MIDI notes" << std::endl;
+                    return 1;
+                }
+            }
+        }
+
+        app.edit->getUndoManager().redo();
+
+        // 5. Verify transcribed MidiClip persists across save/load round-trip
+        const auto wo014SessionFile = wo014TempDir.getChildFile ("TranscribeRoundTrip.tracktionedit");
+        app.currentEditFile = wo014SessionFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        if (! app.loadSessionFromFileSafely (wo014SessionFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-014 session reload failed" << std::endl;
+            return 1;
+        }
+
+        const auto verifyNotesResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            juce::String (R"({"jsonrpc":"2.0","id":141,"method":"midi.get_notes","params":{"track_index":)")
+            + juce::String (transcribedTrackIdx) + R"(,"start_beat":0.0,"end_beat":8.0}})"));
+        const auto* reloadedTransNotes = verifyNotesResp["result"]["notes"].getArray();
+
+        if (reloadedTransNotes == nullptr || reloadedTransNotes->size() != 4)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-014 transcribed MIDI notes did not persist across reload" << std::endl;
+            return 1;
+        }
+
+        wo014TempDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-014 YIN Audio-to-MIDI transcription, Undo/Redo & persistence PASS" << std::endl;
+    }
+
+    //===========================================================================
+    // WO-015 Regression Test: Plugin Windows, Timeline Vertical Scroll & Wave-to-MIDI UI
+    //===========================================================================
+    {
+        // 1. StudioUIBehaviour plugin window open/close lifecycle
+        {
+            auto wo015Tracks = te::getAudioTracks (*app.edit);
+            if (wo015Tracks.isEmpty())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 expected tracks in Edit" << std::endl;
+                return 1;
+            }
+
+            if (wo015Tracks[0]->pluginList.getPlugins().isEmpty())
+            {
+                if (auto synth = app.edit->getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {}))
+                    wo015Tracks[0]->pluginList.insertPlugin (synth, 0, nullptr);
+            }
+
+            auto* testPlugin = wo015Tracks[0]->pluginList.getPlugins().getFirst().get();
+            if (testPlugin == nullptr || testPlugin->windowState == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 missing testable plugin/windowState" << std::endl;
+                return 1;
+            }
+
+            testPlugin->showWindowExplicitly();
+            if (! testPlugin->windowState->isWindowShowing())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 StudioUIBehaviour failed to open plugin window" << std::endl;
+                return 1;
+            }
+
+            testPlugin->windowState->closeWindowExplicitly();
+            if (testPlugin->windowState->isWindowShowing())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 closeWindowExplicitly did not close plugin window" << std::endl;
+                return 1;
+            }
+        }
+
+        // 2. ArrangementView vertical track scroll & bounds clamping
+        {
+            auto wo015Tracks = te::getAudioTracks (*app.edit);
+            if (wo015Tracks.size() < 5)
+            {
+                app.edit->ensureNumberOfAudioTracks (5);
+                wo015Tracks = te::getAudioTracks (*app.edit);
+            }
+
+            app.arrangementView.setSize (800, 180);
+            app.arrangementView.scrollToTrack (wo015Tracks.size() - 1);
+            if (app.arrangementView.getVerticalScrollOffsetPx() <= 0)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 ArrangementView did not scroll vertically to last track"
+                          << std::endl;
+                return 1;
+            }
+
+            app.arrangementView.scrollToTrack (0);
+            if (app.arrangementView.getVerticalScrollOffsetPx() != 0)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 ArrangementView did not scroll back to top track"
+                          << std::endl;
+                return 1;
+            }
+        }
+
+        // 3. Wave Edit -> To MIDI callback auto-switches middle pane to Piano Roll
+        {
+            app.setSize (1280, 820);
+            app.waveEditorToggleButton.setToggleState (true, juce::dontSendNotification);
+            app.resized();
+
+            if (! app.waveformEditorComponent.isVisible() || app.pianoRoll.isVisible())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 Wave Edit toggle did not show WaveformEditorComponent"
+                          << std::endl;
+                return 1;
+            }
+
+            if (! app.waveformEditorComponent.onTranscribedToMidi)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 onTranscribedToMidi callback not wired" << std::endl;
+                return 1;
+            }
+
+            app.waveformEditorComponent.onTranscribedToMidi (0, {}, 4);
+
+            if (app.waveEditorToggleButton.getToggleState()
+                || app.waveformEditorComponent.isVisible()
+                || ! app.pianoRoll.isVisible())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-015 Wave-to-MIDI callback did not switch back to Piano Roll"
+                          << std::endl;
+                return 1;
+            }
+        }
+
+        std::cout << "[SMOKE_TEST] WO-015 Plugin windows, timeline vertical scroll & Wave-to-MIDI UI polish PASS"
+                  << std::endl;
+    }
+
+    //===========================================================================
+    // WO-016 Regression Test: CV SVF Filter DSP, Direction Pins, Transpose & Undo
+    //===========================================================================
+    {
+        const auto wo016TempDir = tempDir.getChildFile ("tcs_wo016_smoke");
+        wo016TempDir.deleteRecursively();
+        wo016TempDir.createDirectory();
+
+        // 1. Fresh-session Undo history starts empty
+        app.createNewSession (wo016TempDir.getChildFile ("FreshUndo.tracktionedit"), true, false);
+        if (app.edit->getUndoManager().canUndo())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-016 fresh session started with non-empty undo history" << std::endl;
+            return 1;
+        }
+
+        // 2. CvWobbleFilterPlugin: 3 inputs (L, R, CV In), real CV-modulated SVF attenuation & CV clear
+        {
+            auto wobbleTestP = app.edit->getPluginCache().createNewPlugin (CvWobbleFilterPlugin::xmlTypeName, {});
+            auto* wobble = dynamic_cast<CvWobbleFilterPlugin*> (wobbleTestP.get());
+
+            juce::StringArray ins, outs;
+            if (wobble != nullptr)
+                wobble->getChannelNames (&ins, &outs);
+
+            if (wobble == nullptr || ins.size() != 3 || outs.size() != 2 || ins[2] != "CV In")
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 CvWobbleFilterPlugin channel pin layout mismatch" << std::endl;
+                return 1;
+            }
+
+            constexpr int blockN = 256;
+            constexpr double sr = 44100.0;
+            auto makeTestBlock = [] (float cvVal)
+            {
+                juce::AudioBuffer<float> buf (3, blockN);
+                for (int i = 0; i < blockN; ++i)
+                {
+                    // 1500 Hz sits inside the high-CV passband (~2545 Hz) and
+                    // ~2.2 octaves above the low-CV cutoff (~318 Hz) at default depth 0.5.
+                    const float sig = static_cast<float> (
+                        0.5 * std::sin (2.0 * juce::MathConstants<double>::pi * 1500.0 * i / sr));
+                    buf.setSample (0, i, sig);
+                    buf.setSample (1, i, sig);
+                    buf.setSample (2, i, cvVal);
+                }
+                return buf;
+            };
+
+            auto bufLow  = makeTestBlock (-1.0f);
+            auto bufHigh = makeTestBlock (+1.0f);
+
+            const te::PluginInitialisationInfo initInfo { tracktion::TimePosition::fromSeconds (0.0), sr, blockN };
+            wobble->initialise (initInfo);
+            wobble->applyToBuffer (te::PluginRenderContext (&bufLow, 0, blockN, nullptr, 0.0, {}, false, false, false, false));
+            wobble->deinitialise();
+
+            wobble->initialise (initInfo);
+            wobble->applyToBuffer (te::PluginRenderContext (&bufHigh, 0, blockN, nullptr, 0.0, {}, false, false, false, false));
+            wobble->deinitialise();
+
+            const float lowRms  = bufLow.getRMSLevel (0, 0, blockN);
+            const float highRms = bufHigh.getRMSLevel (0, 0, blockN);
+
+            if (highRms <= lowRms * 1.25f || std::abs (bufHigh.getSample (2, 0)) > 1e-6f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 CvWobbleFilterPlugin CV-modulated SVF filter check failed"
+                          << std::endl;
+                return 1;
+            }
+        }
+
+        // 3. ModularRackComponent direction-aware input/output pins & Rack I/O rails
+        {
+            auto wo16Rack = app.edit->getRackList().addNewRack();
+            wo16Rack->rackName = "WO-016 CV Rack";
+
+            auto lfoP    = app.edit->getPluginCache().createNewPlugin (CvLfoPlugin::xmlTypeName, {});
+            auto wobbleP = app.edit->getPluginCache().createNewPlugin (CvWobbleFilterPlugin::xmlTypeName, {});
+
+            const auto lfoID    = lfoP->itemID;
+            const auto wobbleID = wobbleP->itemID;
+
+            if (! wo16Rack->addPlugin (lfoP, { 0.15f, 0.25f }, false)
+                || ! wo16Rack->addPlugin (wobbleP, { 0.55f, 0.25f }, false)
+                || ! wo16Rack->addConnection ({}, 1, wobbleID, 1)
+                || ! wo16Rack->addConnection (lfoID, 1, wobbleID, 3)
+                || ! wo16Rack->addConnection (wobbleID, 1, {}, 1))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 could not wire Rack I/O & LFO -> Wobble CV In" << std::endl;
+                return 1;
+            }
+
+            const int rIdx = app.edit->getRackList().getTypes().size() - 1;
+            app.modularRackComponent.syncFromEdit();
+            app.modularRackComponent.selectRack (rIdx);
+            app.modularRackComponent.setSize (1000, 560);
+            app.modularRackComponent.resized();
+
+            const auto inPos  = app.modularRackComponent.getPinCentreInRack (wobbleID, 1, true);
+            const auto outPos = app.modularRackComponent.getPinCentreInRack (wobbleID, 1, false);
+
+            if (inPos.x >= outPos.x || ! app.modularRackComponent.verifyNonOverlappingLayoutForSmokeTest())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 direction-aware pin geometry invalid" << std::endl;
+                return 1;
+            }
+        }
+
+        // 4. Pitch-shift-aware AudioToMidiTranscriber (A4 + 3 semitones -> C5 = 72)
+        const auto pitchWav = wo016TempDir.getChildFile ("PitchShiftA4.wav");
+        const double curBpm = app.edit->tempoSequence.getTempo (0)->getBpm();
+        const double beatSec = 60.0 / std::max (40.0, curBpm);
+        constexpr int sr = 44100;
+        const int nSamples = static_cast<int> (std::round (beatSec * 2.0 * sr));
+
+        {
+            juce::AudioBuffer<float> a4Buf (2, nSamples);
+            for (int i = 0; i < nSamples; ++i)
+            {
+                const float s = static_cast<float> (
+                    0.5 * std::sin (2.0 * juce::MathConstants<double>::pi * 440.0 * i / sr));
+                a4Buf.setSample (0, i, s);
+                a4Buf.setSample (1, i, s);
+            }
+
+            auto fs = std::make_unique<juce::FileOutputStream> (pitchWav);
+            fs->setPosition (0);
+            fs->truncate();
+            std::unique_ptr<juce::OutputStream> os (fs.release());
+            juce::WavAudioFormat fmt;
+            auto writer = fmt.createWriterFor (os, juce::AudioFormatWriterOptions{}
+                                                       .withSampleRate (sr)
+                                                       .withNumChannels (2)
+                                                       .withBitsPerSample (16));
+            if (writer == nullptr || ! writer->writeFromAudioSampleBuffer (a4Buf, 0, nSamples))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 could not write PitchShiftA4.wav" << std::endl;
+                return 1;
+            }
+        }
+
+        {
+            auto tracks = te::getAudioTracks (*app.edit);
+            const tracktion::TimeRange r {
+                tracktion::TimePosition::fromSeconds (0.0),
+                tracktion::TimePosition::fromSeconds (beatSec * 2.0)
+            };
+
+            if (auto wc = tracks[1]->insertWaveClip ("TransposedTake", pitchWav, te::ClipPosition { r, {} }, false))
+            {
+                wc->getSourceFileReference().setToFile (
+                    pitchWav, te::SourceFileReference::PathStyle::alwaysAbsolute, false);
+                wc->setPitchChange (3.0f);
+            }
+        }
+
+        const auto transShiftResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":160,"method":"audio.transcribe_to_midi","params":{"track_index":1,"clip_index":0,"target_track_index":-1,"quantize_beats":0.25,"min_note_beats":0.25}})"));
+        const auto* shiftNotes = transShiftResp["result"]["notes"].getArray();
+
+        if (shiftNotes == nullptr || shiftNotes->isEmpty() || static_cast<int> ((*shiftNotes)[0]["pitch"]) != 72)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-016 transposed clip transcription expected pitch 72, got "
+                      << (shiftNotes != nullptr && ! shiftNotes->isEmpty()
+                              ? static_cast<int> ((*shiftNotes)[0]["pitch"])
+                              : -1)
+                      << std::endl;
+            return 1;
+        }
+
+        wo016TempDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-016 CV SVF filter, direction pins & transposed transcription PASS" << std::endl;
+    }
+
+    //===========================================================================
+    // WO-017 Regression Test: Factory Presets, .trkpreset, Sampler & Multi-Machine
+    //===========================================================================
+    {
+        const auto wo017TempDir = tempDir.getChildFile ("tcs_wo017_smoke");
+        wo017TempDir.deleteRecursively();
+        wo017TempDir.createDirectory();
+
+        // 1. Fresh session + 4OSC Factory Presets + GenericTracktionPluginEditor + .trkpreset round-trip
+        app.createNewSession (wo017TempDir.getChildFile ("Wo017Presets.tracktionedit"), true, false);
+        auto tracks = te::getAudioTracks (*app.edit);
+        te::FourOscPlugin* synth = nullptr;
+
+        if (! tracks.isEmpty())
+            synth = tracks[0]->pluginList.findFirstPluginOfType<te::FourOscPlugin>();
+
+        if (synth == nullptr || PluginPresetManager::getFactoryPresetNames (*synth).size() < 8)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 FourOscPlugin or factory preset bank missing" << std::endl;
+            return 1;
+        }
+
+        if (! PluginPresetManager::applyFactoryPreset (*synth, "Reese Neuro Bass")
+            || synth->voiceModeValue.get() != 1
+            || synth->oscParams[0]->waveShapeValue.get() != 3
+            || synth->oscParams[0]->voicesValue.get() != 4
+            || ! synth->distortionOnValue.get())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 Reese Neuro Bass preset properties mismatch" << std::endl;
+            return 1;
+        }
+
+        {
+            GenericTracktionPluginEditor editor (*synth);
+            if (editor.getNumPresetItems() < 8)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-017 GenericTracktionPluginEditor preset combo empty" << std::endl;
+                return 1;
+            }
+        }
+
+        const auto origId = synth->itemID;
+        const auto presetFile = wo017TempDir.getChildFile ("ReeseSaved.trkpreset");
+
+        if (! PluginPresetManager::savePresetToFile (*synth, presetFile) || ! presetFile.existsAsFile())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 savePresetToFile failed" << std::endl;
+            return 1;
+        }
+
+        if (! PluginPresetManager::applyFactoryPreset (*synth, "Init Sine")
+            || synth->oscParams[0]->waveShapeValue.get() != 1
+            || synth->distortionOnValue.get())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 Init Sine reset failed" << std::endl;
+            return 1;
+        }
+
+        if (! PluginPresetManager::loadPresetFromFile (*synth, presetFile)
+            || synth->itemID != origId
+            || synth->oscParams[0]->waveShapeValue.get() != 3
+            || ! synth->distortionOnValue.get())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 loadPresetFromFile restore or ID preservation failed" << std::endl;
+            return 1;
+        }
+
+        // 2. MCP rack.add_machine ('sampler', 'compressor') + SamplerPlugin 808 kit audio render + plugin.set_preset
+        const auto prevTakesCb = app.ipcServer.getTakesDirectoryCallback;
+        app.ipcServer.getTakesDirectoryCallback = [wo017TempDir]
+        {
+            return wo017TempDir.getChildFile ("Takes");
+        };
+
+        const auto addSamplerResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":170,"method":"rack.add_machine","params":{"rack_index":0,"machine_type":"sampler"}})"));
+        const auto addCompResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":171,"method":"rack.add_machine","params":{"rack_index":0,"machine_type":"compressor"}})"));
+
+        app.ipcServer.getTakesDirectoryCallback = prevTakesCb;
+
+        const juce::int64 samplerId = static_cast<juce::int64> (addSamplerResp["result"]["plugin_id"]);
+        const juce::int64 compId    = static_cast<juce::int64> (addCompResp["result"]["plugin_id"]);
+
+        if (samplerId <= 0 || compId <= 0)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 MCP rack.add_machine returned invalid plugin_id" << std::endl;
+            return 1;
+        }
+
+        auto rack0 = app.edit->getRackList().getRackType (0);
+        auto* sampler = (rack0 != nullptr)
+                            ? dynamic_cast<te::SamplerPlugin*> (rack0->getPluginForID (
+                                  tracktion::EditItemID::fromRawID (static_cast<uint64_t> (samplerId))))
+                            : nullptr;
+
+        if (sampler == nullptr || sampler->getNumSounds() != 4)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 SamplerPlugin starter kit expected 4 sounds" << std::endl;
+            return 1;
+        }
+
+        constexpr int smpBlock = 512;
+        constexpr double smpSr = 44100.0;
+        juce::AudioBuffer<float> smpOut (2, smpBlock);
+        smpOut.clear();
+        te::MidiMessageArray midiArr;
+        midiArr.addMidiMessage (juce::MidiMessage::noteOn (1, 36, static_cast<juce::uint8> (115)),
+                                0.0,
+                                te::MPESourceID{});
+
+        sampler->initialise (te::PluginInitialisationInfo { tracktion::TimePosition::fromSeconds (0.0), smpSr, smpBlock });
+        sampler->applyToBuffer (te::PluginRenderContext (&smpOut, 0, smpBlock, &midiArr, 0.0, {}, false, false, false, false));
+        sampler->deinitialise();
+
+        if (smpOut.getRMSLevel (0, 0, smpBlock) <= 0.005f)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 SamplerPlugin 808 Kick rendered silence" << std::endl;
+            return 1;
+        }
+
+        const auto setPresetResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":172,"method":"plugin.set_preset","params":{"track_index":0,"plugin_index":0,"preset_name":"Supersaw Anthem Lead"}})"));
+
+        if (setPresetResp["result"]["applied_preset"].toString() != "Supersaw Anthem Lead"
+            || synth->oscParams[0]->voicesValue.get() != 6
+            || ! synth->reverbOnValue.get())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-017 MCP plugin.set_preset did not apply Supersaw Anthem Lead" << std::endl;
+            return 1;
+        }
+
+        // Release the RackType::Ptr before createNewSession() destroys the Edit.
+        rack0 = nullptr;
+        app.createNewSession (sessionFile, true, false);
+        wo017TempDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-017 Factory presets, .trkpreset round-trip, Sampler 808 kit & multi-machine rack PASS" << std::endl;
+    }
+
+    //===========================================================================
+    // WO-016 Hardware Rack Suite: TR-808, 12-bit sampler, tape + RPC persistence
+    //===========================================================================
+    {
+        const auto hwDir = tempDir.getChildFile ("tcs_wo016_hardware_smoke");
+        hwDir.deleteRecursively();
+        hwDir.createDirectory();
+        app.createNewSession (hwDir.getChildFile ("HardwareRack.tracktionedit"), true, false);
+
+        // 1. TR-808 multi-out + CV accent on pin 1 / channel 0.
+        {
+            constexpr int blockN = 512;
+            juce::AudioBuffer<float> drumBuf (5, blockN);
+            drumBuf.clear();
+
+            for (int i = 0; i < blockN; ++i)
+                drumBuf.setSample (0, i, 0.6f);
+
+            te::MidiMessageArray drumMidi;
+            drumMidi.addMidiMessage (juce::MidiMessage::noteOn (1, 36, static_cast<juce::uint8> (120)), 0.0, te::MPESourceID{});
+            drumMidi.addMidiMessage (juce::MidiMessage::noteOn (1, 38, static_cast<juce::uint8> (120)), 0.0, te::MPESourceID{});
+            drumMidi.addMidiMessage (juce::MidiMessage::noteOn (1, 42, static_cast<juce::uint8> (120)), 0.0, te::MPESourceID{});
+
+            auto drumPtr = app.edit->getPluginCache().createNewPlugin (Tr808DrumPlugin::xmlTypeName, {});
+            auto* drum = dynamic_cast<Tr808DrumPlugin*> (drumPtr.get());
+
+            if (drum == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 Tr808DrumPlugin could not be created" << std::endl;
+                return 1;
+            }
+
+            drum->initialise (te::PluginInitialisationInfo {
+                tracktion::TimePosition::fromSeconds (0.0), 44100.0, blockN });
+            drum->applyToBuffer (te::PluginRenderContext (&drumBuf, 0, blockN, &drumMidi,
+                                                          0.0, {}, false, false, false, false));
+
+            for (int ch = 0; ch < 5; ++ch)
+            {
+                bool finite = true;
+
+                for (int i = 0; i < blockN; ++i)
+                    if (! std::isfinite (drumBuf.getSample (ch, i)))
+                        finite = false;
+
+                if (! finite || drumBuf.getRMSLevel (ch, 0, blockN) <= 1e-3f)
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-016 TR-808 output " << ch
+                              << " silent or non-finite" << std::endl;
+                    return 1;
+                }
+            }
+
+            // Closed Hat (42) must choke Open Hat (46), and 2-ch track inserts must render stereo.
+            te::MidiMessageArray chokeMidi;
+            chokeMidi.addMidiMessage (juce::MidiMessage::noteOn (1, 46, static_cast<juce::uint8> (110)), 0.0, te::MPESourceID{});
+            juce::AudioBuffer<float> stereoDrum (2, 128);
+            stereoDrum.clear();
+            drum->applyToBuffer (te::PluginRenderContext (&stereoDrum, 0, 128, &chokeMidi,
+                                                          0.0, {}, false, false, false, false));
+            if (! drum->isOHatActiveForSmokeTest() || stereoDrum.getRMSLevel (0, 0, 128) <= 1e-4f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 TR-808 2-ch OHat render failed" << std::endl;
+                return 1;
+            }
+            chokeMidi.clear();
+            chokeMidi.addMidiMessage (juce::MidiMessage::noteOn (1, 42, static_cast<juce::uint8> (110)), 0.0, te::MPESourceID{});
+            drum->applyToBuffer (te::PluginRenderContext (&stereoDrum, 0, 128, &chokeMidi,
+                                                          0.0, {}, false, false, false, false));
+            if (drum->isOHatActiveForSmokeTest() || ! PluginPresetManager::applyFactoryPreset (*drum, "Sub Shaker 808"))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 TR-808 CHat choke or preset application failed" << std::endl;
+                return 1;
+            }
+
+            drum->deinitialise();
+            drumPtr = nullptr;
+        }
+
+        // 2. 12-bit sampler: ZOH decimation + reconstruction bypass.
+        {
+            constexpr int blockN = 1024;
+            juce::AudioBuffer<float> sampleOut (2, blockN);
+            sampleOut.clear();
+
+            te::MidiMessageArray sampleMidi;
+            sampleMidi.addMidiMessage (juce::MidiMessage::noteOn (1, 60, static_cast<juce::uint8> (120)), 0.0, te::MPESourceID{});
+
+            auto samplerPtr = app.edit->getPluginCache().createNewPlugin (VintageSamplerPlugin::xmlTypeName, {});
+            auto* sampler = dynamic_cast<VintageSamplerPlugin*> (samplerPtr.get());
+
+            if (sampler == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 VintageSamplerPlugin could not be created" << std::endl;
+                return 1;
+            }
+
+            sampler->setTargetRate (12000.0f);
+            sampler->setFilterCutoff (18000.0f);
+            sampler->initialise (te::PluginInitialisationInfo {
+                tracktion::TimePosition::fromSeconds (0.0), 44100.0, blockN });
+            sampler->applyToBuffer (te::PluginRenderContext (&sampleOut, 0, blockN, &sampleMidi,
+                                                             0.0, {}, false, false, false, false));
+            sampler->deinitialise();
+
+            int repeats = 0;
+
+            for (int i = 1; i < 300; ++i)
+                if (sampleOut.getSample (0, i) == sampleOut.getSample (0, i - 1))
+                    ++repeats;
+
+            if (sampleOut.getRMSLevel (0, 0, blockN) <= 1e-3f || repeats < 20
+                || ! PluginPresetManager::applyFactoryPreset (*sampler, "Lo-Fi Crunch (8-Bit / 12 kHz)"))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 sampler ZOH staircase or preset failed (repeats="
+                          << repeats << ")" << std::endl;
+                return 1;
+            }
+
+            samplerPtr = nullptr;
+        }
+
+        // 3. Analog tape: asymmetric saturation + wow/flutter is bounded & non-linear.
+        {
+            constexpr int blockN = 512;
+            constexpr double sr = 44100.0;
+            juce::AudioBuffer<float> tapeBuf (3, blockN);
+
+            for (int i = 0; i < blockN; ++i)
+            {
+                const float s = static_cast<float> (0.5 * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / sr));
+                tapeBuf.setSample (0, i, s);
+                tapeBuf.setSample (1, i, s);
+                tapeBuf.setSample (2, i, 0.0f);
+            }
+
+            const float inputRms = tapeBuf.getRMSLevel (0, 0, blockN);
+
+            auto tapePtr = app.edit->getPluginCache().createNewPlugin (AnalogTapePlugin::xmlTypeName, {});
+            auto* tape = dynamic_cast<AnalogTapePlugin*> (tapePtr.get());
+
+            if (tape == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 AnalogTapePlugin could not be created" << std::endl;
+                return 1;
+            }
+
+            tape->setDrive (4.0f);
+            tape->setWow (0.4f);
+            tape->setMix (1.0f);
+            tape->initialise (te::PluginInitialisationInfo {
+                tracktion::TimePosition::fromSeconds (0.0), sr, blockN });
+            tape->applyToBuffer (te::PluginRenderContext (&tapeBuf, 0, blockN, nullptr,
+                                                          0.0, {}, false, false, false, false));
+
+            float diff = 0.0f;
+            bool finite = true;
+
+            for (int i = 0; i < blockN; ++i)
+            {
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    const float x = tapeBuf.getSample (ch, i);
+                    if (! std::isfinite (x) || std::abs (x) >= 1.0f)
+                        finite = false;
+                    diff += std::abs (x - static_cast<float> (0.5 * std::sin (
+                                        2.0 * juce::MathConstants<double>::pi * 220.0 * i / sr)));
+                }
+            }
+
+            if (! finite || tapeBuf.getRMSLevel (0, 0, blockN) <= 1e-3f
+                || diff / static_cast<float> (blockN * 2) < 1e-3f
+                || std::abs (tapeBuf.getRMSLevel (0, 0, blockN) - inputRms) < 1e-4f
+                || std::abs (tapeBuf.getSample (2, 0)) > 1e-6f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 tape saturation/wow invalid or CV not cleared" << std::endl;
+                return 1;
+            }
+
+            // Also verify AnalogTapePlugin processes 2-channel stereo tracks cleanly while initialised.
+            juce::AudioBuffer<float> stereoTape (2, 256);
+            for (int i = 0; i < 256; ++i)
+            {
+                const float s = static_cast<float> (0.4 * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / sr));
+                stereoTape.setSample (0, i, s);
+                stereoTape.setSample (1, i, s);
+            }
+            tape->applyToBuffer (te::PluginRenderContext (&stereoTape, 0, 256, nullptr,
+                                                          0.0, {}, false, false, false, false));
+            if (stereoTape.getRMSLevel (0, 0, 256) <= 1e-3f
+                || ! PluginPresetManager::applyFactoryPreset (*tape, "Lo-Fi Cassette"))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 2-ch track tape processing or preset failed" << std::endl;
+                return 1;
+            }
+
+            // After deinitialise(), applyToBuffer must safely no-op without overflowing ring buffers.
+            tape->deinitialise();
+            tape->applyToBuffer (te::PluginRenderContext (&stereoTape, 0, 256, nullptr,
+                                                          0.0, {}, false, false, false, false));
+
+            tapePtr = nullptr;
+        }
+
+        // 4. rack.add_module + track.create + save/reload persistence.
+        {
+            const auto targetFile = hwDir.getChildFile ("HardwarePersist.tracktionedit");
+            targetFile.deleteFile();
+            app.createNewSession (targetFile, true, false);
+
+            const char* moduleTypes[3] = { "tr808", "sampler", "tape" };
+
+            for (int i = 0; i < 3; ++i)
+            {
+                const auto resp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                    "{\"jsonrpc\":\"2.0\",\"id\":" + juce::String (180 + i)
+                    + ",\"method\":\"rack.add_module\",\"params\":{\"module_type\":\""
+                    + moduleTypes[i] + "\",\"x\":" + juce::String (0.2 + 0.2 * i)
+                    + ",\"y\":0.5}}"));
+
+                if (! resp["result"].isObject()
+                    || resp["result"]["name"].toString().isEmpty())
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-016 rack.add_module " << moduleTypes[i]
+                              << " returned invalid result" << std::endl;
+                    return 1;
+                }
+            }
+
+            for (int i = 0; i < 3; ++i)
+            {
+                const auto resp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                    "{\"jsonrpc\":\"2.0\",\"id\":" + juce::String (190 + i)
+                    + ",\"method\":\"track.create\",\"params\":{\"name\":\"HW "
+                    + juce::String (i + 1) + "\",\"plugin_type\":\"" + moduleTypes[i] + "\"}}"));
+
+                if (! resp["result"].isObject())
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-016 track.create " << moduleTypes[i]
+                              << " returned invalid result" << std::endl;
+                    return 1;
+                }
+            }
+
+            app.currentEditFile = targetFile;
+            app.sessionUntitled = false;
+            app.saveSession();
+
+            if (! targetFile.existsAsFile())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 hardware session was not saved" << std::endl;
+                return 1;
+            }
+
+            juce::String loadError;
+
+            if (! app.loadSessionFromFileSafely (targetFile, &loadError))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-016 hardware session reload: "
+                          << loadError << std::endl;
+                return 1;
+            }
+
+            int found[3] = { 0, 0, 0 };
+
+            auto countPlugin = [&found] (te::Plugin* p)
+            {
+                if (dynamic_cast<Tr808DrumPlugin*> (p) != nullptr)       ++found[0];
+                if (dynamic_cast<VintageSamplerPlugin*> (p) != nullptr)  ++found[1];
+                if (dynamic_cast<AnalogTapePlugin*> (p) != nullptr)      ++found[2];
+            };
+
+            for (auto* t : te::getAudioTracks (*app.edit))
+                for (auto* p : t->pluginList)
+                    countPlugin (p);
+
+            for (auto* r : app.edit->getRackList().getTypes())
+                for (auto* p : r->getPlugins())
+                    countPlugin (p);
+
+            for (int i = 0; i < 3; ++i)
+            {
+                if (found[i] < 2)
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-016 " << moduleTypes[i]
+                              << " did not persist (found " << found[i] << ")"
+                              << std::endl;
+                    return 1;
+                }
+            }
+
+            app.createNewSession (sessionFile, true, false);
+        }
+
+        hwDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-016 TR-808 multi-out, 12-bit ZOH sampler, analog tape & rack.add_module persistence PASS" << std::endl;
+    }
+
+    //===========================================================================
+    // WO-018 Regression Test: AI Co-Producer Scaling (Chords, Scale, LUFS, Dupe)
+    //===========================================================================
+    {
+        const auto wo018Dir = tempDir.getChildFile ("tcs_wo018_smoke");
+        wo018Dir.deleteRecursively();
+        wo018Dir.createDirectory();
+
+        const auto wo018File = wo018Dir.getChildFile ("Wo018Scaling.tracktionedit");
+        app.createNewSession (wo018File, true, false);
+
+        // 1. midi.generate_progression on track 0 (voice-led i - VI - III - VII in C minor)
+        const auto progResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":201,"method":"midi.generate_progression","params":{"track_index":0,"key":"C","scale":"minor","progression":["i","VI","III","VII"],"start_beat":0.0,"beats_per_chord":2.0,"octave":4,"velocity":96,"voice_lead":true}})"));
+
+        if (! progResp["result"].isObject()
+            || static_cast<int> (progResp["result"]["chords_written"]) != 4
+            || static_cast<int> (progResp["result"]["notes_written"]) != 12)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-018 midi.generate_progression result mismatch" << std::endl;
+            return 1;
+        }
+
+        // 2. midi.quantize_scale on a dedicated MIDI track (out-of-scale pitches & off-grid beats)
+        const auto qTrackResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":202,"method":"track.create","params":{"name":"Quantize Test","plugin_type":"4osc"}})"));
+        const int qTrackIdx = static_cast<int> (qTrackResp["result"]["track_index"]);
+
+        const auto addOffResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            "{\"jsonrpc\":\"2.0\",\"id\":203,\"method\":\"midi.add_notes\",\"params\":{\"track_index\":"
+            + juce::String (qTrackIdx)
+            + ",\"clip_name\":\"Quantize Clip\",\"notes\":[{\"pitch\":66,\"start_beat\":0.11,\"length_beats\":0.5,\"velocity\":100},{\"pitch\":64,\"start_beat\":1.39,\"length_beats\":0.5,\"velocity\":90}]}}"));
+        juce::ignoreUnused (addOffResp);
+
+        const auto qResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            "{\"jsonrpc\":\"2.0\",\"id\":204,\"method\":\"midi.quantize_scale\",\"params\":{\"track_index\":"
+            + juce::String (qTrackIdx)
+            + ",\"key\":\"C\",\"scale\":\"minor\",\"grid_beats\":0.25,\"snap_pitch\":true,\"snap_timing\":true}}"));
+
+        if (! qResp["result"].isObject()
+            || static_cast<int> (qResp["result"]["pitch_snapped"]) < 2
+            || static_cast<int> (qResp["result"]["timing_snapped"]) < 2)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-018 midi.quantize_scale snapped counts too low" << std::endl;
+            return 1;
+        }
+
+        {
+            auto tracks = te::getAudioTracks (*app.edit);
+            int verifiedNotes = 0;
+            for (auto* c : tracks[qTrackIdx]->getClips())
+            {
+                if (auto* mc = dynamic_cast<te::MidiClip*> (c))
+                {
+                    for (auto* n : mc->getSequence().getNotes())
+                    {
+                        const int p = n->getNoteNumber();
+                        const double sb = n->getStartBeat().inBeats();
+                        const bool expectedMatch = (p == 65 && std::abs (sb - 0.0) < 1e-4)
+                                                || (p == 63 && std::abs (sb - 1.5) < 1e-4);
+                        if (expectedMatch)
+                            ++verifiedNotes;
+                    }
+                }
+            }
+
+            if (verifiedNotes != 2)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-018 quantized pitch/timing values incorrect (matched "
+                          << verifiedNotes << ")" << std::endl;
+                return 1;
+            }
+        }
+
+        // 3. mixer.auto_balance_lufs clamped finite adjustment
+        const auto lufsResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":205,"method":"mixer.auto_balance_lufs","params":{"target_lufs":-14.0,"min_gain_db":-12.0,"max_gain_db":4.5,"headroom_db":-1.0}})"));
+        const auto* adjArr = lufsResp["result"]["tracks_adjusted"].getArray();
+
+        if (adjArr == nullptr || adjArr->isEmpty())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-018 mixer.auto_balance_lufs returned empty list" << std::endl;
+            return 1;
+        }
+
+        for (auto* t : te::getAudioTracks (*app.edit))
+        {
+            if (auto* vol = t->getVolumePlugin())
+            {
+                const float db = vol->getVolumeDb();
+                if (! std::isfinite (db) || db < -12.01f || db > 4.51f)
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-018 track gain out of bounds (" << db << ")" << std::endl;
+                    return 1;
+                }
+            }
+        }
+
+        // 4. arrangement.duplicate_section + mute_drums + save/reload persistence
+        const auto drumResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":206,"method":"track.create","params":{"name":"808 Drum Track","plugin_type":"tr808"}})"));
+        const int drumTrackIdx = static_cast<int> (drumResp["result"]["track_index"]);
+        app.ipcServer.executeJsonRpcOnMessageThread (
+            "{\"jsonrpc\":\"2.0\",\"id\":207,\"method\":\"midi.add_notes\",\"params\":{\"track_index\":"
+            + juce::String (drumTrackIdx)
+            + ",\"clip_name\":\"Drum Groove\",\"notes\":[{\"pitch\":36,\"start_beat\":0.0,\"length_beats\":0.5,\"velocity\":120}]}}");
+
+        const auto dupResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+            R"({"jsonrpc":"2.0","id":208,"method":"arrangement.duplicate_section","params":{"start_beat":0.0,"end_beat":4.0,"dest_beat":8.0,"mute_drums":true}})"));
+
+        if (! dupResp["result"].isObject() || static_cast<int> (dupResp["result"]["clips_duplicated"]) < 2)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-018 arrangement.duplicate_section duplicated too few clips" << std::endl;
+            return 1;
+        }
+
+        app.currentEditFile = wo018File;
+        app.sessionUntitled = false;
+        app.saveSession();
+
+        juce::String loadError;
+        if (! app.loadSessionFromFileSafely (wo018File, &loadError))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-018 session reload failed: " << loadError << std::endl;
+            return 1;
+        }
+
+        {
+            auto tracks = te::getAudioTracks (*app.edit);
+            bool foundDuplicatedOnQ = false;
+            bool foundDuplicatedOnDrum = false;
+
+            for (auto* c : tracks[qTrackIdx]->getClips())
+            {
+                const double sb = app.edit->tempoSequence.toBeats (c->getPosition().getStart()).inBeats();
+                if (std::abs (sb - 8.0) < 0.05)
+                    foundDuplicatedOnQ = true;
+            }
+
+            for (auto* c : tracks[drumTrackIdx]->getClips())
+            {
+                const double sb = app.edit->tempoSequence.toBeats (c->getPosition().getStart()).inBeats();
+                if (sb >= 7.9)
+                    foundDuplicatedOnDrum = true;
+            }
+
+            if (! foundDuplicatedOnQ || foundDuplicatedOnDrum)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-018 duplicate_section persistence or mute_drums failed" << std::endl;
+                return 1;
+            }
+        }
+
+        app.createNewSession (sessionFile, true, false);
+        wo018Dir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-018 Harmonic progression, scale quantize, LUFS auto-balance & section duplicator PASS" << std::endl;
+    }
+
+    //===========================================================================
+    // WO-019 Regression Test: Sidechain Pin 3/4, Take Comping & Poly Transcription
+    //===========================================================================
+    {
+        const auto wo019Dir = tempDir.getChildFile ("tcs_wo019_smoke");
+        wo019Dir.deleteRecursively();
+        wo019Dir.createDirectory();
+        const auto wo019File = wo019Dir.getChildFile ("Wo019Dsp.tracktionedit");
+        app.createNewSession (wo019File, true, false);
+
+        constexpr int wo019Sr = 44100;
+        constexpr int wo019Frames = 4410;
+
+        // 1. SidechainCompressorPlugin: 4-pin ducking, channel clearing & post-deinit no-op
+        {
+            auto compPtr = app.edit->getPluginCache().createNewPlugin (
+                SidechainCompressorPlugin::xmlTypeName, {});
+            auto* comp = dynamic_cast<SidechainCompressorPlugin*> (compPtr.get());
+            if (comp == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 SidechainCompressorPlugin not created" << std::endl;
+                return 1;
+            }
+
+            juce::StringArray ins, outs;
+            comp->getChannelNames (&ins, &outs);
+            if (ins.size() != 4 || outs.size() != 2
+                || ins[2] != "Sidechain In L" || ins[3] != "Sidechain In R"
+                || outs[0] != "Audio Out L" || outs[1] != "Audio Out R")
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 sidechain pinout mismatch" << std::endl;
+                return 1;
+            }
+
+            juce::AudioBuffer<float> fourCh (4, wo019Frames);
+            fourCh.clear();
+            for (int i = 0; i < wo019Frames; ++i)
+            {
+                const float tone = static_cast<float> (
+                    0.35 * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / wo019Sr));
+                fourCh.setSample (0, i, tone);
+                fourCh.setSample (1, i, tone);
+                fourCh.setSample (2, i, 0.95f);
+                fourCh.setSample (3, i, 0.95f);
+            }
+
+            const float mainBefore = fourCh.getMagnitude (0, 0, wo019Frames);
+            const te::PluginInitialisationInfo initInfo {
+                tracktion::TimePosition::fromSeconds (0.0), wo019Sr, wo019Frames };
+            comp->initialise (initInfo);
+            comp->applyToBuffer (te::PluginRenderContext (
+                &fourCh, 0, wo019Frames, nullptr, 0.0, {}, false, false, false, false));
+
+            const float grDb = comp->currentGainReductionDb.load();
+            const float mainAfter = fourCh.getMagnitude (0, 0, wo019Frames);
+            if (grDb > -3.0f || mainAfter >= mainBefore
+                || fourCh.getMagnitude (2, 0, wo019Frames) > 1.0e-6f
+                || fourCh.getMagnitude (3, 0, wo019Frames) > 1.0e-6f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 sidechain ducking/clearing failed (gr="
+                          << grDb << ", before=" << mainBefore << ", after=" << mainAfter << ")" << std::endl;
+                return 1;
+            }
+
+            comp->deinitialise();
+            const juce::AudioBuffer<float> frozen (fourCh);
+            comp->applyToBuffer (te::PluginRenderContext (
+                &fourCh, 0, wo019Frames, nullptr, 0.0, {}, false, false, false, false));
+            if (! juce::isWithin (frozen.getMagnitude (0, 0, wo019Frames),
+                                  fourCh.getMagnitude (0, 0, wo019Frames), 1.0e-7f))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 post-deinitialise applyToBuffer was not a no-op" << std::endl;
+                return 1;
+            }
+
+            juce::AudioBuffer<float> twoCh (2, wo019Frames);
+            for (int i = 0; i < wo019Frames; ++i)
+            {
+                const float v = static_cast<float> (
+                    0.28 * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / wo019Sr));
+                twoCh.setSample (0, i, v);
+                twoCh.setSample (1, i, v);
+            }
+            comp->initialise (initInfo);
+            comp->applyToBuffer (te::PluginRenderContext (
+                &twoCh, 0, wo019Frames, nullptr, 0.0, {}, false, false, false, false));
+            const float twoMag = twoCh.getMagnitude (0, 0, wo019Frames);
+            comp->deinitialise();
+            if (! std::isfinite (twoMag) || twoMag <= 0.0f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 2-channel track-mode render was not finite" << std::endl;
+                return 1;
+            }
+            compPtr = nullptr;
+        }
+
+        // 2. Multi-take loop comping: two WAV takes, select, flatten & persist
+        {
+            auto writeSineWav = [] (const juce::File& file, double freq) -> bool
+            {
+                juce::AudioBuffer<float> buf (2, 22050);
+                for (int i = 0; i < buf.getNumSamples(); ++i)
+                {
+                    const float v = static_cast<float> (
+                        0.45 * std::sin (2.0 * juce::MathConstants<double>::pi * freq * i / 44100.0));
+                    buf.setSample (0, i, v);
+                    buf.setSample (1, i, v);
+                }
+                auto fs = std::make_unique<juce::FileOutputStream> (file);
+                if (! fs->openedOk())
+                    return false;
+                fs->setPosition (0);
+                fs->truncate();
+                std::unique_ptr<juce::OutputStream> os (fs.release());
+                juce::WavAudioFormat wav;
+                const auto opts = juce::AudioFormatWriterOptions{}
+                    .withSampleRate (44100.0).withNumChannels (2).withBitsPerSample (16);
+                std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (os, opts));
+                return writer != nullptr
+                    && writer->writeFromAudioSampleBuffer (buf, 0, buf.getNumSamples());
+            };
+
+            const auto takeA = wo019Dir.getChildFile ("TakeA.wav");
+            const auto takeB = wo019Dir.getChildFile ("TakeB.wav");
+            if (! writeSineWav (takeA, 220.0) || ! writeSineWav (takeB, 330.0))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 could not synthesise take WAVs" << std::endl;
+                return 1;
+            }
+
+            const auto trackResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                R"({"jsonrpc":"2.0","id":301,"method":"track.create","params":{"name":"Loop Comp","plugin_type":"4osc"}})"));
+            const int compTrackIdx = static_cast<int> (trackResp["result"]["track_index"]);
+            auto tracks = te::getAudioTracks (*app.edit);
+            if (! juce::isPositiveAndBelow (compTrackIdx, tracks.size())
+                || ! RecordingManager::addRecordedTake (*app.edit, *tracks[compTrackIdx], takeA, 0.0, 4.0)
+                || ! RecordingManager::addRecordedTake (*app.edit, *tracks[compTrackIdx], takeB, 0.0, 4.0))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 could not register two takes" << std::endl;
+                return 1;
+            }
+
+            const auto listResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                "{\"jsonrpc\":\"2.0\",\"id\":302,\"method\":\"recording.comp_takes\",\"params\":{\"track_index\":"
+                + juce::String (compTrackIdx) + ",\"action\":\"list\"}}"));
+            const auto* takeArr = listResp["result"]["takes"].getArray();
+            if (takeArr == nullptr || takeArr->size() != 2)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 recording.comp_takes list returned != 2 takes" << std::endl;
+                return 1;
+            }
+
+            const auto selectResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                "{\"jsonrpc\":\"2.0\",\"id\":303,\"method\":\"recording.comp_takes\",\"params\":{\"track_index\":"
+                + juce::String (compTrackIdx) + ",\"action\":\"select\",\"take_index\":0}}"));
+            if (! selectResp["result"]["selected"].isBool() || ! static_cast<bool> (selectResp["result"]["selected"]))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 recording.comp_takes select failed" << std::endl;
+                return 1;
+            }
+
+            const auto flatResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                "{\"jsonrpc\":\"2.0\",\"id\":304,\"method\":\"recording.comp_takes\",\"params\":{\"track_index\":"
+                + juce::String (compTrackIdx)
+                + ",\"action\":\"flatten\",\"start_beat\":0.0,\"end_beat\":4.0,\"crossfade_ms\":10.0}}"));
+            const juce::File compWav (flatResp["result"]["output_file"].toString());
+            if (! compWav.existsAsFile())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 recording.comp_takes flatten produced no WAV" << std::endl;
+                return 1;
+            }
+
+            juce::AudioFormatManager compFm;
+            compFm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> compReader (compFm.createReaderFor (compWav));
+            juce::AudioBuffer<float> compReadBack (2, 4096);
+            if (compReader == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 could not read flattened comp WAV" << std::endl;
+                return 1;
+            }
+            compReader->read (&compReadBack, 0, 4096, 0, true, true);
+            if (compReadBack.getMagnitude (0, 0, 4096) < 0.05f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 flattened comp WAV was silent" << std::endl;
+                return 1;
+            }
+            if (! app.edit->getUndoManager().canUndo())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 comp flatten did not open an undo transaction" << std::endl;
+                return 1;
+            }
+            compReader.reset();
+
+            app.currentEditFile = wo019File;
+            app.sessionUntitled = false;
+            app.saveSession();
+            juce::String wo019LoadError;
+            if (! app.loadSessionFromFileSafely (wo019File, &wo019LoadError))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 session reload failed: " << wo019LoadError << std::endl;
+                return 1;
+            }
+            tracks = te::getAudioTracks (*app.edit);
+            if (! juce::isPositiveAndBelow (compTrackIdx, tracks.size())
+                || RecordingManager::getTrackTakes (*tracks[compTrackIdx]).size() != 2)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 take lanes did not survive save/reload" << std::endl;
+                return 1;
+            }
+        }
+
+        // 3. Polyphonic Constant-Q triad detection (C4 + Eb4 + G4)
+        {
+            juce::AudioBuffer<float> triad (2, 26460); // 0.6 s @ 44.1 kHz
+            for (int i = 0; i < triad.getNumSamples(); ++i)
+            {
+                const double t = static_cast<double> (i) / 44100.0;
+                const float v = static_cast<float> (0.30 * (
+                    std::sin (juce::MathConstants<double>::twoPi * 261.626 * t)
+                    + std::sin (juce::MathConstants<double>::twoPi * 311.127 * t)
+                    + std::sin (juce::MathConstants<double>::twoPi * 392.000 * t)));
+                triad.setSample (0, i, v);
+                triad.setSample (1, i, v);
+            }
+
+            const auto triadWav = wo019Dir.getChildFile ("CminorTriad.wav");
+            auto fs = std::make_unique<juce::FileOutputStream> (triadWav);
+            if (! fs->openedOk())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 could not open triad WAV" << std::endl;
+                return 1;
+            }
+            fs->setPosition (0);
+            fs->truncate();
+            std::unique_ptr<juce::OutputStream> os (fs.release());
+            juce::WavAudioFormat wav;
+            const auto opts = juce::AudioFormatWriterOptions{}
+                .withSampleRate (44100.0).withNumChannels (2).withBitsPerSample (16);
+            std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (os, opts));
+            if (writer == nullptr || ! writer->writeFromAudioSampleBuffer (triad, 0, triad.getNumSamples()))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 could not write triad WAV" << std::endl;
+                return 1;
+            }
+            writer.reset();
+
+            const auto polyNotes = AudioToMidiTranscriber::transcribePolyphonic (triadWav, 124.0, 4, -28.0f);
+            int matched = 0;
+            for (const auto& n : polyNotes)
+            {
+                const int pc = n.pitch % 12;
+                if (pc == 0 || pc == 3 || pc == 7)
+                    ++matched;
+            }
+            if (matched < 3)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 polyphonic triad detection matched " << matched
+                          << "/3 (total notes " << polyNotes.size() << ")" << std::endl;
+                return 1;
+            }
+        }
+
+        app.createNewSession (sessionFile, true, false);
+        wo019Dir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-019 Sidechain Pin 3/4 ducking, multi-take comping & polyphonic Audio-to-MIDI PASS" << std::endl;
+    }
+
+    //===========================================================================
+    // WO-020 Regression Test: Cross-Platform Config & VST3-free Core Boundary
+    //===========================================================================
+    {
+        const juce::String backendName (TCS_AUDIO_BACKEND_NAME);
+        if (backendName.isEmpty())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-020 audio backend name is empty" << std::endl;
+            return 1;
+        }
+
+#if TCS_HAS_DESKTOP_UI
+        static_assert (TCS_HAS_DESKTOP_VST3 == 1,
+                       "WO-020: desktop builds must have VST3 hosting enabled");
+#endif
+
+        const auto ids = tcs::core::getCoreTypeIds();
+        if (! ids.complete()
+            || ids.tr808 != "tcs_tr808_drum"
+            || ids.sampler != "tcs_vintage_sampler"
+            || ids.tape != "tcs_analog_tape"
+            || ids.sidechain != "tcs_sidechain_comp"
+            || ids.transcriber != "AudioToMidiTranscriber")
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-020 isolated core type-ID boundary mismatch" << std::endl;
+            return 1;
+        }
+
+        std::cout << "[SMOKE_TEST] WO-020 " << backendName
+                  << " backend, VST3=" << TCS_HAS_DESKTOP_VST3
+                  << " and isolated core type IDs PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -1907,7 +3575,16 @@ int MainComponent::runHeadlessSmokeTest()
                  "bounce-to-take DSP, portable filePathResolver, MCP rack.patch/import_file, "
                  "master WAV mixdown export, metronome click/loop transport, virtual MIDI Step Rec, "
                  "two-row layout, CvUtilityPlugin 1-to-4 splitter, 3-band EQ RPC/Undo/persistence, "
-                 "live mixer metering, and VST3 scanner lifecycle verified." << std::endl;
+                 "live mixer metering, live audio/MIDI recording, track arming, count-in, automation curves, "
+                 "Aux FX send/return bus, zoomable views, dark studio theme, YIN audio-to-MIDI pitch transcription, "
+                 "plugin editor windows, timeline vertical scroll, Wave-to-MIDI switch, "
+                 "CV SVF filter DSP, direction-aware rack pins, clip-transpose transcription, "
+                 "factory preset bank, .trkpreset round-trip, Sampler 808 kit, multi-machine rack, "
+                 "TR-808, 12-bit ZOH sampler, analog tape saturation & rack.add_module persistence, "
+                 "harmonic progression, scale quantize, LUFS auto-balance, section duplicator, "
+                 "sidechain Pin 3/4 ducking, multi-take comping, polyphonic audio-to-MIDI, "
+                 "cross-platform core isolation, and VST3 scanner lifecycle verified."
+              << std::endl;
     return 0;
 }
 
@@ -1958,6 +3635,16 @@ public:
 
         void closeButtonPressed() override
         {
+            if (auto* mc = dynamic_cast<MainComponent*> (getContentComponent()))
+            {
+                mc->guardUnsavedChanges ([] (bool proceed)
+                {
+                    if (proceed)
+                        JUCEApplication::getInstance()->systemRequestedQuit();
+                });
+                return;
+            }
+
             JUCEApplication::getInstance()->systemRequestedQuit();
         }
     };

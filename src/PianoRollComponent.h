@@ -16,6 +16,11 @@ public:
     void setSnapDivision (double beatsPerStep); // 0.25 == 1/16th note
     double getSnapDivision() const noexcept { return snapBeats; }
 
+    void setPixelsPerBeat (float newPixelsPerBeat);
+    float getPixelsPerBeat() const noexcept { return pixelsPerBeat; }
+    void zoomIn();
+    void zoomOut();
+
     std::function<void()> onSequenceChanged;
 
     void paint (juce::Graphics& g) override;
@@ -23,6 +28,7 @@ public:
     void mouseDown (const juce::MouseEvent& e) override;
     void mouseDrag (const juce::MouseEvent& e) override;
     void mouseUp (const juce::MouseEvent& e) override;
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
 
 private:
     enum class DragMode
@@ -41,14 +47,24 @@ private:
     static bool isBlackKey (int midiPitch);
     static juce::String getNoteLabel (int midiPitch);
 
-    static constexpr int topBarHeight   = 30;
-    static constexpr int pianoKeyWidth  = 58;
-    static constexpr int lowestPitch    = 36;  // C2
-    static constexpr int highestPitch   = 84;  // C6
-    static constexpr float pixelsPerBeat = 76.0f;
+    static constexpr int topBarHeight    = 30;
+    static constexpr int pianoKeyWidth   = 58;
+    static constexpr int minPitch        = 24;  // C1
+    static constexpr int maxPitch        = 96;  // C7
+    static constexpr int visibleRowCount = 36;  // 3 octaves visible with vertical scroll
+
+    int getHighestVisiblePitch() const noexcept
+    {
+        return std::min (maxPitch, lowestVisiblePitch + visibleRowCount - 1);
+    }
+
+    int lowestVisiblePitch = 42; // F#2..F6 default window
 
     te::Edit* edit = nullptr;
     tracktion::EditItemID targetClipID;
+
+    float pixelsPerBeat = 76.0f;
+    double horizontalScrollBeats = 0.0;
 
     double snapBeats = 0.25;          // 1/16th default
     double lastNoteLengthBeats = 0.5; // FL-style remembered note length

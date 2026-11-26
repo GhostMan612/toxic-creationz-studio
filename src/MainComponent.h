@@ -13,6 +13,9 @@
 #include "WaveformEditorComponent.h"
 #include "MixdownExporter.h"
 #include "MidiKeyboardDock.h"
+#include "RecordingManager.h"
+#include "StudioLookAndFeel.h"
+#include "StudioPluginWindow.h"
 
 #include <atomic>
 #include <functional>
@@ -30,6 +33,7 @@ public:
 
     void paint (juce::Graphics& g) override;
     void resized() override;
+    bool keyPressed (const juce::KeyPress& key) override;
 
     bool hasUnsavedChanges() const noexcept { return sessionDirty; }
     bool isVst3ScanRunning() const;
@@ -37,6 +41,8 @@ public:
 
     // Headless regression harness, invoked by AI DAW.exe --smoke-test.
     static int runHeadlessSmokeTest();
+
+    void guardUnsavedChanges (std::function<void (bool)> onProceed);
 
 private:
     class Vst3ScanThread;
@@ -81,8 +87,6 @@ private:
     void updateTransportPositionReadout();
     static bool isTransientEditSubtree (juce::ValueTree tree);
 
-    void guardUnsavedChanges (std::function<void (bool)> onProceed);
-
     void createNewSession (const juce::File& targetFile, bool seedDefaultContent, bool untitled);
     bool loadSessionFromFileSafely (const juce::File& fileToLoad, juce::String* errorOut = nullptr);
     void openSessionDialog();
@@ -91,13 +95,15 @@ private:
     void exportMixdownDialog();
     void updateWindowTitle();
 
-    te::Engine engine { "AI DAW" };
+    StudioLookAndFeel studioLookAndFeel;
+    te::Engine engine { "AI DAW", std::make_unique<StudioUIBehaviour>(), nullptr };
     std::unique_ptr<te::Edit> edit;
+    RecordingManager recordingManager { engine };
     MixerComponent mixerComponent { engine };
     ModularRackComponent modularRackComponent { engine };
     RiffLibrary riffLibrary;
     BgmGeneratorComponent bgmGeneratorComponent { riffLibrary };
-    DawIpcServer ipcServer { riffLibrary };
+    DawIpcServer ipcServer { riffLibrary, recordingManager };
 
     WaveformEditorComponent waveformEditorComponent;
     MidiKeyboardDock midiKeyboardDock;
@@ -128,8 +134,11 @@ private:
     juce::TextButton redoButton        { "Redo" };
     juce::TextButton playButton        { "Play" };
     juce::TextButton stopButton        { "Stop" };
+    juce::TextButton recordButton      { "Rec" };
     juce::TextButton loopToggleButton  { "Loop" };
     juce::TextButton clickToggleButton { "Click" };
+    juce::TextButton countInButton     { "Count-In" };
+    juce::TextButton autoToggleButton  { "Auto" };
     juce::TextButton scanPluginsButton { "Scan VST3" };
     juce::TextButton mixerToggleButton   { "Mixer" };
     juce::TextButton rackToggleButton     { "Rack" };
