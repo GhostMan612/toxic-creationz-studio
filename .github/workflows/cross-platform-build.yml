@@ -1,0 +1,49 @@
+name: Cross-Platform Build & Core Isolation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  macos-release:
+    runs-on: macos-14
+    steps:
+    - name: Checkout repository with submodules
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Configure CMake (macOS Release)
+      run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build core isolation and desktop app
+      run: cmake --build build --config Release --target tcs_core_isolation AIDAW -j 4
+
+    - name: Run Python MCP Unit Tests
+      run: python3 -B -m unittest discover -s mcp -p "test_*.py" -v
+
+  linux-release:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout repository with submodules
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install JUCE Linux audio/X11 dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libasound2-dev libjack-jackd2-dev libfreetype6-dev \
+          libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+          libgl1-mesa-dev pkg-config
+
+    - name: Configure CMake (Linux Release)
+      run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build core isolation and desktop app
+      run: cmake --build build --config Release --target tcs_core_isolation AIDAW -j 4
+
+    - name: Run Python MCP Unit Tests
+      run: python3 -B -m unittest discover -s mcp -p "test_*.py" -v

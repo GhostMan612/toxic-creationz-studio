@@ -671,5 +671,41 @@ class McpWorkerTests(unittest.TestCase):
         self.assertEqual(res["notes"], [])
 
 
+    def test_cmake_msvc_guards_and_platform_branches(self) -> None:
+        cmake_text = (_MCP_DIR.parent / "CMakeLists.txt").read_text(encoding="utf-8")
+
+        self.assertIn("if(MSVC)", cmake_text)
+        self.assertIn("else()", cmake_text)
+        for flag in ("/MP", "/bigobj", "/W4", "/utf-8"):
+            self.assertIn(flag, cmake_text)
+        for flag in ("-Wall", "-Wextra", "-fPIC"):
+            self.assertIn(flag, cmake_text)
+        for branch in (
+            "if(ANDROID)",
+            "elseif(APPLE AND NOT IOS)",
+            "elseif(UNIX AND NOT APPLE AND NOT ANDROID)",
+        ):
+            self.assertIn(branch, cmake_text)
+        for option in (
+            'option(TCS_ENABLE_DESKTOP_VST3',
+            'option(TCS_BUILD_DESKTOP_APP',
+            'option(TCS_BUILD_CORE_ISOLATION_CHECK',
+        ):
+            self.assertIn(option, cmake_text)
+        self.assertIn("add_library(tcs_core STATIC", cmake_text)
+        self.assertIn("add_library(tcs_core_isolation STATIC", cmake_text)
+
+    def test_cross_platform_workflow_parses(self) -> None:
+        workflow = _MCP_DIR.parent / ".github" / "workflows" / "cross-platform-build.yml"
+        text = workflow.read_text(encoding="utf-8")
+
+        self.assertNotIn("\t", text)
+        for marker in ("name:", "on:", "workflow_dispatch:", "jobs:", "runs-on: macos-14",
+                       "runs-on: ubuntu-22.04", "python3 -B -m unittest discover"):
+            self.assertIn(marker, text)
+        self.assertNotIn("runs-on: windows-latest", text)
+        self.assertIn("tcs_core_isolation AIDAW", text)
+
+
 if __name__ == "__main__":
     unittest.main()

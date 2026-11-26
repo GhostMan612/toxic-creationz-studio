@@ -1,6 +1,8 @@
 #include "MainComponent.h"
 #include "AudioToMidiTranscriber.h"
+#include "CoreIsolationCheck.h"
 #include "HardwareRackPlugins.h"
+#include "PlatformConfig.h"
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
 #include "StudioPluginWindow.h"
@@ -3507,6 +3509,39 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-019 Sidechain Pin 3/4 ducking, multi-take comping & polyphonic Audio-to-MIDI PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-020 Regression Test: Cross-Platform Config & VST3-free Core Boundary
+    //===========================================================================
+    {
+        const juce::String backendName (TCS_AUDIO_BACKEND_NAME);
+        if (backendName.isEmpty())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-020 audio backend name is empty" << std::endl;
+            return 1;
+        }
+
+#if TCS_HAS_DESKTOP_UI
+        static_assert (TCS_HAS_DESKTOP_VST3 == 1,
+                       "WO-020: desktop builds must have VST3 hosting enabled");
+#endif
+
+        const auto ids = tcs::core::getCoreTypeIds();
+        if (! ids.complete()
+            || ids.tr808 != "tcs_tr808_drum"
+            || ids.sampler != "tcs_vintage_sampler"
+            || ids.tape != "tcs_analog_tape"
+            || ids.sidechain != "tcs_sidechain_comp"
+            || ids.transcriber != "AudioToMidiTranscriber")
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-020 isolated core type-ID boundary mismatch" << std::endl;
+            return 1;
+        }
+
+        std::cout << "[SMOKE_TEST] WO-020 " << backendName
+                  << " backend, VST3=" << TCS_HAS_DESKTOP_VST3
+                  << " and isolated core type IDs PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -3548,7 +3583,7 @@ int MainComponent::runHeadlessSmokeTest()
                  "TR-808, 12-bit ZOH sampler, analog tape saturation & rack.add_module persistence, "
                  "harmonic progression, scale quantize, LUFS auto-balance, section duplicator, "
                  "sidechain Pin 3/4 ducking, multi-take comping, polyphonic audio-to-MIDI, "
-                 "and VST3 scanner lifecycle verified."
+                 "cross-platform core isolation, and VST3 scanner lifecycle verified."
               << std::endl;
     return 0;
 }
