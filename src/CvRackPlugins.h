@@ -80,16 +80,16 @@ public:
         auto* buf = fc.destBuffer;
         const int n = fc.bufferNumSamples;
         const int base = fc.bufferStartSample;
-        const float rate = (float) rateParam->getCurrentValue();
-        const float depth = (float) depthParam->getCurrentValue();
-        const float phaseInc = rate / (float) std::max (1.0, lastSampleRate);
+        const float rate = static_cast<float> (rateParam->getCurrentValue());
+        const float depth = static_cast<float> (depthParam->getCurrentValue());
+        const float phaseInc = rate / static_cast<float> (std::max (1.0, lastSampleRate));
 
         for (int i = 0; i < n; ++i)
         {
             phase += phaseInc;
             if (phase >= 1.0f) phase -= 1.0f;
             buf->setSample (0, base + i,
-                            (float) std::sin (phase * juce::MathConstants<double>::twoPi) * depth);
+                            static_cast<float> (std::sin (phase * juce::MathConstants<double>::twoPi)) * depth);
         }
     }
 
@@ -392,10 +392,230 @@ private:
     std::array<te::AutomatableParameter::Ptr, numOutputs> gainParams, offsetParams;
 };
 
+// Original briefing blueprint residue: audio-rate envelope follower. Converts a
+// mono audio/CV input into a unipolar control envelope with one-pole attack and
+// release, scaled by Depth. Output is mono CV on pin 1.
+class CvEnvelopeFollowerPlugin : public te::Plugin
+{
+public:
+    explicit CvEnvelopeFollowerPlugin (te::PluginCreationInfo info) : te::Plugin (info)
+    {
+        attackValue.referTo  (state, juce::Identifier ("attackMs"), nullptr, 10.0f);
+        releaseValue.referTo (state, juce::Identifier ("releaseMs"), nullptr, 180.0f);
+        depthValue.referTo   (state, juce::Identifier ("envDepth"), nullptr, 1.0f);
+
+        attackParam  = addParam ("attackMs",  TRANS("Attack (ms)"), { 1.0f, 200.0f });
+        releaseParam = addParam ("releaseMs", TRANS("Release (ms)"), { 10.0f, 2000.0f });
+        depthParam   = addParam ("envDepth",  TRANS("Depth"), { 0.0f, 1.0f });
+        attackParam->attachToCurrentValue (attackValue);
+        releaseParam->attachToCurrentValue (releaseValue);
+        depthParam->attachToCurrentValue (depthValue);
+    }
+
+    ~CvEnvelopeFollowerPlugin() override
+    {
+        if (attackParam  != nullptr) attackParam->detachFromCurrentValue();
+        if (releaseParam != nullptr) releaseParam->detachFromCurrentValue();
+        if (depthParam   != nullptr) depthParam->detachFromCurrentValue();
+        notifyListenersOfDeletion();
+    }
+
+    juce::String getSelectableDescription() override { return getName(); }
+    bool takesAudioInput() override { return true; }
+    bool canBeAddedToRack() override { return true; }
+
+    void getChannelNames (juce::StringArray* ins, juce::StringArray* outs) override
+    {
+        if (ins)  ins->add ("Audio/CV In");
+        if (outs) outs->add ("CV Out");
+    }
+
+    te::Plugin::BusLayout getBusses() const override
+    {
+        return te::Plugin::BusLayout::singleInOut (te::ChannelConfiguration::mono(),
+                                                   te::ChannelConfiguration::mono());
+    }
+
+    int getNumOutputChannelsGivenInputs (int) override { return 1; }
+
+    void initialise (const te::PluginInitialisationInfo& info) override
+    {
+        lastSampleRate = std::max (8000.0, info.sampleRate);
+        envelope = 0.0f;
+    }
+
+    void deinitialise() override {}
+
+    void applyToBuffer (const te::PluginRenderContext& fc) override
+    {
+        if (fc.destBuffer == nullptr
+            || fc.destBuffer->getNumChannels() < 1
+            || fc.destBuffer->getNumSamples() <= 0
+            || fc.bufferNumSamples <= 0
+            || fc.bufferStartSample < 0
+            || fc.bufferStartSample + fc.bufferNumSamples > fc.destBuffer->getNumSamples())
+        {
+            return;
+        }
+
+        auto* buf = fc.destBuffer;
+        const float rateMs  = static_cast<float> (attackParam->getCurrentValue());
+        const float fallMs  = static_cast<float> (releaseParam->getCurrentValue());
+        const float depth   = static_cast<float> (depthParam->getCurrentValue());
+        const float sr      = static_cast<float> (lastSampleRate);
+        const float upCoeff = 1.0f - std::exp (-1.0f / (std::max (1.0f, rateMs) * 0.001f * sr));
+        const float dnCoeff = 1.0f - std::exp (-1.0f / (std::max (1.0f, fallMs) * 0.001f * sr));
+
+        for (int i = 0; i < fc.bufferNumSamples; ++i)
+        {
+            const float target = std::abs (buf->getSample (0, fc.bufferStartSample + i));
+            const float coeff  = target > envelope ? upCoeff : dnCoeff;
+            envelope += coeff * (target - envelope);
+            buf->setSample (0, fc.bufferStartSample + i,
+                            juce::jlimit (-1.0f, 1.0f, envelope * depth));
+        }
+    }
+
+    void restorePluginStateFromValueTree (const juce::ValueTree& v) override
+    {
+        te::copyPropertiesToCachedValues (v, attackValue, releaseValue, depthValue);
+        for (auto* p : getAutomatableParameters())
+            p->updateFromAttachedValue();
+    }
+
+    static inline const char* xmlTypeName = "cv_envelope_follower";
+    juce::String getName() const override { return "CV Envelope Follower"; }
+    juce::String getPluginType() override { return xmlTypeName; }
+
+private:
+    juce::CachedValue<float> attackValue, releaseValue, depthValue;
+    te::AutomatableParameter::Ptr attackParam, releaseParam, depthParam;
+    double lastSampleRate = 44100.0;
+    float envelope = 0.0f;
+};
+
+// Original briefing blueprint residue: 8-step CV sequencer. Emits a bipolar
+// step held for 1/rate seconds at a time on its mono CV output pin.
+class CvStepModulatorPlugin : public te::Plugin
+{
+public:
+    static constexpr int numSteps = 8;
+
+    explicit CvStepModulatorPlugin (te::PluginCreationInfo info) : te::Plugin (info)
+    {
+        rateValue.referTo  (state, juce::Identifier ("stepRateHz"), nullptr, 4.0f);
+        depthValue.referTo (state, juce::Identifier ("stepDepth"),  nullptr, 1.0f);
+
+        rateParam  = addParam ("stepRateHz", TRANS("Step Rate (Hz)"), { 0.1f, 32.0f });
+        depthParam = addParam ("stepDepth",  TRANS("Depth"), { 0.0f, 1.0f });
+        rateParam->attachToCurrentValue (rateValue);
+        depthParam->attachToCurrentValue (depthValue);
+
+        for (int i = 0; i < numSteps; ++i)
+        {
+            const auto id = "step" + juce::String (i + 1);
+            stepValues[i].referTo (state, juce::Identifier (id), nullptr, (i % 2 == 0) ? 1.0f : -1.0f);
+            stepParams[i] = addParam (id, "Step " + juce::String (i + 1), { -1.0f, 1.0f });
+            stepParams[i]->attachToCurrentValue (stepValues[i]);
+        }
+    }
+
+    ~CvStepModulatorPlugin() override
+    {
+        if (rateParam  != nullptr) rateParam->detachFromCurrentValue();
+        if (depthParam != nullptr) depthParam->detachFromCurrentValue();
+        for (auto& p : stepParams)
+            if (p != nullptr) p->detachFromCurrentValue();
+        notifyListenersOfDeletion();
+    }
+
+    juce::String getSelectableDescription() override { return getName(); }
+    bool producesAudioWhenNoAudioInput() override { return true; }
+    bool takesAudioInput() override { return false; }
+    bool canBeAddedToRack() override { return true; }
+
+    void getChannelNames (juce::StringArray* ins, juce::StringArray* outs) override
+    {
+        juce::ignoreUnused (ins);
+        if (outs) outs->add ("CV Out");
+    }
+
+    te::Plugin::BusLayout getBusses() const override
+    {
+        return te::Plugin::BusLayout::singleInOut (te::ChannelConfiguration::mono(),
+                                                   te::ChannelConfiguration::mono());
+    }
+
+    int getNumOutputChannelsGivenInputs (int) override { return 1; }
+
+    void initialise (const te::PluginInitialisationInfo& info) override
+    {
+        lastSampleRate = std::max (8000.0, info.sampleRate);
+        phase = 0.0f;
+        stepIndex = 0;
+    }
+
+    void deinitialise() override {}
+
+    void applyToBuffer (const te::PluginRenderContext& fc) override
+    {
+        if (fc.destBuffer == nullptr
+            || fc.destBuffer->getNumChannels() < 1
+            || fc.destBuffer->getNumSamples() <= 0
+            || fc.bufferNumSamples <= 0
+            || fc.bufferStartSample < 0
+            || fc.bufferStartSample + fc.bufferNumSamples > fc.destBuffer->getNumSamples())
+        {
+            return;
+        }
+
+        const float rate  = static_cast<float> (rateParam->getCurrentValue());
+        const float depth = static_cast<float> (depthParam->getCurrentValue());
+        const float inc   = rate / static_cast<float> (lastSampleRate);
+
+        for (int i = 0; i < fc.bufferNumSamples; ++i)
+        {
+            phase += inc;
+            if (phase >= 1.0f)
+            {
+                phase -= 1.0f;
+                stepIndex = (stepIndex + 1) % numSteps;
+            }
+
+            const float value = static_cast<float> (stepParams[stepIndex]->getCurrentValue()) * depth;
+            fc.destBuffer->setSample (0, fc.bufferStartSample + i, juce::jlimit (-1.0f, 1.0f, value));
+        }
+    }
+
+    void restorePluginStateFromValueTree (const juce::ValueTree& v) override
+    {
+        te::copyPropertiesToCachedValues (v, rateValue, depthValue);
+        for (auto& cached : stepValues)
+            te::copyPropertiesToCachedValues (v, cached);
+        for (auto* p : getAutomatableParameters())
+            p->updateFromAttachedValue();
+    }
+
+    static inline const char* xmlTypeName = "cv_step_modulator";
+    juce::String getName() const override { return "CV Step Modulator"; }
+    juce::String getPluginType() override { return xmlTypeName; }
+
+private:
+    juce::CachedValue<float> rateValue, depthValue;
+    std::array<juce::CachedValue<float>, numSteps> stepValues;
+    te::AutomatableParameter::Ptr rateParam, depthParam;
+    std::array<te::AutomatableParameter::Ptr, numSteps> stepParams;
+    double lastSampleRate = 44100.0;
+    float phase = 0.0f;
+    int stepIndex = 0;
+};
+
 inline void registerCvRackPlugins (te::Engine& engine)
 {
     auto& pm = engine.getPluginManager();
     pm.createBuiltInType<CvLfoPlugin>();
     pm.createBuiltInType<CvWobbleFilterPlugin>();
     pm.createBuiltInType<CvUtilityPlugin>();
+    pm.createBuiltInType<CvEnvelopeFollowerPlugin>();
+    pm.createBuiltInType<CvStepModulatorPlugin>();
 }

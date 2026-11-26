@@ -33,9 +33,16 @@ cmake --build build-android --target tcs_core tcs_core_isolation -j 4
 
 `ANDROID` forces both desktop options OFF in `CMakeLists.txt`, so the `AIDAW`
 GUI target is not generated at all. `JUCE_USE_ANDROID_OBOE=1` and
-`JUCE_PLUGINHOST_VST3=0` select the Oboe audio backend. `PlatformConfig.h`
-resolves `TCS_AUDIO_BACKEND_NAME` to `"Oboe"`, `TCS_HAS_DESKTOP_VST3` to `0`
-and `TCS_HAS_DESKTOP_UI` to `0` on Android.
+`JUCE_PLUGINHOST_VST3=0` are applied to `tcs_core` through
+`TCS_ANDROID_OBOE_DEFINITIONS` — an AIDAW-scoped define would be unreachable
+because the desktop app is disabled on Android. `PlatformConfig.h` resolves
+`TCS_AUDIO_BACKEND_NAME` to `"Oboe"`, `TCS_HAS_DESKTOP_VST3` to `0` and
+`TCS_HAS_DESKTOP_UI` to `0` on Android.
+
+This repository provides the **core boundary only**. A runnable Android client
+(JNI bridge, AndroidManifest/Gradle project, Oboe callback wiring and touch UI)
+is the separate next-phase work described in the checklist below; no first-party
+Android application sources exist yet.
 
 ## Excluded from Android builds
 

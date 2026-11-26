@@ -36,6 +36,19 @@ jobs:
       shell: pwsh
       run: .\scripts\package-windows.ps1 -BuildConfig Release -OutputDir dist
 
+    - name: Validate Packaged Artifact
+      shell: pwsh
+      run: |
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = (Resolve-Path "dist\ToxicCreationzStudio-win64.zip").Path
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
+        try {
+          if ($archive.Entries.Count -lt 1) { throw "Release zip has no entries" }
+          $entry = $archive.Entries | Where-Object { $_.Name -eq "Toxic Creationz Studio.exe" }
+          if ($null -eq $entry -or $entry.Length -lt 1024) { throw "Release exe missing or truncated in zip" }
+        } finally { $archive.Dispose() }
+        Write-Host "[PACKAGE_VALIDATE] $zip OK"
+
     - name: Upload Windows Release Zip
       uses: actions/upload-artifact@v4
       with:

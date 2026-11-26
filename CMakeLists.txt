@@ -18,6 +18,15 @@ if(ANDROID)
     set(TCS_BUILD_DESKTOP_APP OFF CACHE BOOL "Android builds tcs_core only" FORCE)
 endif()
 
+# Oboe is a property of the platform-neutral core, not of the desktop app.
+# Because ANDROID forces TCS_BUILD_DESKTOP_APP OFF, an AIDAW-scoped define can
+# never fire on Android; apply it to tcs_core so the Oboe backend is real.
+if(ANDROID)
+    set(TCS_ANDROID_OBOE_DEFINITIONS JUCE_USE_ANDROID_OBOE=1 JUCE_PLUGINHOST_VST3=0)
+else()
+    set(TCS_ANDROID_OBOE_DEFINITIONS "")
+endif()
+
 #-------------------------------------------------------------------------------
 # Compiler flags: MSVC-only switches stay inside if(MSVC); GCC/Clang get the
 # equivalent warnings + PIC in the non-MSVC branch. Flags are applied per target
@@ -64,6 +73,7 @@ target_compile_definitions(tcs_core PRIVATE
     JUCE_PLUGINHOST_VST3=0
     TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH=1
     TCS_ENABLE_DESKTOP_VST3=0
+    ${TCS_ANDROID_OBOE_DEFINITIONS}
 )
 target_link_libraries(tcs_core PUBLIC
     tracktion_core
@@ -182,8 +192,6 @@ if(TCS_BUILD_DESKTOP_APP)
         endif()
         target_compile_definitions(AIDAW PRIVATE JUCE_ALSA=1 JUCE_JACK=1)
         target_link_libraries(AIDAW PRIVATE atomic)
-    elseif(ANDROID)
-        target_compile_definitions(AIDAW PRIVATE JUCE_USE_ANDROID_OBOE=1 JUCE_PLUGINHOST_VST3=0)
     endif()
 
     target_link_libraries(AIDAW PRIVATE
