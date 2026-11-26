@@ -1,6 +1,7 @@
 #include "MainComponent.h"
 
 #include "HardwareRackPlugins.h"
+#include "SidechainCompressorPlugin.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
@@ -112,6 +113,7 @@ MainComponent::MainComponent()
 
     registerCvRackPlugins (engine);
     registerHardwareRackPlugins (engine);
+    registerDynamicsPlugins (engine);
     loadCachedPlugins();
 
     // Provision the starter riff pack once for interactive sessions. The

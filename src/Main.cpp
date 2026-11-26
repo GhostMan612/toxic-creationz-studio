@@ -1,6 +1,8 @@
 #include "MainComponent.h"
+#include "AudioToMidiTranscriber.h"
 #include "HardwareRackPlugins.h"
 #include "PluginPresetManager.h"
+#include "SidechainCompressorPlugin.h"
 #include "StudioPluginWindow.h"
 
 #include <algorithm>
@@ -3237,6 +3239,274 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-018 Harmonic progression, scale quantize, LUFS auto-balance & section duplicator PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-019 Regression Test: Sidechain Pin 3/4, Take Comping & Poly Transcription
+    //===========================================================================
+    {
+        const auto wo019Dir = tempDir.getChildFile ("tcs_wo019_smoke");
+        wo019Dir.deleteRecursively();
+        wo019Dir.createDirectory();
+        const auto wo019File = wo019Dir.getChildFile ("Wo019Dsp.tracktionedit");
+        app.createNewSession (wo019File, true, false);
+
+        constexpr int wo019Sr = 44100;
+        constexpr int wo019Frames = 4410;
+
+        // 1. SidechainCompressorPlugin: 4-pin ducking, channel clearing & post-deinit no-op
+        {
+            auto compPtr = app.edit->getPluginCache().createNewPlugin (
+                SidechainCompressorPlugin::xmlTypeName, {});
+            auto* comp = dynamic_cast<SidechainCompressorPlugin*> (compPtr.get());
+            if (comp == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 SidechainCompressorPlugin not created" << std::endl;
+                return 1;
+            }
+
+            juce::StringArray ins, outs;
+            comp->getChannelNames (&ins, &outs);
+            if (ins.size() != 4 || outs.size() != 2
+                || ins[2] != "Sidechain In L" || ins[3] != "Sidechain In R"
+                || outs[0] != "Audio Out L" || outs[1] != "Audio Out R")
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 sidechain pinout mismatch" << std::endl;
+                return 1;
+            }
+
+            juce::AudioBuffer<float> fourCh (4, wo019Frames);
+            fourCh.clear();
+            for (int i = 0; i < wo019Frames; ++i)
+            {
+                const float tone = static_cast<float> (
+                    0.35 * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / wo019Sr));
+                fourCh.setSample (0, i, tone);
+                fourCh.setSample (1, i, tone);
+                fourCh.setSample (2, i, 0.95f);
+                fourCh.setSample (3, i, 0.95f);
+            }
+
+            const float mainBefore = fourCh.getMagnitude (0, 0, wo019Frames);
+            const te::PluginInitialisationInfo initInfo {
+                tracktion::TimePosition::fromSeconds (0.0), wo019Sr, wo019Frames };
+            comp->initialise (initInfo);
+            comp->applyToBuffer (te::PluginRenderContext (
+                &fourCh, 0, wo019Frames, nullptr, 0.0, {}, false, false, false, false));
+
+            const float grDb = comp->currentGainReductionDb.load();
+            const float mainAfter = fourCh.getMagnitude (0, 0, wo019Frames);
+            if (grDb > -3.0f || mainAfter >= mainBefore
+                || fourCh.getMagnitude (2, 0, wo019Frames) > 1.0e-6f
+                || fourCh.getMagnitude (3, 0, wo019Frames) > 1.0e-6f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 sidechain ducking/clearing failed (gr="
+                          << grDb << ", before=" << mainBefore << ", after=" << mainAfter << ")" << std::endl;
+                return 1;
+            }
+
+            comp->deinitialise();
+            const juce::AudioBuffer<float> frozen (fourCh);
+            comp->applyToBuffer (te::PluginRenderContext (
+                &fourCh, 0, wo019Frames, nullptr, 0.0, {}, false, false, false, false));
+            if (! juce::isWithin (frozen.getMagnitude (0, 0, wo019Frames),
+                                  fourCh.getMagnitude (0, 0, wo019Frames), 1.0e-7f))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 post-deinitialise applyToBuffer was not a no-op" << std::endl;
+                return 1;
+            }
+
+            juce::AudioBuffer<float> twoCh (2, wo019Frames);
+            for (int i = 0; i < wo019Frames; ++i)
+            {
+                const float v = static_cast<float> (
+                    0.28 * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / wo019Sr));
+                twoCh.setSample (0, i, v);
+                twoCh.setSample (1, i, v);
+            }
+            comp->initialise (initInfo);
+            comp->applyToBuffer (te::PluginRenderContext (
+                &twoCh, 0, wo019Frames, nullptr, 0.0, {}, false, false, false, false));
+            const float twoMag = twoCh.getMagnitude (0, 0, wo019Frames);
+            comp->deinitialise();
+            if (! std::isfinite (twoMag) || twoMag <= 0.0f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 2-channel track-mode render was not finite" << std::endl;
+                return 1;
+            }
+            compPtr = nullptr;
+        }
+
+        // 2. Multi-take loop comping: two WAV takes, select, flatten & persist
+        {
+            auto writeSineWav = [] (const juce::File& file, double freq) -> bool
+            {
+                juce::AudioBuffer<float> buf (2, 22050);
+                for (int i = 0; i < buf.getNumSamples(); ++i)
+                {
+                    const float v = static_cast<float> (
+                        0.45 * std::sin (2.0 * juce::MathConstants<double>::pi * freq * i / 44100.0));
+                    buf.setSample (0, i, v);
+                    buf.setSample (1, i, v);
+                }
+                auto fs = std::make_unique<juce::FileOutputStream> (file);
+                if (! fs->openedOk())
+                    return false;
+                fs->setPosition (0);
+                fs->truncate();
+                std::unique_ptr<juce::OutputStream> os (fs.release());
+                juce::WavAudioFormat wav;
+                const auto opts = juce::AudioFormatWriterOptions{}
+                    .withSampleRate (44100.0).withNumChannels (2).withBitsPerSample (16);
+                std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (os, opts));
+                return writer != nullptr
+                    && writer->writeFromAudioSampleBuffer (buf, 0, buf.getNumSamples());
+            };
+
+            const auto takeA = wo019Dir.getChildFile ("TakeA.wav");
+            const auto takeB = wo019Dir.getChildFile ("TakeB.wav");
+            if (! writeSineWav (takeA, 220.0) || ! writeSineWav (takeB, 330.0))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 could not synthesise take WAVs" << std::endl;
+                return 1;
+            }
+
+            const auto trackResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                R"({"jsonrpc":"2.0","id":301,"method":"track.create","params":{"name":"Loop Comp","plugin_type":"4osc"}})"));
+            const int compTrackIdx = static_cast<int> (trackResp["result"]["track_index"]);
+            auto tracks = te::getAudioTracks (*app.edit);
+            if (! juce::isPositiveAndBelow (compTrackIdx, tracks.size())
+                || ! RecordingManager::addRecordedTake (*app.edit, *tracks[compTrackIdx], takeA, 0.0, 4.0)
+                || ! RecordingManager::addRecordedTake (*app.edit, *tracks[compTrackIdx], takeB, 0.0, 4.0))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 could not register two takes" << std::endl;
+                return 1;
+            }
+
+            const auto listResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                "{\"jsonrpc\":\"2.0\",\"id\":302,\"method\":\"recording.comp_takes\",\"params\":{\"track_index\":"
+                + juce::String (compTrackIdx) + ",\"action\":\"list\"}}"));
+            const auto* takeArr = listResp["result"]["takes"].getArray();
+            if (takeArr == nullptr || takeArr->size() != 2)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 recording.comp_takes list returned != 2 takes" << std::endl;
+                return 1;
+            }
+
+            const auto selectResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                "{\"jsonrpc\":\"2.0\",\"id\":303,\"method\":\"recording.comp_takes\",\"params\":{\"track_index\":"
+                + juce::String (compTrackIdx) + ",\"action\":\"select\",\"take_index\":0}}"));
+            if (! selectResp["result"]["selected"].isBool() || ! static_cast<bool> (selectResp["result"]["selected"]))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 recording.comp_takes select failed" << std::endl;
+                return 1;
+            }
+
+            const auto flatResp = juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                "{\"jsonrpc\":\"2.0\",\"id\":304,\"method\":\"recording.comp_takes\",\"params\":{\"track_index\":"
+                + juce::String (compTrackIdx)
+                + ",\"action\":\"flatten\",\"start_beat\":0.0,\"end_beat\":4.0,\"crossfade_ms\":10.0}}"));
+            const juce::File compWav (flatResp["result"]["output_file"].toString());
+            if (! compWav.existsAsFile())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 recording.comp_takes flatten produced no WAV" << std::endl;
+                return 1;
+            }
+
+            juce::AudioFormatManager compFm;
+            compFm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> compReader (compFm.createReaderFor (compWav));
+            juce::AudioBuffer<float> compReadBack (2, 4096);
+            if (compReader == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 could not read flattened comp WAV" << std::endl;
+                return 1;
+            }
+            compReader->read (&compReadBack, 0, 4096, 0, true, true);
+            if (compReadBack.getMagnitude (0, 0, 4096) < 0.05f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 flattened comp WAV was silent" << std::endl;
+                return 1;
+            }
+            if (! app.edit->getUndoManager().canUndo())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 comp flatten did not open an undo transaction" << std::endl;
+                return 1;
+            }
+            compReader.reset();
+
+            app.currentEditFile = wo019File;
+            app.sessionUntitled = false;
+            app.saveSession();
+            juce::String wo019LoadError;
+            if (! app.loadSessionFromFileSafely (wo019File, &wo019LoadError))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 session reload failed: " << wo019LoadError << std::endl;
+                return 1;
+            }
+            tracks = te::getAudioTracks (*app.edit);
+            if (! juce::isPositiveAndBelow (compTrackIdx, tracks.size())
+                || RecordingManager::getTrackTakes (*tracks[compTrackIdx]).size() != 2)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 take lanes did not survive save/reload" << std::endl;
+                return 1;
+            }
+        }
+
+        // 3. Polyphonic Constant-Q triad detection (C4 + Eb4 + G4)
+        {
+            juce::AudioBuffer<float> triad (2, 26460); // 0.6 s @ 44.1 kHz
+            for (int i = 0; i < triad.getNumSamples(); ++i)
+            {
+                const double t = static_cast<double> (i) / 44100.0;
+                const float v = static_cast<float> (0.30 * (
+                    std::sin (juce::MathConstants<double>::twoPi * 261.626 * t)
+                    + std::sin (juce::MathConstants<double>::twoPi * 311.127 * t)
+                    + std::sin (juce::MathConstants<double>::twoPi * 392.000 * t)));
+                triad.setSample (0, i, v);
+                triad.setSample (1, i, v);
+            }
+
+            const auto triadWav = wo019Dir.getChildFile ("CminorTriad.wav");
+            auto fs = std::make_unique<juce::FileOutputStream> (triadWav);
+            if (! fs->openedOk())
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 could not open triad WAV" << std::endl;
+                return 1;
+            }
+            fs->setPosition (0);
+            fs->truncate();
+            std::unique_ptr<juce::OutputStream> os (fs.release());
+            juce::WavAudioFormat wav;
+            const auto opts = juce::AudioFormatWriterOptions{}
+                .withSampleRate (44100.0).withNumChannels (2).withBitsPerSample (16);
+            std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (os, opts));
+            if (writer == nullptr || ! writer->writeFromAudioSampleBuffer (triad, 0, triad.getNumSamples()))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 could not write triad WAV" << std::endl;
+                return 1;
+            }
+            writer.reset();
+
+            const auto polyNotes = AudioToMidiTranscriber::transcribePolyphonic (triadWav, 124.0, 4, -28.0f);
+            int matched = 0;
+            for (const auto& n : polyNotes)
+            {
+                const int pc = n.pitch % 12;
+                if (pc == 0 || pc == 3 || pc == 7)
+                    ++matched;
+            }
+            if (matched < 3)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-019 polyphonic triad detection matched " << matched
+                          << "/3 (total notes " << polyNotes.size() << ")" << std::endl;
+                return 1;
+            }
+        }
+
+        app.createNewSession (sessionFile, true, false);
+        wo019Dir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-019 Sidechain Pin 3/4 ducking, multi-take comping & polyphonic Audio-to-MIDI PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -3277,6 +3547,7 @@ int MainComponent::runHeadlessSmokeTest()
                  "factory preset bank, .trkpreset round-trip, Sampler 808 kit, multi-machine rack, "
                  "TR-808, 12-bit ZOH sampler, analog tape saturation & rack.add_module persistence, "
                  "harmonic progression, scale quantize, LUFS auto-balance, section duplicator, "
+                 "sidechain Pin 3/4 ducking, multi-take comping, polyphonic audio-to-MIDI, "
                  "and VST3 scanner lifecycle verified."
               << std::endl;
     return 0;

@@ -353,8 +353,25 @@ void ArrangementView::paint (juce::Graphics& g)
         g.setColour (juce::Colours::white);
         g.drawText ("R", armRect.toFloat(), juce::Justification::centred);
 
+        const auto takes = RecordingManager::getTrackTakes (*track);
+        int activeTake = -1;
+        for (int t = 0; t < takes.size(); ++t)
+            if (takes[t].active)
+                activeTake = t;
+
+        juce::Rectangle<int> takeRect (94, top + 30, 58, 18);
+        if (takes.size() >= 2)
+        {
+            g.setColour (juce::Colour (0xff2b6f6f));
+            g.fillRoundedRectangle (takeRect.toFloat(), 3.0f);
+            g.setColour (juce::Colours::white);
+            g.setFont (juce::Font (juce::FontOptions (9.0f)));
+            g.drawText ("Take " + juce::String (activeTake + 1) + "/" + juce::String (takes.size()),
+                        takeRect.toFloat(), juce::Justification::centred);
+        }
+
         g.setColour (juce::Colour (0xff9aa3b2));
-        g.drawText (juce::String (db, 1) + " dB", 94, top + 30, 86, 18, juce::Justification::centredRight);
+        g.drawText (juce::String (db, 1) + " dB", 154, top + 30, 30, 18, juce::Justification::centredRight);
 
         g.setColour (juce::Colour (0xff2b303c));
         g.drawHorizontalLine (top + trackHeight - 1, 0.0f, static_cast<float> (bounds.getWidth()));
@@ -600,6 +617,30 @@ void ArrangementView::mouseDown (const juce::MouseEvent& e)
 
             if (onTrackArmChanged != nullptr)
                 onTrackArmChanged();
+        }
+
+        juce::Rectangle<int> takeRect (94, top + 30, 58, 18);
+        if (takeRect.contains (e.getPosition()))
+        {
+            const auto takes = RecordingManager::getTrackTakes (*track);
+            if (takes.size() >= 2)
+            {
+                if (e.mods.isShiftDown())
+                {
+                    RecordingManager::flattenCompToClip (
+                        *edit, *track, takes[0].startBeat, takes[0].endBeat, 10.0);
+                }
+                else
+                {
+                    int active = 0;
+                    for (int t = 0; t < takes.size(); ++t)
+                        if (takes[t].active)
+                            active = t;
+                    RecordingManager::selectActiveTake (*edit, *track, 0, (active + 1) % takes.size());
+                }
+                repaint();
+            }
+            return;
         }
 
         return;

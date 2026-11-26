@@ -436,3 +436,305 @@ TranscriptionCommitResult AudioToMidiTranscriber::transcribeClipToMidi (te::Edit
     res.notes            = std::move (notes);
     return res;
 }
+
+namespace
+{
+    constexpr int kPolyMinMidi = 36;
+    constexpr int kPolyMaxMidi = 96;
+
+    double polyMidiToHz (int midi)
+    {
+        return 440.0 * std::pow (2.0, static_cast<double> (midi - 69) / 12.0);
+    }
+
+    // Fractional-bin Goertzel detector. Unlike a plain FFT bin this does not
+    // require the note frequency to land exactly on a bin boundary.
+    float polyGoertzelMagnitude (const float* samples, int n, double sampleRate, double freq)
+    {
+        const double k = freq * static_cast<double> (n) / sampleRate;
+        const double omega = 2.0 * juce::MathConstants<double>::pi * k / static_cast<double> (n);
+        const double coeff = 2.0 * std::cos (omega);
+        double s1 = 0.0, s2 = 0.0;
+        for (int i = 0; i < n; ++i)
+        {
+            const double s = static_cast<double> (samples[i]) + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s;
+        }
+        const double power = s1 * s1 + s2 * s2 - coeff * s1 * s2;
+        return static_cast<float> (std::sqrt (std::max (0.0, power)));
+    }
+}
+
+std::vector<TranscribedNote> AudioToMidiTranscriber::transcribePolyphonic (
+    const juce::File& audioFile, double bpm, int maxVoices, float peakThresholdDb)
+{
+    std::vector<TranscribedNote> result;
+    if (! audioFile.existsAsFile() || bpm <= 0.0)
+        return result;
+
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (audioFile));
+    if (reader == nullptr || reader->lengthInSamples <= 0 || reader->sampleRate <= 0.0)
+        return result;
+
+    const int maxSamples = static_cast<int> (std::min<juce::int64> (
+        reader->lengthInSamples, static_cast<juce::int64> (reader->sampleRate * 60.0)));
+    if (maxSamples <= 0)
+        return result;
+
+    juce::AudioBuffer<float> buffer (static_cast<int> (reader->numChannels), maxSamples);
+    reader->read (&buffer, 0, maxSamples, 0, true, true);
+
+    const double sr = reader->sampleRate;
+    const int windowSize = 4096;
+    const int hopSize = 512;
+    const int numNotes = kPolyMaxMidi - kPolyMinMidi + 1;
+    const int minFrames = std::max (1, static_cast<int> (std::ceil (0.06 * sr / hopSize)));
+    const int voices = juce::jlimit (1, 8, maxVoices);
+    const float thresholdDb = juce::jlimit (-80.0f, 0.0f, peakThresholdDb);
+    const double norm = 0.5 * static_cast<double> (windowSize);
+
+    juce::AudioBuffer<float> mono (1, maxSamples);
+    mono.clear();
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        for (int i = 0; i < maxSamples; ++i)
+            mono.addSample (0, i, buffer.getSample (ch, i) / static_cast<float> (buffer.getNumChannels()));
+
+    std::vector<int> noteStartFrame (numNotes, -1);
+    std::vector<int> noteLastFrame (numNotes, -1);
+
+    auto emitNote = [&] (int noteIndex, int startFrame, int endFrame)
+    {
+        if (endFrame - startFrame < minFrames)
+            return;
+        const double beatsPerSecond = bpm / 60.0;
+        const double rawStart = (static_cast<double> (startFrame * hopSize) / sr) * beatsPerSecond;
+        const double rawEnd = (static_cast<double> (endFrame * hopSize) / sr) * beatsPerSecond;
+        const double qStart = std::round (rawStart / 0.25) * 0.25;
+        const double qEnd = std::max (qStart + 0.125, std::round (rawEnd / 0.25) * 0.25);
+
+        TranscribedNote note;
+        note.pitch = kPolyMinMidi + noteIndex;
+        note.startBeat = qStart;
+        note.lengthBeats = qEnd - qStart;
+        note.velocity = 100;
+        result.push_back (note);
+    };
+
+    std::vector<float> windowed (static_cast<size_t> (windowSize));
+    std::vector<float> magnitudes (static_cast<size_t> (numNotes));
+
+    for (int frameStart = 0; frameStart + windowSize <= maxSamples; frameStart += hopSize)
+    {
+        const int frameIdx = frameStart / hopSize;
+        for (int i = 0; i < windowSize; ++i)
+        {
+            const double hann = 0.5 * (1.0 - std::cos (2.0 * juce::MathConstants<double>::pi
+                * static_cast<double> (i) / static_cast<double> (windowSize - 1)));
+            windowed[static_cast<size_t> (i)] = mono.getSample (0, frameStart + i) * static_cast<float> (hann);
+        }
+
+        double energy = 0.0;
+        for (int i = 0; i < windowSize; ++i)
+        {
+            const float v = windowed[static_cast<size_t> (i)];
+            energy += static_cast<double> (v * v);
+        }
+        if (energy < static_cast<double> (windowSize) * 1.0e-8)
+            continue;
+
+        for (int m = 0; m < numNotes; ++m)
+        {
+            const double freq = polyMidiToHz (kPolyMinMidi + m);
+            if (freq * 2.0 >= sr * 0.5)
+            {
+                magnitudes[static_cast<size_t> (m)] = 0.0f;
+                continue;
+            }
+            const float mag = polyGoertzelMagnitude (windowed.data(), windowSize, sr, freq);
+            magnitudes[static_cast<size_t> (m)] =
+                20.0f * std::log10 (std::max (1.0e-6f, mag / static_cast<float> (norm)));
+        }
+
+        std::vector<int> candidates;
+        for (int m = 1; m < numNotes - 1; ++m)
+        {
+            if (magnitudes[static_cast<size_t> (m)] < thresholdDb)
+                continue;
+            if (magnitudes[static_cast<size_t> (m)] < magnitudes[static_cast<size_t> (m - 1)]
+                || magnitudes[static_cast<size_t> (m)] < magnitudes[static_cast<size_t> (m + 1)])
+                continue;
+            candidates.push_back (m);
+        }
+        std::sort (candidates.begin(), candidates.end(),
+                   [&] (int a, int b) { return magnitudes[static_cast<size_t> (a)] > magnitudes[static_cast<size_t> (b)]; });
+
+        std::vector<int> picked;
+        for (int m : candidates)
+        {
+            if (static_cast<int> (picked.size()) >= voices)
+                break;
+
+            bool harmonic = false;
+            const double f = polyMidiToHz (kPolyMinMidi + m);
+            for (int p : picked)
+            {
+                const double f0 = polyMidiToHz (kPolyMinMidi + p);
+                for (int mult = 2; mult <= 3; ++mult)
+                {
+                    if (std::abs (f - f0 * mult) < f0 * 0.04)
+                    {
+                        harmonic = true;
+                        break;
+                    }
+                }
+                if (harmonic)
+                    break;
+            }
+            if (! harmonic)
+                picked.push_back (m);
+        }
+
+        std::vector<bool> detected (static_cast<size_t> (numNotes), false);
+        for (int m : picked)
+            detected[static_cast<size_t> (m)] = true;
+
+        for (int m = 0; m < numNotes; ++m)
+        {
+            if (detected[static_cast<size_t> (m)])
+            {
+                if (noteStartFrame[static_cast<size_t> (m)] < 0)
+                    noteStartFrame[static_cast<size_t> (m)] = frameIdx;
+                noteLastFrame[static_cast<size_t> (m)] = frameIdx;
+            }
+            else if (noteStartFrame[static_cast<size_t> (m)] >= 0
+                     && frameIdx - noteLastFrame[static_cast<size_t> (m)] > 3)
+            {
+                emitNote (m, noteStartFrame[static_cast<size_t> (m)],
+                          noteLastFrame[static_cast<size_t> (m)]);
+                noteStartFrame[static_cast<size_t> (m)] = -1;
+                noteLastFrame[static_cast<size_t> (m)] = -1;
+            }
+        }
+    }
+
+    for (int m = 0; m < numNotes; ++m)
+    {
+        if (noteStartFrame[static_cast<size_t> (m)] >= 0)
+            emitNote (m, noteStartFrame[static_cast<size_t> (m)],
+                      noteLastFrame[static_cast<size_t> (m)] + 1);
+    }
+
+    std::sort (result.begin(), result.end(), [] (const TranscribedNote& a, const TranscribedNote& b)
+    {
+        if (std::abs (a.startBeat - b.startBeat) > 1.0e-6)
+            return a.startBeat < b.startBeat;
+        return a.pitch < b.pitch;
+    });
+    return result;
+}
+
+TranscriptionCommitResult AudioToMidiTranscriber::transcribePolyphonicClipToMidi (
+    te::Edit& edit, tracktion::EditItemID sourceWaveClipID,
+    int targetTrackIndex, int maxVoices, float peakThresholdDb)
+{
+    TranscriptionCommitResult res;
+
+    te::WaveAudioClip* srcClip = nullptr;
+    for (auto* t : te::getAudioTracks (edit))
+    {
+        for (auto* c : t->getClips())
+        {
+            if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+            {
+                if (wc->itemID == sourceWaveClipID)
+                {
+                    srcClip = wc;
+                    break;
+                }
+            }
+        }
+        if (srcClip != nullptr)
+            break;
+    }
+
+    if (srcClip == nullptr)
+    {
+        res.errorMessage = "Source WaveAudioClip not found";
+        return res;
+    }
+
+    const auto tempoSetting = edit.tempoSequence.getTempo (0);
+    const double bpm = tempoSetting != nullptr ? tempoSetting->getBpm() : 124.0;
+    const auto srcName = srcClip->getName();
+    const double srcStartBeat = edit.tempoSequence.toBeats (srcClip->getPosition().getStart()).inBeats();
+
+    auto notes = transcribePolyphonic (srcClip->getSourceFileReference().getFile(),
+                                       bpm, maxVoices, peakThresholdDb);
+    if (notes.empty())
+    {
+        res.errorMessage = "No simultaneous pitches detected in audio clip";
+        return res;
+    }
+
+    for (auto& n : notes)
+        n.startBeat += srcStartBeat;
+
+    double maxNoteEnd = 4.0;
+    for (const auto& n : notes)
+        maxNoteEnd = std::max (maxNoteEnd, n.startBeat + n.lengthBeats);
+    const double clipLengthBeats = std::max (4.0, std::ceil (maxNoteEnd / 4.0) * 4.0);
+    const tracktion::TimeRange midiRange {
+        edit.tempoSequence.toTime (tracktion::BeatPosition::fromBeats (srcStartBeat)),
+        edit.tempoSequence.toTime (tracktion::BeatPosition::fromBeats (srcStartBeat + clipLengthBeats))
+    };
+
+    auto& um = edit.getUndoManager();
+    um.beginNewTransaction ("Transcribe Polyphonic Audio to MIDI");
+
+    auto tracks = te::getAudioTracks (edit);
+    te::AudioTrack* destTrack = nullptr;
+    int resolvedTrackIdx = targetTrackIndex;
+    if (juce::isPositiveAndBelow (targetTrackIndex, tracks.size()))
+    {
+        destTrack = tracks[targetTrackIndex];
+    }
+    else
+    {
+        edit.ensureNumberOfAudioTracks (tracks.size() + 1);
+        tracks = te::getAudioTracks (edit);
+        destTrack = tracks.getLast();
+        resolvedTrackIdx = tracks.size() - 1;
+        destTrack->setName (srcName + " (Poly MIDI)");
+        if (auto synth = edit.getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {}))
+            destTrack->pluginList.insertPlugin (synth,
+                AutomationManager::getInsertIndexBeforeTerminalPlugins (*destTrack), nullptr);
+    }
+
+    const juce::String midiClipName = srcName + " Poly MIDI";
+    auto* midiClip = dynamic_cast<te::MidiClip*> (
+        destTrack->insertNewClip (te::TrackItem::Type::midi, midiClipName, midiRange, nullptr));
+    if (midiClip == nullptr)
+    {
+        res.errorMessage = "Failed to insert polyphonic MidiClip";
+        return res;
+    }
+
+    auto& seq = midiClip->getSequence();
+    for (const auto& n : notes)
+    {
+        seq.addNote (n.pitch,
+                     tracktion::BeatPosition::fromBeats (n.startBeat),
+                     tracktion::BeatDuration::fromBeats (n.lengthBeats),
+                     n.velocity, 0, &um);
+    }
+
+    res.success = true;
+    res.targetTrackIndex = resolvedTrackIdx;
+    res.createdClipID = midiClip->itemID;
+    res.clipName = midiClipName;
+    res.notes = std::move (notes);
+    return res;
+}

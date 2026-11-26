@@ -3,6 +3,7 @@
 #include "CvRackPlugins.h"
 #include "HardwareRackPlugins.h"
 #include "PluginPresetManager.h"
+#include "SidechainCompressorPlugin.h"
 
 //==============================================================================
 // ChannelStrip
@@ -421,6 +422,7 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
     menu.addItem (16, "TR-808 Drum Synth");
     menu.addItem (17, "12-Bit Vintage Sampler");
     menu.addItem (18, "Analog Tape Deck");
+    menu.addItem (19, "Sidechain Compressor");
     menu.addSeparator();
     menu.addSectionHeader ("Built-In Effects");
     menu.addItem (2, "4-Band Equaliser (EQ)");
@@ -506,6 +508,12 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
                     PluginPresetManager::seedStarterSamplerKit (*samplerPtr);
                 tr->pluginList.insertPlugin (smp, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
             }
+        }
+        else if (chosenId == 19)
+        {
+            safeThis->edit.getUndoManager().beginNewTransaction ("Add Sidechain Compressor");
+            if (auto comp = safeThis->edit.getPluginCache().createNewPlugin (SidechainCompressorPlugin::xmlTypeName, {}))
+                tr->pluginList.insertPlugin (comp, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
         }
         else if (chosenId >= 16 && chosenId <= 18)
         {

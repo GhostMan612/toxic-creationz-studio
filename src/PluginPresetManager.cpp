@@ -262,6 +262,9 @@ juce::StringArray PluginPresetManager::getFactoryPresetNames (te::Plugin& plugin
     if (dynamic_cast<CvLfoPlugin*> (&plugin) != nullptr)
         return { "Slow Sweep (0.25 Hz)", "Quarter Wobble (2 Hz)", "Fast Flutter (6 Hz)" };
 
+    if (dynamic_cast<SidechainCompressorPlugin*> (&plugin) != nullptr)
+        return { "EDM Pump", "Vocal Duck", "Glue Bus" };
+
     if (dynamic_cast<te::ReverbPlugin*> (&plugin) != nullptr)
         return { "Tight Room", "Cyber Hall", "Ambient Wash" };
 
@@ -751,6 +754,42 @@ bool PluginPresetManager::applyFactoryPreset (te::Plugin& plugin, const juce::St
             setParamIfPresent (*tape, "flutter", 0.15f);
             setParamIfPresent (*tape, "bias", 0.22f);
             setParamIfPresent (*tape, "mix", 0.85f);
+            return true;
+        }
+        return false;
+    }
+
+    if (auto* comp = dynamic_cast<SidechainCompressorPlugin*> (&plugin))
+    {
+        um.beginNewTransaction ("Load Preset: " + trimmed);
+        if (trimmed == "EDM Pump")
+        {
+            setParamIfPresent (*comp, "thresholdDb", -22.0f);
+            setParamIfPresent (*comp, "ratio", 8.0f);
+            setParamIfPresent (*comp, "attackMs", 2.0f);
+            setParamIfPresent (*comp, "releaseMs", 90.0f);
+            setParamIfPresent (*comp, "makeupDb", 3.0f);
+            setParamIfPresent (*comp, "mix", 1.0f);
+            return true;
+        }
+        if (trimmed == "Vocal Duck")
+        {
+            setParamIfPresent (*comp, "thresholdDb", -30.0f);
+            setParamIfPresent (*comp, "ratio", 4.0f);
+            setParamIfPresent (*comp, "attackMs", 10.0f);
+            setParamIfPresent (*comp, "releaseMs", 220.0f);
+            setParamIfPresent (*comp, "makeupDb", 0.0f);
+            setParamIfPresent (*comp, "mix", 1.0f);
+            return true;
+        }
+        if (trimmed == "Glue Bus")
+        {
+            setParamIfPresent (*comp, "thresholdDb", -14.0f);
+            setParamIfPresent (*comp, "ratio", 2.5f);
+            setParamIfPresent (*comp, "attackMs", 20.0f);
+            setParamIfPresent (*comp, "releaseMs", 180.0f);
+            setParamIfPresent (*comp, "makeupDb", 1.5f);
+            setParamIfPresent (*comp, "mix", 0.75f);
             return true;
         }
         return false;

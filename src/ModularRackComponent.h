@@ -6,6 +6,7 @@
 #include "CvRackPlugins.h"
 #include "HardwareRackPlugins.h"
 #include "PluginPresetManager.h"
+#include "SidechainCompressorPlugin.h"
 
 #include <functional>
 #include <tuple>

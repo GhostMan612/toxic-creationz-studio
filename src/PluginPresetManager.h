@@ -6,6 +6,7 @@
 
 #include "CvRackPlugins.h"
 #include "HardwareRackPlugins.h"
+#include "SidechainCompressorPlugin.h"
 
 namespace te = tracktion::engine;
 

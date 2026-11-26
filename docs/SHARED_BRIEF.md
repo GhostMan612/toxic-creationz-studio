@@ -4,15 +4,18 @@
 - Open PR (#11): WO-011 (`feat/wo-011-v1-rc-eq-cv-worker-docs`, `918625a`) — v1.0 RC.
 - Continuous Dev (`dev/v1-complete`, branched from `918625a`): `WO-012` (`4268ada`), `WO-013` (`cc59e83`),
   `WO-014` (`08a89a1`), `WO-015` (`16522de`), `WO-016` (`6ecc571`), `WO-017` (`43eb2e0`),
-  `Hardware Rack Suite` (`525d672` + `0780725`), and `WO-018` complete and locally verified —
+  `Hardware Rack Suite` (`525d672` + `0780725`), `WO-018` (`d424c5e`) and `WO-019` complete and locally verified —
   `PluginPresetManager` factory preset bank & `.trkpreset` XML round-trip, `4OSC` oscillator/unison/FX
   editor strip, `Multi-Sampler (808 + Synth Kit)`, native `HardwareRackPlugins.h` suite (`Tr808DrumPlugin`
   5-out + 2-ch stereo + CHat->OHat choke, `VintageSamplerPlugin` 12-bit ZOH + stereo reconstruction LPF +
   WAV loader, `AnalogTapePlugin` wow/flutter + 85 Hz head bump + asymmetric saturation on both 3-ch rack &
   2-ch track inserts), `WO-018` AI Co-Producer Scaling (`midi.generate_progression`, `midi.quantize_scale`,
   `mixer.auto_balance_lufs`, `arrangement.duplicate_section`, Suno/ElevenLabs/Demucs optional adapters +
-  offline 4-band stereo stem splitter `separate_stems` / `separate_audio_stems`), 5/5 Release
-  `--smoke-test` (`PASS`), isolated ASAN `RelWithDebInfo` `--smoke-test` (`exit 0`, clean), `22/22` Python
+  offline 4-band stereo stem splitter `separate_stems` / `separate_audio_stems`, `WO-019` Advanced Audio DSP
+  (`SidechainCompressorPlugin` Pin 3/4 ducking + 3 factory presets, multi-take loop comping with
+  `recording.comp_takes`, polyphonic Constant-Q `transcribePolyphonic` + `basic_pitch` offline fallback),
+  5/5 Release
+  `--smoke-test` (`PASS`), isolated ASAN `RelWithDebInfo` `--smoke-test` (`exit 0`, clean), `26/26` Python
   `unittest` (`OK`), and portable Release zip `dist/ToxicCreationzStudio-win64.zip`.
 - Workflow: Local development on `dev/v1-complete` (no PRs opened during continuous build).
 - Smoke convention: Release build + `--smoke-test`; all temp dirs under
@@ -46,6 +49,7 @@
 | WO-017 | Factory Sound Preset Bank, `.trkpreset` XML Save/Load, `4OSC`/Sampler UI, Multi-Machine Rack & `set_plugin_preset`/`add_rack_machine` MCP | Committed locally (`dev/v1-complete`, `43eb2e0`) |
 | WO-016B | Reason-Style Native Hardware Rack Suite: `Tr808DrumPlugin`, `VintageSamplerPlugin`, `AnalogTapePlugin`, `rack.add_module` & Hardware Presets/Hardening | Committed locally (`dev/v1-complete`, `0780725`) |
 | WO-018 | AI Co-Producer Scaling: `midi.generate_progression`, `midi.quantize_scale`, `mixer.auto_balance_lufs`, `arrangement.duplicate_section` & Cloud/Demucs Stem Worker | Verified locally (`dev/v1-complete`) |
+| WO-019 | Advanced Audio DSP & Recording Polish: `SidechainCompressorPlugin` Pin 3/4 ducking, multi-take loop comping (`recording.comp_takes`), polyphonic Constant-Q Audio-to-MIDI + `basic_pitch` fallback | Verified locally (`dev/v1-complete`) |
 
 ---
 

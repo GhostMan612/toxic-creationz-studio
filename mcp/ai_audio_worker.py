@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from array import array
 import hashlib
+import importlib
 import math
 import os
 from pathlib import Path
@@ -523,6 +524,71 @@ def separate_stems(
         "sample_rate": target_sr,
         "stems": stem_paths,
     }
+
+
+def transcribe_polyphonic_basic_pitch(
+    input_wav: str | Path,
+    output_midi: str | Path | None = None,
+) -> dict[str, Any]:
+    """Optional Spotify basic_pitch polyphonic transcription with an offline fallback.
+
+    Zero extra dependencies are required: when basic_pitch is absent the call
+    returns a structured ``cpp_polyphonic_fallback`` payload so headless CI and
+    DAWs without Python ML packages stay green.
+    """
+    src = Path(input_wav)
+    if not src.exists():
+        raise FileNotFoundError(f"input_wav does not exist: {src}")
+
+    midi_path = Path(output_midi) if output_midi else src.with_suffix(".mid")
+    fallback: dict[str, Any] = {
+        "backend_used": "cpp_polyphonic_fallback",
+        "fallback_reason": "",
+        "input_wav": str(src),
+        "output_midi": "",
+        "notes": [],
+        "note_count": 0,
+    }
+
+    try:
+        basic_pitch = importlib.import_module("basic_pitch")
+        inference = basic_pitch.inference
+        model, model_output = inference.predict(str(src))
+
+        note_events: list[dict[str, Any]] = []
+        try:
+            raw_notes = model_output[1]
+            for event in raw_notes:
+                note_events.append(
+                    {
+                        "start_beat": float(event[0]),
+                        "end_beat": float(event[1]),
+                        "pitch": int(event[2]),
+                        "amplitude": float(event[3]),
+                    }
+                )
+        except Exception:
+            note_events = []
+
+        written = ""
+        try:
+            inference.save(model_output, str(midi_path))
+            if midi_path.exists():
+                written = str(midi_path)
+        except Exception:
+            written = ""
+
+        return {
+            "backend_used": "basic_pitch",
+            "fallback_reason": "",
+            "input_wav": str(src),
+            "output_midi": written,
+            "notes": note_events,
+            "note_count": len(note_events),
+        }
+    except Exception as exc:
+        fallback["fallback_reason"] = f"basic_pitch unavailable: {exc}"
+        return fallback
 
 
 def _main() -> int:

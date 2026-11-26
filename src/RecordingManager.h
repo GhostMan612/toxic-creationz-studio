@@ -56,6 +56,26 @@ public:
                                          const juce::File& takesDirectory,
                                          juce::File* outTakeFile = nullptr);
 
+    // Multi-take loop comping. Take lanes live in a TCS_TAKE_LANES child tree
+    // on the track's ValueTree so they persist with the .tracktionedit file.
+    struct TakeInfo
+    {
+        juce::String file;
+        juce::String name;
+        double startBeat = 0.0;
+        double endBeat = 0.0;
+        bool active = false;
+    };
+
+    static juce::Array<TakeInfo> getTrackTakes (const te::AudioTrack& track);
+    static bool addRecordedTake (te::Edit& edit, te::AudioTrack& track,
+                                 const juce::File& wavFile, double startBeat, double endBeat);
+    static bool selectActiveTake (te::Edit& edit, te::AudioTrack& track,
+                                  int laneIndex, int takeIndex);
+    static juce::File flattenCompToClip (te::Edit& edit, te::AudioTrack& track,
+                                         double startBeat, double endBeat,
+                                         double crossfadeMs, int laneIndex = -1);
+
     std::function<void (const juce::String& /*status*/)> onRecordingStateChanged;
 
 private:
@@ -71,6 +91,15 @@ private:
     static inline const juce::Identifier inputMonitorProp { "tcsInputMonitor" };
     static inline const juce::Identifier inputDeviceProp  { "tcsInputDevice" };
     static inline const juce::Identifier countInProp      { "tcsCountInBars" };
+
+    static inline const juce::Identifier takeLanesTree    { "TCS_TAKE_LANES" };
+    static inline const juce::Identifier takeLaneTree     { "TAKE_LANE" };
+    static inline const juce::Identifier takeTree         { "TAKE" };
+    static inline const juce::Identifier takeFileProp     { "file" };
+    static inline const juce::Identifier takeNameProp     { "name" };
+    static inline const juce::Identifier takeStartProp    { "startBeat" };
+    static inline const juce::Identifier takeEndProp      { "endBeat" };
+    static inline const juce::Identifier takeActiveProp   { "activeTake" };
 
     te::Engine& engine;
     te::Edit* edit = nullptr;

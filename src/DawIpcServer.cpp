@@ -5,6 +5,7 @@
 #include "HardwareRackPlugins.h"
 #include "MixdownExporter.h"
 #include "PluginPresetManager.h"
+#include "SidechainCompressorPlugin.h"
 #include "WaveformEditorComponent.h"
 
 #include <algorithm>
@@ -385,6 +386,8 @@ juce::String DawIpcServer::enqueueAndWaitForMessageThread (const juce::String& r
                 timeoutMs = 15000;
             else if (reqMethod == "mixer.auto_balance_lufs" || reqMethod == "arrangement.duplicate_section")
                 timeoutMs = 10000;
+            else if (reqMethod == "recording.comp_takes")
+                timeoutMs = 15000;
         }
     }
 
@@ -1409,7 +1412,14 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         if (params.hasProperty ("min_note_beats"))
             opts.minNoteBeats = std::clamp (static_cast<double> (params["min_note_beats"]), 0.03125, 2.0);
 
-        const auto res = AudioToMidiTranscriber::transcribeClipToMidi (*edit, waveClipID, targetTrackIdx, opts);
+        const bool polyphonic = static_cast<bool> (params.getProperty ("polyphonic", false));
+        const int maxVoices = juce::jlimit (1, 8,
+            static_cast<int> (params.getProperty ("max_voices", 4)));
+
+        const auto res = polyphonic
+            ? AudioToMidiTranscriber::transcribePolyphonicClipToMidi (
+                  *edit, waveClipID, targetTrackIdx, maxVoices)
+            : AudioToMidiTranscriber::transcribeClipToMidi (*edit, waveClipID, targetTrackIdx, opts);
 
         if (! res.success)
             return makeErrorResponse (id, -32603, res.errorMessage);
@@ -1525,6 +1535,7 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         else if (rawType == "cv_lfo") xmlType = CvLfoPlugin::xmlTypeName;
         else if (rawType == "cv_wobble") xmlType = CvWobbleFilterPlugin::xmlTypeName;
         else if (rawType == "cv_splitter") xmlType = CvUtilityPlugin::xmlTypeName;
+        else if (rawType == "sidechain_comp") xmlType = SidechainCompressorPlugin::xmlTypeName;
         else
             return makeErrorResponse (id, -32602, "Unsupported machine_type: " + rawType);
 
@@ -1595,6 +1606,7 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         else if (rawType == "sampler")                   xmlType = VintageSamplerPlugin::xmlTypeName;
         else if (rawType == "tape")                      xmlType = AnalogTapePlugin::xmlTypeName;
         else if (rawType == "4osc")                      xmlType = te::FourOscPlugin::xmlTypeName;
+        else if (rawType == "sidechain_comp")            xmlType = SidechainCompressorPlugin::xmlTypeName;
         else
             return makeErrorResponse (id, -32602, "Unsupported module_type: " + rawType);
 
@@ -2205,6 +2217,87 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         out->setProperty ("dest_start_beat", destBeat);
         out->setProperty ("dest_end_beat", destEndBeat);
         return makeResultResponse (id, juce::var (out));
+    }
+
+    // 26. recording.comp_takes (list / select / flatten multi-take loop comps)
+    if (method == "recording.comp_takes")
+    {
+        const int trackIdx = static_cast<int> (params.getProperty ("track_index", 0));
+        const juce::String action = params.getProperty ("action", "list").toString().trim().toLowerCase();
+        auto tracks = te::getAudioTracks (*edit);
+        if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "Invalid track_index");
+
+        auto* track = tracks[trackIdx];
+
+        if (action == "list")
+        {
+            juce::Array<juce::var> takesArr;
+            for (const auto& info : RecordingManager::getTrackTakes (*track))
+            {
+                auto* t = new juce::DynamicObject();
+                t->setProperty ("file", info.file);
+                t->setProperty ("name", info.name);
+                t->setProperty ("start_beat", info.startBeat);
+                t->setProperty ("end_beat", info.endBeat);
+                t->setProperty ("active", info.active);
+                takesArr.add (juce::var (t));
+            }
+
+            auto* res = new juce::DynamicObject();
+            res->setProperty ("track_index", trackIdx);
+            res->setProperty ("takes", takesArr);
+            return makeResultResponse (id, juce::var (res));
+        }
+
+        if (action == "select")
+        {
+            const int laneIdx = static_cast<int> (params.getProperty ("lane_index", 0));
+            const int takeIdx = static_cast<int> (params.getProperty ("take_index", -1));
+            if (! RecordingManager::selectActiveTake (*edit, *track, laneIdx, takeIdx))
+                return makeErrorResponse (id, -32602, "Invalid lane_index/take_index");
+
+            if (onEditMutatedByRpc)
+                onEditMutatedByRpc ("MCP selected take " + juce::String (takeIdx + 1)
+                                    + " on track " + juce::String (trackIdx + 1));
+
+            auto* res = new juce::DynamicObject();
+            res->setProperty ("track_index", trackIdx);
+            res->setProperty ("lane_index", laneIdx);
+            res->setProperty ("take_index", takeIdx);
+            res->setProperty ("selected", true);
+            return makeResultResponse (id, juce::var (res));
+        }
+
+        if (action == "flatten")
+        {
+            const double startBeat = static_cast<double> (params.getProperty ("start_beat", 0.0));
+            const double endBeat   = static_cast<double> (params.getProperty ("end_beat", 4.0));
+            const double xfadeMs   = juce::jlimit (0.0, 2000.0,
+                static_cast<double> (params.getProperty ("crossfade_ms", 10.0)));
+            const int laneIdx      = static_cast<int> (params.getProperty ("lane_index", -1));
+
+            if (! std::isfinite (startBeat) || ! std::isfinite (endBeat) || endBeat <= startBeat)
+                return makeErrorResponse (id, -32602, "Invalid start_beat/end_beat range");
+
+            const juce::File compFile = RecordingManager::flattenCompToClip (
+                *edit, *track, startBeat, endBeat, xfadeMs, laneIdx);
+            if (! compFile.existsAsFile())
+                return makeErrorResponse (id, -32603, "No active takes to flatten");
+
+            if (onEditMutatedByRpc)
+                onEditMutatedByRpc ("MCP flattened take comp on track " + juce::String (trackIdx + 1));
+
+            auto* res = new juce::DynamicObject();
+            res->setProperty ("track_index", trackIdx);
+            res->setProperty ("output_file", compFile.getFullPathName());
+            res->setProperty ("start_beat", startBeat);
+            res->setProperty ("end_beat", endBeat);
+            res->setProperty ("crossfade_ms", xfadeMs);
+            return makeResultResponse (id, juce::var (res));
+        }
+
+        return makeErrorResponse (id, -32602, "Invalid comp action: " + action);
     }
 
     return makeErrorResponse (id, -32601, "Method not found: " + method);

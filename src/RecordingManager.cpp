@@ -436,3 +436,265 @@ bool RecordingManager::commitRecordedAudioTake (te::Edit& targetEdit,
 
     return inserted;
 }
+
+namespace
+{
+    const juce::Identifier kLanesTree { "TCS_TAKE_LANES" };
+    const juce::Identifier kLaneTree  { "TAKE_LANE" };
+    const juce::Identifier kTakeTree  { "TAKE" };
+    const juce::Identifier kFileProp  { "file" };
+    const juce::Identifier kNameProp  { "name" };
+    const juce::Identifier kStartProp { "startBeat" };
+    const juce::Identifier kEndProp   { "endBeat" };
+    const juce::Identifier kActiveProp { "activeTake" };
+
+    juce::File takeFileDirForLanes (const juce::ValueTree& lanes)
+    {
+        for (const auto& lane : lanes)
+        {
+            for (const auto& take : lane)
+            {
+                const juce::File f (take.getProperty (kFileProp).toString());
+                if (f.existsAsFile())
+                    return f.getParentDirectory();
+            }
+        }
+        return juce::File::getSpecialLocation (juce::File::tempDirectory)
+            .getChildFile ("tcs_take_comps");
+    }
+
+    juce::ValueTree findLane (const juce::ValueTree& lanes, double startBeat, double endBeat)
+    {
+        for (const auto& lane : lanes)
+        {
+            if (std::abs (static_cast<double> (lane.getProperty (kStartProp, 0.0)) - startBeat) < 0.05
+                && std::abs (static_cast<double> (lane.getProperty (kEndProp, 0.0)) - endBeat) < 0.05)
+                return lane;
+        }
+        return {};
+    }
+}
+
+juce::Array<RecordingManager::TakeInfo> RecordingManager::getTrackTakes (const te::AudioTrack& track)
+{
+    juce::Array<TakeInfo> result;
+    const auto lanes = track.state.getChildWithName (kLanesTree);
+    if (! lanes.isValid())
+        return result;
+
+    for (const auto& lane : lanes)
+    {
+        const int active = static_cast<int> (lane.getProperty (kActiveProp, 0));
+        int takeIndex = 0;
+        for (const auto& take : lane)
+        {
+            if (take.getType() != kTakeTree)
+                continue;
+
+            TakeInfo info;
+            info.file = take.getProperty (kFileProp).toString();
+            info.name = take.getProperty (kNameProp).toString();
+            info.startBeat = static_cast<double> (take.getProperty (kStartProp, 0.0));
+            info.endBeat = static_cast<double> (take.getProperty (kEndProp, 0.0));
+            info.active = (takeIndex == active);
+            result.add (info);
+            ++takeIndex;
+        }
+    }
+    return result;
+}
+
+bool RecordingManager::addRecordedTake (te::Edit& edit, te::AudioTrack& track,
+                                        const juce::File& wavFile, double startBeat, double endBeat)
+{
+    if (! wavFile.existsAsFile() || ! std::isfinite (startBeat) || ! std::isfinite (endBeat)
+        || endBeat <= startBeat)
+        return false;
+
+    auto& um = edit.getUndoManager();
+    um.beginNewTransaction ("Add Recorded Take");
+
+    auto lanes = track.state.getChildWithName (kLanesTree);
+    if (! lanes.isValid())
+    {
+        lanes = juce::ValueTree (kLanesTree);
+        track.state.addChild (lanes, -1, &um);
+    }
+
+    auto lane = findLane (lanes, startBeat, endBeat);
+    if (! lane.isValid())
+    {
+        lane = juce::ValueTree (kLaneTree);
+        lane.setProperty (kStartProp, startBeat, &um);
+        lane.setProperty (kEndProp, endBeat, &um);
+        lanes.addChild (lane, -1, &um);
+    }
+
+    juce::ValueTree take (kTakeTree);
+    take.setProperty (kFileProp, wavFile.getFullPathName(), &um);
+    take.setProperty (kNameProp, wavFile.getFileNameWithoutExtension(), &um);
+    take.setProperty (kStartProp, startBeat, &um);
+    take.setProperty (kEndProp, endBeat, &um);
+    lane.addChild (take, -1, &um);
+    lane.setProperty (kActiveProp, lane.getNumChildren() - 1, &um);
+    return true;
+}
+
+bool RecordingManager::selectActiveTake (te::Edit& edit, te::AudioTrack& track,
+                                         int laneIndex, int takeIndex)
+{
+    auto lanes = track.state.getChildWithName (kLanesTree);
+    if (! lanes.isValid() || ! juce::isPositiveAndBelow (laneIndex, lanes.getNumChildren()))
+        return false;
+
+    auto lane = lanes.getChild (laneIndex);
+    if (! juce::isPositiveAndBelow (takeIndex, lane.getNumChildren()))
+        return false;
+
+    auto& um = edit.getUndoManager();
+    um.beginNewTransaction ("Select Active Take");
+    lane.setProperty (kActiveProp, takeIndex, &um);
+    return true;
+}
+
+juce::File RecordingManager::flattenCompToClip (te::Edit& edit, te::AudioTrack& track,
+                                                double startBeat, double endBeat,
+                                                double crossfadeMs, int laneIndex)
+{
+    if (! std::isfinite (startBeat) || ! std::isfinite (endBeat) || endBeat <= startBeat)
+        return {};
+
+    const auto lanes = track.state.getChildWithName (kLanesTree);
+    if (! lanes.isValid())
+        return {};
+
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+
+    const auto startTime = edit.tempoSequence.toTime (tracktion::BeatPosition::fromBeats (startBeat));
+    const auto endTime = edit.tempoSequence.toTime (tracktion::BeatPosition::fromBeats (endBeat));
+    const double regionSeconds = std::max (0.001, endTime.inSeconds() - startTime.inSeconds());
+
+    double sampleRate = 44100.0;
+    for (const auto& lane : lanes)
+    {
+        for (const auto& take : lane)
+        {
+            const juce::File f (take.getProperty (kFileProp).toString());
+            if (! f.existsAsFile())
+                continue;
+            if (auto reader = std::unique_ptr<juce::AudioFormatReader> (fm.createReaderFor (f)))
+            {
+                sampleRate = reader->sampleRate;
+                break;
+            }
+        }
+    }
+
+    const int totalSamples = juce::jlimit (1, 44100 * 60 * 10,
+                                          static_cast<int> (std::ceil (regionSeconds * sampleRate)));
+    juce::AudioBuffer<float> compBuffer (2, totalSamples);
+    compBuffer.clear();
+
+    int contributingLanes = 0;
+    const int fadeSamples = juce::jlimit (0, totalSamples / 4,
+                                          static_cast<int> (std::ceil (crossfadeMs * 0.001 * sampleRate)));
+
+    for (int li = 0; li < lanes.getNumChildren(); ++li)
+    {
+        if (laneIndex >= 0 && li != laneIndex)
+            continue;
+
+        auto lane = lanes.getChild (li);
+        if (lane.getNumChildren() == 0)
+            continue;
+
+        const int active = juce::jlimit (0, lane.getNumChildren() - 1,
+                                         static_cast<int> (lane.getProperty (kActiveProp, 0)));
+        auto take = lane.getChild (active);
+        const juce::File takeFile (take.getProperty (kFileProp).toString());
+        if (! takeFile.existsAsFile())
+            continue;
+
+        auto reader = std::unique_ptr<juce::AudioFormatReader> (fm.createReaderFor (takeFile));
+        if (reader == nullptr || reader->lengthInSamples <= 0)
+            continue;
+
+        const double takeStart = static_cast<double> (take.getProperty (kStartProp, startBeat));
+        const double takeEnd = static_cast<double> (take.getProperty (kEndProp, endBeat));
+        const double takeStartSec = edit.tempoSequence.toTime (
+            tracktion::BeatPosition::fromBeats (std::max (startBeat, takeStart))).inSeconds();
+        const double takeEndSec = edit.tempoSequence.toTime (
+            tracktion::BeatPosition::fromBeats (std::min (endBeat, takeEnd))).inSeconds();
+
+        const int destOffset = juce::jlimit (0, totalSamples - 1,
+            static_cast<int> (std::floor ((takeStartSec - startTime.inSeconds()) * sampleRate)));
+        const int readLen = juce::jlimit (0, totalSamples - destOffset,
+            static_cast<int> (std::floor ((takeEndSec - takeStartSec) * sampleRate)));
+        if (readLen <= 0)
+            continue;
+
+        juce::AudioBuffer<float> takeBuffer (2, readLen);
+        takeBuffer.clear();
+        reader->read (&takeBuffer, 0, readLen, 0, true, true);
+
+        for (int s = 0; s < readLen; ++s)
+        {
+            float fade = 1.0f;
+            if (fadeSamples > 0 && contributingLanes > 0)
+            {
+                if (s < fadeSamples)
+                    fade = std::sin (0.5f * juce::MathConstants<float>::pi
+                                     * static_cast<float> (s) / static_cast<float> (fadeSamples));
+                else if (s > readLen - fadeSamples)
+                    fade = std::sin (0.5f * juce::MathConstants<float>::pi
+                                     * static_cast<float> (readLen - s) / static_cast<float> (fadeSamples));
+            }
+
+            for (int ch = 0; ch < 2; ++ch)
+                compBuffer.addSample (ch, destOffset + s, takeBuffer.getSample (ch, s) * fade);
+        }
+        ++contributingLanes;
+    }
+
+    if (contributingLanes == 0)
+        return {};
+
+    for (int ch = 0; ch < 2; ++ch)
+        for (int s = 0; s < totalSamples; ++s)
+            compBuffer.setSample (ch, s, juce::jlimit (-1.0f, 1.0f, compBuffer.getSample (ch, s)));
+
+    const juce::File takeDir = takeFileDirForLanes (lanes);
+    takeDir.createDirectory();
+    const juce::File compFile = takeDir.getNonexistentChildFile ("Comp", ".wav", false);
+    {
+        auto fs = std::make_unique<juce::FileOutputStream> (compFile);
+        if (! fs->openedOk())
+            return {};
+        fs->setPosition (0);
+        fs->truncate();
+        std::unique_ptr<juce::OutputStream> os (fs.release());
+        juce::WavAudioFormat wavFormat;
+        const auto options = juce::AudioFormatWriterOptions{}
+                                 .withSampleRate (sampleRate).withNumChannels (2).withBitsPerSample (16);
+        std::unique_ptr<juce::AudioFormatWriter> writer (wavFormat.createWriterFor (os, options));
+        if (writer == nullptr || ! writer->writeFromAudioSampleBuffer (compBuffer, 0, totalSamples))
+            return {};
+    }
+
+    auto& um = edit.getUndoManager();
+    um.beginNewTransaction ("Flatten Take Comp");
+    const tracktion::TimeRange clipRange {
+        edit.tempoSequence.toTime (tracktion::BeatPosition::fromBeats (startBeat)),
+        edit.tempoSequence.toTime (tracktion::BeatPosition::fromBeats (endBeat))
+    };
+    const te::ClipPosition clipPos { clipRange, tracktion::TimeDuration::fromSeconds (0.0) };
+
+    if (auto clip = track.insertWaveClip ("Take Comp", compFile, clipPos, false))
+    {
+        clip->getSourceFileReference().setToFile (
+            compFile, te::SourceFileReference::PathStyle::alwaysAbsolute, false);
+        return compFile;
+    }
+    return {};
+}

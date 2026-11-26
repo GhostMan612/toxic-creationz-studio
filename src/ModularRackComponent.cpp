@@ -764,6 +764,7 @@ void ModularRackComponent::showAddMachineMenu()
     menu.addItem (8, "Reverb");
     menu.addItem (9, "Delay");
     menu.addItem (10, "4-Band Equaliser (EQ)");
+    menu.addItem (23, "Sidechain Compressor");
     menu.addSeparator();
     menu.addSectionHeader ("CV & Modular Utilities");
     menu.addItem (20, "CV LFO");
@@ -806,6 +807,7 @@ void ModularRackComponent::showAddMachineMenu()
             case 8:  safeThis->addMachineToRack (te::ReverbPlugin::xmlTypeName); break;
             case 9:  safeThis->addMachineToRack (te::DelayPlugin::xmlTypeName); break;
             case 10: safeThis->addMachineToRack (te::EqualiserPlugin::xmlTypeName); break;
+            case 23: safeThis->addMachineToRack (SidechainCompressorPlugin::xmlTypeName); break;
             case 20: safeThis->addMachineToRack (CvLfoPlugin::xmlTypeName); break;
             case 21: safeThis->addMachineToRack (CvWobbleFilterPlugin::xmlTypeName); break;
             case 22: safeThis->addMachineToRack (CvUtilityPlugin::xmlTypeName); break;

@@ -17,7 +17,12 @@ _MCP_DIR = Path(__file__).resolve().parent
 if str(_MCP_DIR) not in sys.path:
     sys.path.insert(0, str(_MCP_DIR))
 
-from ai_audio_worker import generate_stem, parse_root_midi, separate_stems
+from ai_audio_worker import (
+    generate_stem,
+    parse_root_midi,
+    separate_stems,
+    transcribe_polyphonic_basic_pitch,
+)
 
 
 def _load_daw_mcp_server():
@@ -280,6 +285,8 @@ class McpWorkerTests(unittest.TestCase):
                 "target_track_index": 3,
                 "quantize_beats": 2.0,
                 "min_note_beats": 0.03125,
+                "polyphonic": False,
+                "max_voices": 4,
             },
             timeout=15.0,
         )
@@ -307,6 +314,8 @@ class McpWorkerTests(unittest.TestCase):
                 "target_track_index": -1,
                 "quantize_beats": 0.25,
                 "min_note_beats": 0.125,
+                "polyphonic": False,
+                "max_voices": 4,
             },
             timeout=15.0,
         )
@@ -575,6 +584,91 @@ class McpWorkerTests(unittest.TestCase):
             self.assertEqual(mock_rpc.await_count, 8)
             for stem_path in res["separation"]["stems"].values():
                 self.assertTrue(Path(stem_path).is_file())
+
+
+    def test_add_rack_module_sidechain_comp(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(
+            return_value={"rack_index": 1, "name": "Sidechain Compressor", "inputs": 4, "outputs": 2}
+        )
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.add_rack_module("sidechain_comp", rack_index=1))
+
+        self.assertEqual(res["name"], "Sidechain Compressor")
+        mock_rpc.assert_awaited_once_with(
+            "rack.add_module",
+            {"rack_index": 1, "module_type": "sidechain_comp", "x": 0.25, "y": 0.5},
+        )
+
+    def test_transcribe_audio_to_midi_polyphonic(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(
+            return_value={"notes_transcribed": 3, "notes": [{"pitch": 60}, {"pitch": 63}, {"pitch": 67}]}
+        )
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(
+                srv.transcribe_audio_to_midi(2, clip_index=1, polyphonic=True, max_voices=99)
+            )
+
+        self.assertEqual(res["notes_transcribed"], 3)
+        mock_rpc.assert_awaited_once_with(
+            "audio.transcribe_to_midi",
+            {
+                "track_index": 2,
+                "clip_index": 1,
+                "target_track_index": -1,
+                "quantize_beats": 0.25,
+                "min_note_beats": 0.125,
+                "polyphonic": True,
+                "max_voices": 8,
+            },
+            timeout=15.0,
+        )
+
+    def test_comp_track_takes_clamps_and_forwards(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(
+            return_value={"track_index": 0, "output_file": "C:/tmp/Comp1.wav", "crossfade_ms": 2000.0}
+        )
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(
+                srv.comp_track_takes(
+                    0, action="FLATTEN", take_index=1, crossfade_ms=9000.0, start_beat=-2.0
+                )
+            )
+
+        self.assertEqual(res["crossfade_ms"], 2000.0)
+        mock_rpc.assert_awaited_once_with(
+            "recording.comp_takes",
+            {
+                "track_index": 0,
+                "action": "flatten",
+                "take_index": 1,
+                "crossfade_ms": 2000.0,
+                "start_beat": 0.0,
+                "end_beat": 4.0,
+                "lane_index": 0,
+            },
+            timeout=15.0,
+        )
+
+    def test_transcribe_polyphonic_basic_pitch_offline_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src_wav = Path(tmp) / "triad.wav"
+            generate_stem("C minor triad", 0.6, src_wav, backend="offline")
+
+            with patch(
+                "ai_audio_worker.importlib.import_module", side_effect=ImportError("no basic_pitch")
+            ):
+                res = transcribe_polyphonic_basic_pitch(src_wav, Path(tmp) / "triad.mid")
+
+        self.assertEqual(res["backend_used"], "cpp_polyphonic_fallback")
+        self.assertIn("basic_pitch unavailable", res["fallback_reason"])
+        self.assertEqual(res["note_count"], 0)
+        self.assertEqual(res["notes"], [])
 
 
 if __name__ == "__main__":

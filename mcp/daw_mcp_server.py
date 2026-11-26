@@ -430,16 +430,43 @@ async def transcribe_audio_to_midi(
     target_track_index: int = -1,
     quantize_beats: float = 0.25,
     min_note_beats: float = 0.125,
+    polyphonic: bool = False,
+    max_voices: int = 4,
 ) -> dict[str, Any]:
-    """Transcribe a monophonic audio clip (vocals, bass, lead) into an editable MIDI clip using YIN pitch tracking."""
+    """Transcribe an audio clip into an editable MIDI clip (YIN mono or polyphonic peak tracker)."""
     params: dict[str, Any] = {
         "track_index": track_index,
         "clip_index": max(0, clip_index),
         "target_track_index": target_track_index,
         "quantize_beats": max(0.0, min(2.0, quantize_beats)),
         "min_note_beats": max(0.03125, min(2.0, min_note_beats)),
+        "polyphonic": bool(polyphonic),
+        "max_voices": max(1, min(8, int(max_voices))),
     }
     return await send_daw_rpc("audio.transcribe_to_midi", params, timeout=15.0)
+
+
+@mcp.tool()
+async def comp_track_takes(
+    track_index: int,
+    action: str = "list",
+    take_index: int = -1,
+    crossfade_ms: float = 10.0,
+    start_beat: float = 0.0,
+    end_beat: float = 4.0,
+    lane_index: int = 0,
+) -> dict[str, Any]:
+    """List, select or flatten multi-take loop comps on a track."""
+    params: dict[str, Any] = {
+        "track_index": track_index,
+        "action": action.lower().strip(),
+        "take_index": take_index,
+        "crossfade_ms": max(0.0, min(2000.0, crossfade_ms)),
+        "start_beat": max(0.0, start_beat),
+        "end_beat": max(0.0, end_beat),
+        "lane_index": lane_index,
+    }
+    return await send_daw_rpc("recording.comp_takes", params, timeout=15.0)
 
 
 @mcp.tool()
