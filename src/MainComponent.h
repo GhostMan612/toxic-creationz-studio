@@ -14,6 +14,7 @@
 #include "MixdownExporter.h"
 #include "MidiKeyboardDock.h"
 #include "RecordingManager.h"
+#include "ScriptPrompterComponent.h"
 #include "StudioLookAndFeel.h"
 #include "StudioPluginWindow.h"
 
@@ -107,6 +108,7 @@ private:
 
     WaveformEditorComponent waveformEditorComponent;
     MidiKeyboardDock midiKeyboardDock;
+    ScriptPrompterComponent scriptPrompter;
 
     juce::File currentEditFile;
     bool sessionUntitled = false;
@@ -145,6 +147,7 @@ private:
     juce::TextButton keysToggleButton     { "Keys" };
     juce::TextButton bgmToggleButton       { "BGM Gen" };
     juce::TextButton waveEditorToggleButton { "Wave Edit" };
+    juce::TextButton voBoothToggleButton   { "VO Booth" };
     juce::TextButton audioSettingsButton { "Audio Settings" };
     juce::Slider bpmSlider;
     juce::Label transportPosLabel      { {}, "Bar 1.1" };

@@ -148,6 +148,8 @@ if(TCS_BUILD_DESKTOP_APP)
         src/MixdownExporter.cpp
         src/MidiKeyboardDock.h
         src/MidiKeyboardDock.cpp
+        src/ScriptPrompterComponent.h
+        src/ScriptPrompterComponent.cpp
         src/RecordingManager.h
         src/RecordingManager.cpp
         src/StudioLookAndFeel.h

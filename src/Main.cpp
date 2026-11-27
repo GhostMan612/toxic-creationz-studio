@@ -1,6 +1,7 @@
 #include "MainComponent.h"
 #include "AudioToMidiTranscriber.h"
 #include "CoreIsolationCheck.h"
+#include "AdrCueGenerator.h"
 #include "HardwareRackPlugins.h"
 #include "LoudnessMeter.h"
 #include "PlatformConfig.h"
@@ -3880,6 +3881,160 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-021 vocal DSP, punch-and-roll, A/B/C export & BS.1770/ACX analyzer PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-022: Voice Acting Studio Suite Part 2
+    //===========================================================================
+    {
+        const auto voDir = tempDir.getChildFile ("tcs_wo022_smoke");
+        voDir.deleteRecursively();
+        voDir.createDirectory();
+
+        const auto callRpc = [&] (const juce::String& method, const juce::var& params) -> juce::var
+        {
+            auto* request = new juce::DynamicObject();
+            request->setProperty ("jsonrpc", "2.0");
+            request->setProperty ("id", 1);
+            request->setProperty ("method", method);
+            request->setProperty ("params", params);
+            const auto response = app.ipcServer.executeJsonRpcOnMessageThread (
+                juce::JSON::toString (juce::var (request), true));
+            juce::var parsed;
+            if (! juce::JSON::parse (response, parsed).wasOk() || parsed.hasProperty ("error"))
+                return {};
+            return parsed["result"];
+        };
+
+        auto* setParams = new juce::DynamicObject();
+        setParams->setProperty ("title", "WO-022 Booth Script");
+        setParams->setProperty ("text", "Line A for the booth.\nLine B for the booth.");
+        setParams->setProperty ("wpm", 144);
+        setParams->setProperty ("adr_enabled", true);
+        setParams->setProperty ("adr_line_sec", 4.5);
+
+        const auto setResult = callRpc ("vo.set_script", juce::var (setParams));
+        if (! setResult.isObject() || static_cast<int> (setResult["wpm"]) != 144)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022 vo.set_script did not round-trip" << std::endl;
+            return 1;
+        }
+
+        auto* mm = &app.edit->getMarkerManager();
+        if (auto marker = mm->createMarker (mm->getNextUniqueID(),
+                                            tracktion::TimePosition::fromSeconds (0.5),
+                                            tracktion::TimeDuration(), nullptr))
+            marker->setName ("Booth Cue 1");
+
+        const auto getResult = callRpc ("vo.get_script", juce::var (new juce::DynamicObject()));
+        const bool markerFound = getResult.isObject() && getResult["markers"].isArray()
+            && ! getResult["markers"].getArray()->isEmpty();
+        if (! getResult.isObject()
+            || getResult["title"].toString() != "WO-022 Booth Script"
+            || getResult["text"].toString() != "Line A for the booth.\nLine B for the booth."
+            || ! markerFound)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022 vo.get_script state/markers mismatch" << std::endl;
+            return 1;
+        }
+
+        // ADR cue pre-roll pips are finite; the live line window is silent.
+        {
+            tcs::vo::AdrCueConfig cfg;
+            constexpr double lineStart = 5.0;
+            for (int i = 0; i < tcs::vo::AdrCueGenerator::pipCount; ++i)
+            {
+                const double pipTime = lineStart
+                    - tcs::vo::AdrCueGenerator::pipLeadSeconds (i, cfg) + 0.00025;
+                const float v = tcs::vo::AdrCueGenerator::getMonitorSample (pipTime, lineStart, cfg);
+                if (! std::isfinite (v) || std::abs (v) < 1.0e-6f)
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-022 ADR pip " << i << " was silent" << std::endl;
+                    return 1;
+                }
+            }
+            if (std::abs (tcs::vo::AdrCueGenerator::getMonitorSample (5.2, lineStart, cfg)) >= 1.0e-6f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-022 ADR cue leaked into the live line window" << std::endl;
+                return 1;
+            }
+            double remaining = 0.0;
+            if (tcs::vo::AdrCueGenerator::getPacerStage (1.0, remaining) != tcs::vo::PacerStage::inhale
+                || tcs::vo::AdrCueGenerator::getPacerStage (5.0, remaining) != tcs::vo::PacerStage::hold
+                || tcs::vo::AdrCueGenerator::getPacerStage (8.0, remaining) != tcs::vo::PacerStage::hiss)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-022 4-2-15 warm-up pacer stage mismatch" << std::endl;
+                return 1;
+            }
+        }
+
+        // Demo reel layout: one transaction wires the vocal strip and duck bus.
+        app.edit->ensureNumberOfAudioTracks (2);
+        auto* layoutParams = new juce::DynamicObject();
+        layoutParams->setProperty ("voice_track_index", 0);
+        layoutParams->setProperty ("bed_track_index", 1);
+        layoutParams->setProperty ("duck_threshold_db", -22.0);
+        layoutParams->setProperty ("duck_ratio", 6.0);
+        const auto layoutResult = callRpc ("vo.build_demo_reel_layout", juce::var (layoutParams));
+        if (! layoutResult.isObject()
+            || layoutResult["vocal_plugin"].toString() != "tcs_vocal_channel"
+            || layoutResult["duck_plugin"].toString() != "tcs_sidechain_comp")
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022 demo reel layout RPC did not wire plugins" << std::endl;
+            return 1;
+        }
+
+        const auto voSession = voDir.getChildFile ("wo022_booth.tracktionedit");
+        app.currentEditFile = voSession;
+        app.sessionUntitled = false;
+        app.saveSession();
+        if (! app.loadSessionFromFileSafely (voSession))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022 booth session reload failed" << std::endl;
+            return 1;
+        }
+
+        const auto reloaded = callRpc ("vo.get_script", juce::var (new juce::DynamicObject()));
+        if (! reloaded.isObject() || reloaded["title"].toString() != "WO-022 Booth Script")
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022 script did not survive save/reload" << std::endl;
+            return 1;
+        }
+
+        {
+            auto tracks = te::getAudioTracks (*app.edit);
+            bool foundVocal = false, foundDuck = false;
+            if (tracks.size() >= 2)
+            {
+                for (auto* p : tracks[0]->pluginList)
+                    if (dynamic_cast<VocalChannelPlugin*> (p) != nullptr) foundVocal = true;
+                for (auto* p : tracks[1]->pluginList)
+                    if (dynamic_cast<SidechainCompressorPlugin*> (p) != nullptr) foundDuck = true;
+            }
+            if (! foundVocal || ! foundDuck)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-022 demo reel plugins did not survive reload" << std::endl;
+                return 1;
+            }
+
+            if (PluginPresetManager::getCharacterFxMacroNames().size() != 4)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-022 four Character FX macros are missing" << std::endl;
+                return 1;
+            }
+            auto fxRack = app.edit->getRackList().addNewRack();
+            const bool macroApplied = PluginPresetManager::applyCharacterFxMacro (
+                *app.edit, *fxRack, "Sci-Fi Holo / Droid");
+            if (! macroApplied || fxRack->getPlugins().size() != 4)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-022 Character FX macro did not patch four modules" << std::endl;
+                return 1;
+            }
+            fxRack = nullptr;
+        }
+
+        voDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-022 teleprompter, ADR cue, demo-reel layout & Character FX PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -3922,7 +4077,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "harmonic progression, scale quantize, LUFS auto-balance, section duplicator, "
                  "sidechain Pin 3/4 ducking, multi-take comping, polyphonic audio-to-MIDI, "
                  "cross-platform core isolation, VST3 scanner lifecycle, the original CV envelope/step "
-                 "blueprint modules, and the WO-021 voice acting suite verified."
+                 "blueprint modules, the WO-021 voice acting suite, and WO-022 booth teleprompter "
+                 "and ADR/demo-reel workflow verified."
               << std::endl;
     return 0;
 }

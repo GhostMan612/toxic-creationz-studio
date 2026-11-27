@@ -138,6 +138,7 @@ MainComponent::MainComponent()
         modularRackComponent.syncFromEdit();
         waveformEditorComponent.syncFromEdit();
         midiKeyboardDock.syncFromEdit();
+        scriptPrompter.syncFromEdit();
         syncTransportControlsFromEdit();
         statusLabel.setText (summary, juce::dontSendNotification);
     };
@@ -152,6 +153,8 @@ MainComponent::MainComponent()
     waveformEditorComponent.setVisible (false);
     addAndMakeVisible (midiKeyboardDock);
     midiKeyboardDock.setVisible (false);
+    addAndMakeVisible (scriptPrompter);
+    scriptPrompter.setVisible (false);
 
     mixerComponent.setRecordingManager (&recordingManager);
     arrangementView.setRecordingManager (&recordingManager);
@@ -564,6 +567,16 @@ MainComponent::MainComponent()
         resized();
     };
 
+    voBoothToggleButton.setClickingTogglesState (true);
+    voBoothToggleButton.setToggleState (false, juce::dontSendNotification);
+    voBoothToggleButton.onClick = [this]
+    {
+        scriptPrompter.setVisible (voBoothToggleButton.getToggleState());
+        if (edit != nullptr)
+            scriptPrompter.setEdit (edit.get());
+        resized();
+    };
+
     audioSettingsButton.onClick = [this]
     {
         auto selector = std::make_unique<juce::AudioDeviceSelectorComponent> (
@@ -629,6 +642,7 @@ MainComponent::~MainComponent()
         ipcServer.setEdit (nullptr);
         waveformEditorComponent.setTarget (nullptr, {});
         midiKeyboardDock.setEdit (nullptr);
+        scriptPrompter.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         te::PluginWindowState::hideAllWindowsTemporarily (*edit);
@@ -918,6 +932,7 @@ void MainComponent::attachEdit (te::Edit& editToAttach)
     ipcServer.setEdit (&editToAttach);
     waveformEditorComponent.setTarget (&editToAttach, arrangementView.getSelectedClipID());
     midiKeyboardDock.setEdit (&editToAttach);
+    scriptPrompter.setEdit (&editToAttach);
     bpmSlider.setValue (editToAttach.tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
     syncTransportControlsFromEdit();
 }
@@ -1106,6 +1121,7 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
         ipcServer.setEdit (nullptr);
         waveformEditorComponent.setTarget (nullptr, {});
         midiKeyboardDock.setEdit (nullptr);
+        scriptPrompter.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         te::PluginWindowState::hideAllWindowsTemporarily (*edit);
@@ -1427,6 +1443,8 @@ void MainComponent::resized()
     waveEditorToggleButton.setBounds (row1.removeFromRight (78));
     row1.removeFromRight (4);
     bgmToggleButton.setBounds (row1.removeFromRight (74));
+    row1.removeFromRight (4);
+    voBoothToggleButton.setBounds (row1.removeFromRight (70));
 
     // Row 2: Transport, Record, Loop/Click/Count-In, Edit actions, BPM, Bar:Beat & Status
     addRowItem (row2, playButton, 46);
@@ -1456,6 +1474,12 @@ void MainComponent::resized()
     if (midiKeyboardDock.isVisible())
     {
         midiKeyboardDock.setBounds (area.removeFromBottom (74));
+        area.removeFromBottom (4);
+    }
+
+    if (scriptPrompter.isVisible())
+    {
+        scriptPrompter.setBounds (area.removeFromBottom (170));
         area.removeFromBottom (4);
     }
 

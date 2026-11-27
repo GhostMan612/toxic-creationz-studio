@@ -11,7 +11,10 @@
   per the work order: `VocalChannelPlugin` (4-stage HPF/gate/de-esser/limiter +
   5 VO presets), punch-and-roll splice, slate-tagged takes, A/B/C audition export,
   `VocalSpecAnalyzer` (BS.1770 + ACX/audition checks), 3 RPCs + 3 MCP tools,
-  and 4 new Python tests (36/36 total).
+  and 4 new Python tests (36/36 total). WO-022 (Script Teleprompter, monitor-only
+  Anime ADR 3-beep cue + 4-2-15 pacer, 4 Character FX macro presets, AI Voice
+  Director RPC/MCP tools) implemented directly on the same branch with no PR;
+  Python suite now 40/40. Phase 7 Voice Acting Studio Suite (WO-021–WO-022) complete.
 - Full repo sweep / reconciliation (local on `fix/repo-sweep-reconciliation`): verified
   WO-001..WO-020 against source; restored the two unimplemented briefing CV modules
   (`CvEnvelopeFollowerPlugin`, `CvStepModulatorPlugin`), fixed the unreachable Android

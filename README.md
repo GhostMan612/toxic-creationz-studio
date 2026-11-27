@@ -25,7 +25,7 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 
 ---
 
-## Implemented Work Orders (`WO-001` through `WO-020`)
+## Implemented Work Orders (`WO-001` through `WO-022`)
 
 | Phase | Highlights |
 | --- | --- |
@@ -50,6 +50,8 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 | **WO-019** | Advanced audio DSP & recording polish: `SidechainCompressorPlugin` Pin 3/4 ducking with 3 factory presets, multi-take loop comping (`recording.comp_takes`), polyphonic Constant-Q audio-to-MIDI with a `basic_pitch` offline fallback. |
 | **WO-020** | Cross-platform CMake (MSVC/GCC/Clang guards), `tcs_core` / `tcs_core_isolation`, `PlatformConfig.h`, Oboe-aware Android core, `macos-15` + `ubuntu-22.04` CI matrix, and the VST3-free core boundary proof. |
 | **Sweep Reconciliation** | Restored the missing briefing CV **Envelope Follower** and **8-Step Modulator** modules, fixed the unreachable Android Oboe define, hardened the portable zip against zero-filled executables, and made cross-platform CI run on pull requests. |
+| **WO-021 (Phase 7A)** | Voice Acting Studio Part 1: `VocalChannelPlugin` (HPF / hysteresis gate / split-band de-esser / limiter + 5 VO presets), punch-and-roll splice, slate-tagged takes, A/B/C audition export, and a BS.1770/ACX `VocalSpecAnalyzer`. |
+| **WO-022 (Phase 7B)** | Voice Acting Studio Part 2: `VO Booth` teleprompter dock with cue markers, monitor-only Anime ADR 3-beep cue + 4-2-15 warm-up pacer, 4 Character FX rack macros, and AI Voice Director RPC/MCP tools. |
 
 ---
 
@@ -116,6 +118,7 @@ python mcp/daw_mcp_server.py
 - **Mixer, EQ, FX Sends, Presets & Automation:** `set_mixer_channel` (volume, pan, mute, solo, record arm, input device), `auto_balance_mix_lufs` (BS.1770-style K-weighted, gated LUFS gain-matching with peak-headroom safety), `set_plugin_preset` (list/apply built-in synth, FX & hardware factory presets), `set_track_eq` (`low_db`, `mid_db`, `high_db` in `[-18, +18]` dB), `configure_fx_send` (Aux Send to shared Reverb/Delay return bus), `write_track_automation`, `get_track_automation`
 - **Modular Rack:** `get_modular_racks`, `add_rack_machine` (`4osc`, `sampler`, `tr808`, `vintage_sampler`, `tape`, `compressor`, `chorus`, `phaser`, `lowpass`, `pitchshift`, `reverb`, `delay`, `eq`, `cv_lfo`, `cv_wobble`, `cv_splitter`, `cv_envelope`, `cv_step`), `add_rack_module` (placed CV/hardware modules with pin introspection), `patch_modular_rack`
 - **Audio, Pitch Transcription, Stems, BGM & Export:** `generate_bgm_arrangement`, `process_audio_clip`, `transcribe_audio_to_midi` (YIN monophonic or polyphonic Constant-Q audio-to-MIDI into a new or existing MIDI track), `comp_track_takes` (multi-take loop comping), `generate_ai_audio_stem` (Arioso / Suno / ElevenLabs / offline synth), `separate_audio_stems` (Demucs or offline 4-band stereo stem splitter + DAW import), `import_audio_stem`, `export_master_wav`
+- **Voice Acting Studio (Phase 7):** `analyze_vo_specs` (BS.1770 / ACX pass-fail), `export_abc_audition`, `punch_and_roll_splice`, `load_vo_script`, `generate_vo_practice_script` (copyright-free copy + 5-P cues), `build_vo_demo_reel_layout` (vocal strip + ducked bed)
 
 `generate_ai_audio_stem` delegates WAV synthesis to `mcp/ai_audio_worker.py` (automatically using `arioso` when installed, or falling back to a stereo 44.1 kHz key/tempo-synced synthesizer), saves stems to `~/Documents/Toxic Creationz Studio/GeneratedStems/`, and imports them cleanly via `audio.import_file`.
 

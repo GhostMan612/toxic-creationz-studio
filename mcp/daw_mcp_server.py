@@ -22,7 +22,11 @@ _MCP_DIR = str(Path(__file__).resolve().parent)
 if _MCP_DIR not in sys.path:
     sys.path.insert(0, _MCP_DIR)
 
-from ai_audio_worker import generate_stem, separate_stems
+from ai_audio_worker import (
+    generate_stem,
+    generate_vo_practice_script as generate_vo_practice_script_worker,
+    separate_stems,
+)
 
 mcp = FastMCP("Toxic Creationz Studio Co-Producer")
 
@@ -716,6 +720,71 @@ async def punch_and_roll_splice(
         "output_path": output_path.strip(),
     }
     return await send_daw_rpc("recording.punch_and_roll", params, timeout=15.0)
+
+
+@mcp.tool()
+async def load_vo_script(
+    text: str,
+    title: str = "VO Script",
+    wpm: int = 140,
+    adr_enabled: bool = False,
+    adr_line_sec: float = 4.0,
+) -> dict[str, Any]:
+    """Load original script copy into the VO booth teleprompter and Edit state."""
+    params: dict[str, Any] = {
+        "title": title.strip() or "VO Script",
+        "text": text,
+        "wpm": min(220, max(80, int(wpm))),
+        "adr_enabled": bool(adr_enabled),
+        "adr_line_sec": min(15.0, max(1.0, float(adr_line_sec))),
+    }
+    return await send_daw_rpc("vo.set_script", params, timeout=15.0)
+
+
+@mcp.tool()
+async def generate_vo_practice_script(
+    genre: str = "anime",
+    emotion: str = "determined",
+    duration_sec: float = 15.0,
+    load_into_booth: bool = True,
+) -> dict[str, Any]:
+    """Generate copyright-free audition copy with 5-P direction and ADR windows."""
+    script = await asyncio.to_thread(
+        generate_vo_practice_script_worker, genre, emotion, duration_sec
+    )
+    if not load_into_booth:
+        return {"script": script, "loaded_into_booth": False}
+
+    loaded = await send_daw_rpc(
+        "vo.set_script",
+        {
+            "title": script["title"],
+            "text": script["text"],
+            "wpm": script["wpm"],
+            "adr_enabled": script["adr_enabled"],
+            "adr_line_sec": script["adr_line_sec"],
+        },
+        timeout=15.0,
+    )
+    return {"script": script, "loaded_into_booth": True, "booth": loaded}
+
+
+@mcp.tool()
+async def build_vo_demo_reel_layout(
+    voice_track_index: int = 0,
+    bed_track_index: int | None = None,
+    duck_threshold_db: float = -20.0,
+    duck_ratio: float = 6.0,
+) -> dict[str, Any]:
+    """Wire a vocal booth strip on the voice track and a sidechain ducked music bed."""
+    params: dict[str, Any] = {
+        "voice_track_index": max(0, int(voice_track_index)),
+        "duck_threshold_db": min(0.0, max(-60.0, float(duck_threshold_db))),
+        "duck_ratio": min(20.0, max(1.0, float(duck_ratio))),
+    }
+    if bed_track_index is not None:
+        params["bed_track_index"] = max(0, int(bed_track_index))
+    return await send_daw_rpc("vo.build_demo_reel_layout", params, timeout=15.0)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ if str(_MCP_DIR) not in sys.path:
 
 from ai_audio_worker import (
     generate_stem,
+    generate_vo_practice_script,
     parse_root_midi,
     separate_stems,
     transcribe_polyphonic_basic_pitch,
@@ -810,6 +811,66 @@ class McpWorkerTests(unittest.TestCase):
         server = (root / "src" / "DawIpcServer.cpp").read_text(encoding="utf-8")
         for method in ("audio.analyze_vo_specs", "recording.export_abc_audition", "recording.punch_and_roll"):
             self.assertIn(method, server)
+
+    def test_load_vo_script_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"title": "VO Script", "wpm": 140})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.load_vo_script("Line one.", title="  Audition  ", wpm=999, adr_enabled=True))
+
+        self.assertEqual(res["wpm"], 140)
+        mock_rpc.assert_awaited_once_with(
+            "vo.set_script",
+            {"title": "Audition", "text": "Line one.", "wpm": 220,
+             "adr_enabled": True, "adr_line_sec": 4.0},
+            timeout=15.0,
+        )
+
+    def test_generate_vo_practice_script_all_genres_and_five_p(self) -> None:
+        genres = ("anime", "cartoon", "commercial", "villain", "game_barks", "audiobook")
+        seen_titles: set[str] = set()
+        for genre in genres:
+            with self.subTest(genre=genre):
+                result = generate_vo_practice_script(genre, "determined", 20.0)
+                self.assertEqual(result["genre"], genre)
+                self.assertTrue(result["text"])
+                self.assertTrue(result["adr_windows"])
+                for cue in ("pitch", "pace", "placement", "posture", "personality"):
+                    self.assertIn(cue, result["five_p"])
+                seen_titles.add(result["title"])
+        self.assertEqual(len(seen_titles), len(genres))
+        self.assertEqual(generate_vo_practice_script("unknown")["genre"], "anime")
+
+    def test_generate_vo_practice_script_tool_pushes_to_booth(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"title": "Dawn at the Gate"})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.generate_vo_practice_script("anime", load_into_booth=True))
+
+        self.assertTrue(res["loaded_into_booth"])
+        self.assertEqual(res["script"]["genre"], "anime")
+        call_args, call_kwargs = mock_rpc.await_args
+        self.assertEqual(call_args[0], "vo.set_script")
+        self.assertEqual(call_args[1]["title"], "Dawn at the Gate")
+        self.assertEqual(call_kwargs, {"timeout": 15.0})
+
+    def test_build_vo_demo_reel_layout_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"voice_track_index": 1, "bed_track_index": 2})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.build_vo_demo_reel_layout(
+                voice_track_index=1, bed_track_index=2, duck_threshold_db=-99.0, duck_ratio=99.0))
+
+        self.assertEqual(res["bed_track_index"], 2)
+        mock_rpc.assert_awaited_once_with(
+            "vo.build_demo_reel_layout",
+            {"voice_track_index": 1, "duck_threshold_db": -60.0, "duck_ratio": 20.0,
+             "bed_track_index": 2},
+            timeout=15.0,
+        )
 
 
 if __name__ == "__main__":

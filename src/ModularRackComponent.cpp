@@ -775,6 +775,12 @@ void ModularRackComponent::showAddMachineMenu()
     menu.addItem (24, "CV Envelope Follower");
     menu.addItem (25, "CV Step Modulator");
     menu.addItem (26, "Vocal Booth Strip");
+    menu.addSeparator();
+    menu.addSectionHeader ("Character FX Macros");
+    menu.addItem (30, "Radio / Comms Walkie");
+    menu.addItem (31, "Cavernous Villain / Monster");
+    menu.addItem (32, "Heroic Broadcast Lead");
+    menu.addItem (33, "Sci-Fi Holo / Droid");
 
     const auto vstTypes = engine.getPluginManager().knownPluginList.getTypes();
     if (! vstTypes.isEmpty())
@@ -819,6 +825,23 @@ void ModularRackComponent::showAddMachineMenu()
             case 24: safeThis->addMachineToRack (CvEnvelopeFollowerPlugin::xmlTypeName); break;
             case 25: safeThis->addMachineToRack (CvStepModulatorPlugin::xmlTypeName); break;
             case 26: safeThis->addMachineToRack (VocalChannelPlugin::xmlTypeName); break;
+            case 30: case 31: case 32: case 33:
+            {
+                if (safeThis->edit == nullptr)
+                    break;
+                if (safeThis->selectedRack == nullptr)
+                    safeThis->selectedRack = safeThis->edit->getRackList().addNewRack();
+                if (safeThis->selectedRack != nullptr)
+                {
+                    const int macroIndex = chosenId - 30;
+                    PluginPresetManager::applyCharacterFxMacro (
+                        *safeThis->edit, *safeThis->selectedRack,
+                        PluginPresetManager::getCharacterFxMacroNames()[macroIndex]);
+                    safeThis->rebuildFromRack();
+                    safeThis->repaint();
+                }
+                break;
+            }
             default:
                 if (chosenId >= 100)
                 {

@@ -2469,6 +2469,132 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         return makeResultResponse (id, juce::var (res));
     }
 
+    // WO-022: vo.set_script — persist teleprompter copy in the Edit state
+    if (method == "vo.set_script")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+
+        if (! params.hasProperty ("text"))
+            return makeErrorResponse (id, -32602, "Missing text");
+
+        const juce::String title = params.getProperty ("title", "VO Script").toString();
+        const juce::String text = params.getProperty ("text", "").toString();
+        const int wpm = juce::jlimit (80, 220, static_cast<int> (params.getProperty ("wpm", 140)));
+        const bool adrEnabled = static_cast<bool> (params.getProperty ("adr_enabled", false));
+        const double adrLineSec = juce::jlimit (1.0, 15.0,
+            static_cast<double> (params.getProperty ("adr_line_sec", 4.0)));
+
+        auto& um = edit->getUndoManager();
+        um.beginNewTransaction ("VO Booth Script Update");
+        auto tree = edit->state.getOrCreateChildWithName (juce::Identifier ("VOSCRIPT"), &um);
+        tree.setProperty (juce::Identifier ("title"), title, &um);
+        tree.setProperty (juce::Identifier ("text"), text, &um);
+        tree.setProperty (juce::Identifier ("wpm"), wpm, &um);
+        tree.setProperty (juce::Identifier ("adrEnabled"), adrEnabled, &um);
+        tree.setProperty (juce::Identifier ("adrLineSec"), adrLineSec, &um);
+        tree.setProperty (juce::Identifier ("fontSize"), tree.getProperty (juce::Identifier ("fontSize"), 18.0), &um);
+        tree.setProperty (juce::Identifier ("adrBeepIntervalSec"),
+                          tree.getProperty (juce::Identifier ("adrBeepIntervalSec"), 0.65), &um);
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("VO script loaded: " + title);
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("title", title);
+        res->setProperty ("text", text);
+        res->setProperty ("wpm", wpm);
+        res->setProperty ("adr_enabled", adrEnabled);
+        res->setProperty ("adr_line_sec", adrLineSec);
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-022: vo.get_script — script state plus timeline cue markers
+    if (method == "vo.get_script")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+
+        const auto tree = edit->state.getChildWithName (juce::Identifier ("VOSCRIPT"));
+        juce::Array<juce::var> markers;
+        for (auto* marker : edit->getMarkerManager().getMarkers())
+        {
+            if (marker == nullptr)
+                continue;
+            auto* m = new juce::DynamicObject();
+            m->setProperty ("name", marker->getName());
+            m->setProperty ("marker_id", marker->getMarkerID());
+            m->setProperty ("time_seconds", marker->getPosition().getStart().inSeconds());
+            markers.add (juce::var (m));
+        }
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("title", tree.getProperty (juce::Identifier ("title"), "").toString());
+        res->setProperty ("text", tree.getProperty (juce::Identifier ("text"), "").toString());
+        res->setProperty ("wpm", static_cast<int> (tree.getProperty (juce::Identifier ("wpm"), 140)));
+        res->setProperty ("adr_enabled", static_cast<bool> (tree.getProperty (juce::Identifier ("adrEnabled"), false)));
+        res->setProperty ("adr_line_sec", static_cast<double> (tree.getProperty (juce::Identifier ("adrLineSec"), 4.0)));
+        res->setProperty ("markers", juce::var (markers));
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-022: vo.build_demo_reel_layout — voice strip + ducked music bed
+    if (method == "vo.build_demo_reel_layout")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+
+        auto tracks = te::getAudioTracks (*edit);
+        const int voiceIdx = static_cast<int> (params.getProperty ("voice_track_index", 0));
+        const int bedIdx = static_cast<int> (params.getProperty ("bed_track_index", voiceIdx + 1));
+        if (! juce::isPositiveAndBelow (voiceIdx, tracks.size())
+            || ! juce::isPositiveAndBelow (bedIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "Invalid voice_track_index / bed_track_index");
+
+        const double duckThreshold = juce::jlimit (-60.0, 0.0,
+            static_cast<double> (params.getProperty ("duck_threshold_db", -20.0)));
+        const double duckRatio = juce::jlimit (1.0, 20.0,
+            static_cast<double> (params.getProperty ("duck_ratio", 6.0)));
+
+        auto* voiceTrack = tracks[voiceIdx];
+        auto* bedTrack = tracks[bedIdx];
+
+        auto vocal = edit->getPluginCache().createNewPlugin (VocalChannelPlugin::xmlTypeName, {});
+        if (vocal != nullptr)
+            PluginPresetManager::applyFactoryPreset (*vocal, "ACX Audiobook");
+
+        auto sidechain = edit->getPluginCache().createNewPlugin (SidechainCompressorPlugin::xmlTypeName, {});
+        if (sidechain != nullptr)
+        {
+            PluginPresetManager::applyFactoryPreset (*sidechain, "Vocal Duck");
+            if (auto p = sidechain->getAutomatableParameterByID ("thresholdDb"))
+                p->setParameter (static_cast<float> (duckThreshold), juce::sendNotification);
+            if (auto p = sidechain->getAutomatableParameterByID ("ratio"))
+                p->setParameter (static_cast<float> (duckRatio), juce::sendNotification);
+        }
+
+        if (vocal == nullptr || sidechain == nullptr)
+            return makeErrorResponse (id, -32603, "Could not create VO demo reel plugins");
+
+        auto& um = edit->getUndoManager();
+        um.beginNewTransaction ("VO Demo Reel Layout");
+        voiceTrack->pluginList.insertPlugin (vocal, getInsertIndexBeforeTerminalPlugins (*voiceTrack), nullptr);
+        bedTrack->pluginList.insertPlugin (sidechain, getInsertIndexBeforeTerminalPlugins (*bedTrack), nullptr);
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("VO demo reel layout wired on tracks " + juce::String (voiceIdx)
+                                + " / " + juce::String (bedIdx));
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("voice_track_index", voiceIdx);
+        res->setProperty ("bed_track_index", bedIdx);
+        res->setProperty ("vocal_plugin", VocalChannelPlugin::xmlTypeName);
+        res->setProperty ("duck_plugin", SidechainCompressorPlugin::xmlTypeName);
+        res->setProperty ("vocal_preset", "ACX Audiobook");
+        res->setProperty ("duck_preset", "Vocal Duck");
+        return makeResultResponse (id, juce::var (res));
+    }
+
     return makeErrorResponse (id, -32601, "Method not found: " + method);
 }
 
