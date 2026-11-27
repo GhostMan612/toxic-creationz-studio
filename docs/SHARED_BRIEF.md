@@ -6,6 +6,18 @@
 - Merged (PRs #13-#16): cross-platform CI repairs — Linux XInput2 headers, `macos-15`
   runner label, Linux core-isolation build fixes, and `libatomic` link. `main` @ `3ef620c`
   is green on both Windows and cross-platform workflows.
+- Phase 7 is active on `dev/v1.1-vas` (branched from `bddfb78` after the `v1.0.0` tag).
+  WO-021 (Voice Acting Studio Suite) implemented directly on that branch with no PR
+  per the work order: `VocalChannelPlugin` (4-stage HPF/gate/de-esser/limiter +
+  5 VO presets), punch-and-roll splice, slate-tagged takes, A/B/C audition export,
+  `VocalSpecAnalyzer` (BS.1770 + ACX/audition checks), 3 RPCs + 3 MCP tools,
+  and 4 new Python tests (36/36 total). WO-022 (Script Teleprompter, monitor-only
+  Anime ADR 3-beep cue + 4-2-15 pacer, 4 Character FX macro presets, AI Voice
+  Director RPC/MCP tools) implemented directly on the same branch with no PR;
+  Python suite now 40/40. Phase 7 Voice Acting Studio Suite (WO-021–WO-022) complete.
+  WO-022B added boutique hardware faceplates, custom rotary/fader/LED LookAndFeel
+  controls, catenary rack cables with hover/right-click disconnect, and the
+  Studio / Modular Rack / VO Booth workspace suite switcher (Phase 8/9 placeholders only).
 - Full repo sweep / reconciliation (local on `fix/repo-sweep-reconciliation`): verified
   WO-001..WO-020 against source; restored the two unimplemented briefing CV modules
   (`CvEnvelopeFollowerPlugin`, `CvStepModulatorPlugin`), fixed the unreachable Android

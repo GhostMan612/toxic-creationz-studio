@@ -62,14 +62,32 @@ public:
     {
         juce::String file;
         juce::String name;
+        juce::String slate;
         double startBeat = 0.0;
         double endBeat = 0.0;
         bool active = false;
     };
 
+    // Punch-and-roll / A/B/C audition helpers (WO-021).
+    static void configurePunchAndRoll (double preRollSeconds = 3.0, double crossfadeMs = 15.0);
+    static double getPunchPreRollSeconds() noexcept { return punchPreRollSeconds; }
+    static double getPunchCrossfadeMs() noexcept { return punchCrossfadeMs; }
+
+    static juce::File executePunchAndRollSplice (te::Edit& edit, te::AudioTrack& track,
+                                                 const juce::File& priorWav, const juce::File& newTakeWav,
+                                                 double punchTimeSeconds, double crossfadeMs,
+                                                 const juce::File& outWav);
+    static bool tagTakeSlate (te::Edit& edit, te::AudioTrack& track,
+                              int takeIndex, const juce::String& slate);
+    static bool exportAbcAuditionString (te::AudioTrack& track,
+                                         const std::vector<int>& takeIndices,
+                                         double gapSeconds, const juce::File& outWav,
+                                         bool monoMixdown = true);
+
     static juce::Array<TakeInfo> getTrackTakes (const te::AudioTrack& track);
     static bool addRecordedTake (te::Edit& edit, te::AudioTrack& track,
-                                 const juce::File& wavFile, double startBeat, double endBeat);
+                                 const juce::File& wavFile, double startBeat, double endBeat,
+                                 bool startTransaction = true);
     static bool selectActiveTake (te::Edit& edit, te::AudioTrack& track,
                                   int laneIndex, int takeIndex);
     static juce::File flattenCompToClip (te::Edit& edit, te::AudioTrack& track,
@@ -100,6 +118,10 @@ private:
     static inline const juce::Identifier takeStartProp    { "startBeat" };
     static inline const juce::Identifier takeEndProp      { "endBeat" };
     static inline const juce::Identifier takeActiveProp   { "activeTake" };
+    static inline const juce::Identifier takeSlateProp    { "slate" };
+
+    static inline double punchPreRollSeconds = 3.0;
+    static inline double punchCrossfadeMs = 15.0;
 
     te::Engine& engine;
     te::Edit* edit = nullptr;

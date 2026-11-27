@@ -133,6 +133,7 @@ if(TCS_BUILD_DESKTOP_APP)
         src/CvRackPlugins.h
         src/HardwareRackPlugins.h
         src/SidechainCompressorPlugin.h
+        src/VocalChannelPlugin.h
         src/ModularRackComponent.h
         src/ModularRackComponent.cpp
         src/RiffLibrary.h
@@ -147,10 +148,14 @@ if(TCS_BUILD_DESKTOP_APP)
         src/MixdownExporter.cpp
         src/MidiKeyboardDock.h
         src/MidiKeyboardDock.cpp
+        src/ScriptPrompterComponent.h
+        src/ScriptPrompterComponent.cpp
         src/RecordingManager.h
         src/RecordingManager.cpp
         src/StudioLookAndFeel.h
         src/StudioPluginWindow.h
+        src/HardwarePluginEditors.h
+        src/HardwarePluginEditors.cpp
         src/PluginPresetManager.h
         src/PluginPresetManager.cpp
         src/AutomationManager.h

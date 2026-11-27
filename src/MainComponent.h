@@ -14,6 +14,7 @@
 #include "MixdownExporter.h"
 #include "MidiKeyboardDock.h"
 #include "RecordingManager.h"
+#include "ScriptPrompterComponent.h"
 #include "StudioLookAndFeel.h"
 #include "StudioPluginWindow.h"
 
@@ -44,6 +45,11 @@ public:
 
     void guardUnsavedChanges (std::function<void (bool)> onProceed);
 
+    // WO-022B workspace suite switcher.
+    enum class WorkspaceMode { studio, modularRack, voBooth };
+    void setWorkspaceMode (WorkspaceMode mode);
+    WorkspaceMode getWorkspaceMode() const noexcept { return workspaceMode; }
+
 private:
     class Vst3ScanThread;
 
@@ -61,6 +67,8 @@ private:
     void valueTreeRedirected (juce::ValueTree& treeWhichHasBeenChanged) override;
 
     void timerCallback() override;
+    void loadWorkspaceMode();
+    void saveWorkspaceMode() const;
 
     juce::File getStudioRootDir() const;
     juce::File getProjectsDir() const;
@@ -107,6 +115,7 @@ private:
 
     WaveformEditorComponent waveformEditorComponent;
     MidiKeyboardDock midiKeyboardDock;
+    ScriptPrompterComponent scriptPrompter;
 
     juce::File currentEditFile;
     bool sessionUntitled = false;
@@ -145,6 +154,13 @@ private:
     juce::TextButton keysToggleButton     { "Keys" };
     juce::TextButton bgmToggleButton       { "BGM Gen" };
     juce::TextButton waveEditorToggleButton { "Wave Edit" };
+    juce::TextButton voBoothToggleButton   { "VO Booth" };
+    juce::TextButton studioWorkspaceButton { "Studio" };
+    juce::TextButton rackWorkspaceButton   { "Modular Rack" };
+    juce::TextButton voWorkspaceButton     { "VO Booth Suite" };
+    juce::TextButton gameForgePlaceholder  { "Game Forge (P8)" };
+    juce::TextButton rpgBoardPlaceholder   { "RPG Board (P9)" };
+    WorkspaceMode workspaceMode = WorkspaceMode::studio;
     juce::TextButton audioSettingsButton { "Audio Settings" };
     juce::Slider bpmSlider;
     juce::Label transportPosLabel      { {}, "Bar 1.1" };

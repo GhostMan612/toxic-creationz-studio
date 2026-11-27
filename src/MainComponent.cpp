@@ -138,6 +138,7 @@ MainComponent::MainComponent()
         modularRackComponent.syncFromEdit();
         waveformEditorComponent.syncFromEdit();
         midiKeyboardDock.syncFromEdit();
+        scriptPrompter.syncFromEdit();
         syncTransportControlsFromEdit();
         statusLabel.setText (summary, juce::dontSendNotification);
     };
@@ -152,6 +153,8 @@ MainComponent::MainComponent()
     waveformEditorComponent.setVisible (false);
     addAndMakeVisible (midiKeyboardDock);
     midiKeyboardDock.setVisible (false);
+    addAndMakeVisible (scriptPrompter);
+    scriptPrompter.setVisible (false);
 
     mixerComponent.setRecordingManager (&recordingManager);
     arrangementView.setRecordingManager (&recordingManager);
@@ -564,6 +567,31 @@ MainComponent::MainComponent()
         resized();
     };
 
+    voBoothToggleButton.setClickingTogglesState (true);
+    voBoothToggleButton.setToggleState (false, juce::dontSendNotification);
+    voBoothToggleButton.onClick = [this]
+    {
+        scriptPrompter.setVisible (voBoothToggleButton.getToggleState());
+        if (edit != nullptr)
+            scriptPrompter.setEdit (edit.get());
+        resized();
+    };
+
+    addAndMakeVisible (voBoothToggleButton);
+    for (auto* tab : { &studioWorkspaceButton, &rackWorkspaceButton, &voWorkspaceButton })
+    {
+        tab->setClickingTogglesState (true);
+        addAndMakeVisible (tab);
+    }
+    gameForgePlaceholder.setEnabled (false);
+    rpgBoardPlaceholder.setEnabled (false);
+    addAndMakeVisible (gameForgePlaceholder);
+    addAndMakeVisible (rpgBoardPlaceholder);
+
+    studioWorkspaceButton.onClick = [this] { setWorkspaceMode (WorkspaceMode::studio); };
+    rackWorkspaceButton.onClick   = [this] { setWorkspaceMode (WorkspaceMode::modularRack); };
+    voWorkspaceButton.onClick     = [this] { setWorkspaceMode (WorkspaceMode::voBooth); };
+
     audioSettingsButton.onClick = [this]
     {
         auto selector = std::make_unique<juce::AudioDeviceSelectorComponent> (
@@ -587,9 +615,60 @@ MainComponent::MainComponent()
             edit->tempoSequence.getTempo (0)->setBpm (bpmSlider.getValue());
     };
 
-    setSize (1280, 820);
+    loadWorkspaceMode();
+    setSize (1280, 840);
     startTimerHz (30);
     updateWindowTitle();
+}
+
+void MainComponent::setWorkspaceMode (WorkspaceMode mode)
+{
+    workspaceMode = mode;
+    studioWorkspaceButton.setToggleState (mode == WorkspaceMode::studio, juce::dontSendNotification);
+    rackWorkspaceButton.setToggleState (mode == WorkspaceMode::modularRack, juce::dontSendNotification);
+    voWorkspaceButton.setToggleState (mode == WorkspaceMode::voBooth, juce::dontSendNotification);
+
+    const bool studio = mode == WorkspaceMode::studio;
+    const bool vo = mode == WorkspaceMode::voBooth;
+
+    mixerToggleButton.setToggleState (studio, juce::dontSendNotification);
+    mixerComponent.setVisible (studio);
+    rackToggleButton.setToggleState (! vo, juce::dontSendNotification);
+    modularRackComponent.setVisible (! vo);
+    voBoothToggleButton.setToggleState (vo, juce::dontSendNotification);
+    scriptPrompter.setVisible (vo);
+
+    if (vo && edit != nullptr)
+        scriptPrompter.setEdit (edit.get());
+
+    saveWorkspaceMode();
+    resized();
+}
+
+void MainComponent::loadWorkspaceMode()
+{
+    const juce::File file = getStudioRootDir().getChildFile ("workspace_mode.xml");
+    if (! file.existsAsFile())
+        return;
+
+    if (auto xml = juce::XmlDocument::parse (file))
+    {
+        const int stored = xml->getIntAttribute ("mode", 0);
+        workspaceMode = stored == 1 ? WorkspaceMode::modularRack
+                      : stored == 2 ? WorkspaceMode::voBooth
+                                    : WorkspaceMode::studio;
+    }
+}
+
+void MainComponent::saveWorkspaceMode() const
+{
+    juce::XmlElement xml ("WORKSPACE");
+    const int stored = workspaceMode == WorkspaceMode::modularRack ? 1
+                     : workspaceMode == WorkspaceMode::voBooth ? 2 : 0;
+    xml.setAttribute ("mode", stored);
+    const juce::File file = getStudioRootDir().getChildFile ("workspace_mode.xml");
+    file.getParentDirectory().createDirectory();
+    xml.writeTo (file);
 }
 
 MainComponent::~MainComponent()
@@ -629,6 +708,7 @@ MainComponent::~MainComponent()
         ipcServer.setEdit (nullptr);
         waveformEditorComponent.setTarget (nullptr, {});
         midiKeyboardDock.setEdit (nullptr);
+        scriptPrompter.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         te::PluginWindowState::hideAllWindowsTemporarily (*edit);
@@ -918,6 +998,7 @@ void MainComponent::attachEdit (te::Edit& editToAttach)
     ipcServer.setEdit (&editToAttach);
     waveformEditorComponent.setTarget (&editToAttach, arrangementView.getSelectedClipID());
     midiKeyboardDock.setEdit (&editToAttach);
+    scriptPrompter.setEdit (&editToAttach);
     bpmSlider.setValue (editToAttach.tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
     syncTransportControlsFromEdit();
 }
@@ -1106,6 +1187,7 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
         ipcServer.setEdit (nullptr);
         waveformEditorComponent.setTarget (nullptr, {});
         midiKeyboardDock.setEdit (nullptr);
+        scriptPrompter.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         te::PluginWindowState::hideAllWindowsTemporarily (*edit);
@@ -1356,6 +1438,22 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     {
         const int code = juce::CharacterFunctions::toLowerCase (static_cast<juce::juce_wchar> (key.getKeyCode()));
 
+        if (code == '1')
+        {
+            setWorkspaceMode (WorkspaceMode::studio);
+            return true;
+        }
+        if (code == '2')
+        {
+            setWorkspaceMode (WorkspaceMode::modularRack);
+            return true;
+        }
+        if (code == '3')
+        {
+            setWorkspaceMode (WorkspaceMode::voBooth);
+            return true;
+        }
+
         if (code == 'z' && ! key.getModifiers().isShiftDown())
         {
             undoButton.triggerClick();
@@ -1427,6 +1525,17 @@ void MainComponent::resized()
     waveEditorToggleButton.setBounds (row1.removeFromRight (78));
     row1.removeFromRight (4);
     bgmToggleButton.setBounds (row1.removeFromRight (74));
+    row1.removeFromRight (4);
+    voBoothToggleButton.setBounds (row1.removeFromRight (70));
+
+    // WO-022B: workspace suite switcher bar directly beneath the transport header.
+    auto workspaceRow = area.removeFromTop (28);
+    area.removeFromTop (4);
+    addRowItem (workspaceRow, studioWorkspaceButton, 70);
+    addRowItem (workspaceRow, rackWorkspaceButton, 104);
+    addRowItem (workspaceRow, voWorkspaceButton, 112);
+    addRowItem (workspaceRow, gameForgePlaceholder, 118);
+    addRowItem (workspaceRow, rpgBoardPlaceholder, 104);
 
     // Row 2: Transport, Record, Loop/Click/Count-In, Edit actions, BPM, Bar:Beat & Status
     addRowItem (row2, playButton, 46);
@@ -1456,6 +1565,12 @@ void MainComponent::resized()
     if (midiKeyboardDock.isVisible())
     {
         midiKeyboardDock.setBounds (area.removeFromBottom (74));
+        area.removeFromBottom (4);
+    }
+
+    if (scriptPrompter.isVisible())
+    {
+        scriptPrompter.setBounds (area.removeFromBottom (170));
         area.removeFromBottom (4);
     }
 

@@ -1,12 +1,16 @@
 #include "MainComponent.h"
 #include "AudioToMidiTranscriber.h"
 #include "CoreIsolationCheck.h"
+#include "AdrCueGenerator.h"
+#include "HardwarePluginEditors.h"
 #include "HardwareRackPlugins.h"
 #include "LoudnessMeter.h"
 #include "PlatformConfig.h"
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
 #include "StudioPluginWindow.h"
+#include "VocalChannelPlugin.h"
+#include "VocalSpecAnalyzer.h"
 
 #include <algorithm>
 #include <chrono>
@@ -3532,6 +3536,7 @@ int MainComponent::runHeadlessSmokeTest()
             || ids.sampler != "tcs_vintage_sampler"
             || ids.tape != "tcs_analog_tape"
             || ids.sidechain != "tcs_sidechain_comp"
+            || ids.vocal != "tcs_vocal_channel"
             || ids.transcriber != "AudioToMidiTranscriber")
         {
             std::cerr << "[SMOKE_TEST] FAIL: WO-020 isolated core type-ID boundary mismatch" << std::endl;
@@ -3602,6 +3607,499 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] CV envelope follower & 8-step modulator blueprint modules PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-021: Voice Acting Studio Suite
+    //===========================================================================
+    {
+        const auto voDir = tempDir.getChildFile ("tcs_wo021_smoke");
+        voDir.deleteRecursively();
+        voDir.createDirectory();
+
+        const auto writeTone = [&] (const juce::File& file, double freq, float amp,
+                                    double seconds, double leadSilence, double tailSilence) -> bool
+        {
+            const double sr = 44100.0;
+            const int total = static_cast<int> ((seconds + leadSilence + tailSilence) * sr);
+            juce::AudioBuffer<float> buf (1, total);
+            buf.clear();
+            const int start = static_cast<int> (leadSilence * sr);
+            const int len = static_cast<int> (seconds * sr);
+            for (int i = 0; i < len && start + i < total; ++i)
+                buf.setSample (0, start + i,
+                    amp * static_cast<float> (std::sin (juce::MathConstants<double>::twoPi * freq * i / sr)));
+
+            file.getParentDirectory().createDirectory();
+            auto fs = std::make_unique<juce::FileOutputStream> (file);
+            if (! fs->openedOk())
+                return false;
+            fs->setPosition (0);
+            fs->truncate();
+            std::unique_ptr<juce::OutputStream> os (fs.release());
+            juce::WavAudioFormat wavFmt;
+            const auto opts = juce::AudioFormatWriterOptions{}
+                                  .withSampleRate (sr).withNumChannels (1).withBitsPerSample (16);
+            std::unique_ptr<juce::AudioFormatWriter> writer (wavFmt.createWriterFor (os, opts));
+            return writer != nullptr && writer->writeFromAudioSampleBuffer (buf, 0, total);
+        };
+
+        //---- 1. Vocal booth DSP, factory preset and post-deinitialise guard ----
+        auto vocalPtr = app.edit->getPluginCache().createNewPlugin (VocalChannelPlugin::xmlTypeName, {});
+        auto* vocal = dynamic_cast<VocalChannelPlugin*> (vocalPtr.get());
+        if (vocal == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-021 VocalChannelPlugin failed to instantiate" << std::endl;
+            return 1;
+        }
+
+        constexpr int renderSamples = 4410;
+        const te::PluginInitialisationInfo initInfo {
+            tracktion::TimePosition::fromSeconds (0.0), 44100.0, renderSamples };
+        vocal->initialise (initInfo);
+
+        const auto renderRms = [&] (double freq, float amp) -> double
+        {
+            juce::AudioBuffer<float> buf (2, renderSamples);
+            for (int i = 0; i < renderSamples; ++i)
+            {
+                const float s = amp * static_cast<float> (
+                    std::sin (juce::MathConstants<double>::twoPi * freq * i / 44100.0));
+                buf.setSample (0, i, s);
+                buf.setSample (1, i, s);
+            }
+            const te::PluginRenderContext rc (&buf, 0, renderSamples, nullptr, 0.0,
+                tracktion::TimeRange { tracktion::TimePosition::fromSeconds (0.0),
+                                       tracktion::TimePosition::fromSeconds (0.1) },
+                false, false, false, false);
+            vocal->applyToBuffer (rc);
+
+            double sum = 0.0;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < renderSamples; ++i)
+                {
+                    const double v = buf.getSample (ch, i);
+                    sum += v * v;
+                }
+            return std::sqrt (sum / (2.0 * renderSamples));
+        };
+
+        const double rumbleRms = renderRms (40.0, 0.5f);
+        const double midRms = renderRms (1000.0, 0.5f);
+        if (! std::isfinite (rumbleRms) || ! std::isfinite (midRms) || rumbleRms >= midRms * 0.5)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-021 85 Hz HPF did not attenuate 40 Hz rumble ("
+                      << rumbleRms << " vs " << midRms << ")" << std::endl;
+            return 1;
+        }
+
+        {
+            juce::AudioBuffer<float> burst (2, renderSamples);
+            for (int i = 0; i < renderSamples; ++i)
+            {
+                const float s = static_cast<float> (
+                    std::sin (juce::MathConstants<double>::twoPi * 6800.0 * i / 44100.0));
+                burst.setSample (0, i, s);
+                burst.setSample (1, i, s);
+            }
+            const te::PluginRenderContext rc (&burst, 0, renderSamples, nullptr, 0.0,
+                tracktion::TimeRange { tracktion::TimePosition::fromSeconds (0.0),
+                                       tracktion::TimePosition::fromSeconds (0.1) },
+                false, false, false, false);
+            vocal->applyToBuffer (rc);
+            float peak = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < renderSamples; ++i)
+                    peak = std::max (peak, std::abs (burst.getSample (ch, i)));
+            const float ceiling = std::pow (10.0f, -2.9f / 20.0f);
+            if (! std::isfinite (peak) || peak > ceiling || peak < 0.01f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-021 ceiling limiter peak " << peak << std::endl;
+                return 1;
+            }
+        }
+
+        if (! PluginPresetManager::getFactoryPresetNames (*vocal).contains ("ACX Audiobook")
+            || ! PluginPresetManager::applyFactoryPreset (*vocal, "ACX Audiobook"))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-021 factory VO preset did not load" << std::endl;
+            return 1;
+        }
+
+        vocal->deinitialise();
+        {
+            juce::AudioBuffer<float> guard (2, 128);
+            for (int i = 0; i < 128; ++i)
+            {
+                guard.setSample (0, i, 0.25f);
+                guard.setSample (1, i, -0.25f);
+            }
+            const te::PluginRenderContext rc (&guard, 0, 128, nullptr, 0.0,
+                tracktion::TimeRange { tracktion::TimePosition::fromSeconds (0.0),
+                                       tracktion::TimePosition::fromSeconds (0.01) },
+                false, false, false, false);
+            vocal->applyToBuffer (rc);
+            if (std::abs (guard.getSample (0, 64) - 0.25f) > 1.0e-6f
+                || std::abs (guard.getSample (1, 64) + 0.25f) > 1.0e-6f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-021 post-deinitialise applyToBuffer was not a no-op" << std::endl;
+                return 1;
+            }
+        }
+        vocalPtr = nullptr;
+        vocal = nullptr;
+
+        //---- 2. Punch-and-roll, slate tags, A/B/C audition string --------------
+        const auto priorWav = voDir.getChildFile ("prior.wav");
+        const auto newWav = voDir.getChildFile ("new_take.wav");
+        const auto takeA = voDir.getChildFile ("take_a.wav");
+        const auto takeB = voDir.getChildFile ("take_b.wav");
+        const auto takeC = voDir.getChildFile ("take_c.wav");
+        const auto splicedWav = voDir.getChildFile ("punch_splice.wav");
+        const auto abcWav = voDir.getChildFile ("abc_audition.wav");
+
+        if (! writeTone (priorWav, 220.0, 0.35f, 2.0, 0.0, 0.0)
+            || ! writeTone (newWav, 330.0, 0.35f, 2.0, 0.0, 0.0)
+            || ! writeTone (takeA, 220.0, 0.30f, 0.8, 0.0, 0.0)
+            || ! writeTone (takeB, 330.0, 0.30f, 0.6, 0.0, 0.0)
+            || ! writeTone (takeC, 440.0, 0.30f, 0.7, 0.0, 0.0))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-021 could not synthesize take WAVs" << std::endl;
+            return 1;
+        }
+
+        app.edit->ensureNumberOfAudioTracks (te::getAudioTracks (*app.edit).size() + 1);
+        auto* voTrack = te::getAudioTracks (*app.edit).getLast();
+        if (voTrack == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-021 could not create a voice track" << std::endl;
+            return 1;
+        }
+
+        for (const auto& f : { takeA, takeB, takeC })
+            if (! RecordingManager::addRecordedTake (*app.edit, *voTrack, f, 0.0, 4.0))
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-021 could not register take " << f.getFileName() << std::endl;
+                return 1;
+            }
+
+        if (! RecordingManager::tagTakeSlate (*app.edit, *voTrack, 0, "Take A - Intense"))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-021 slate tag was not stored" << std::endl;
+            return 1;
+        }
+
+        const auto punched = RecordingManager::executePunchAndRollSplice (
+            *app.edit, *voTrack, priorWav, newWav, 1.0, 15.0, splicedWav);
+        if (! punched.existsAsFile())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-021 punch-and-roll splice file missing" << std::endl;
+            return 1;
+        }
+        {
+            juce::AudioFormatManager fm;
+            fm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (punched));
+            juce::AudioBuffer<float> check (1, static_cast<int> (std::min<juce::int64> (4096, reader->lengthInSamples)));
+            reader->read (&check, 0, check.getNumSamples(), 0, true, false);
+            if (check.getNumSamples() <= 0 || check.getMagnitude (0, check.getNumSamples()) <= 1.0e-4f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-021 spliced take is silent" << std::endl;
+                return 1;
+            }
+        }
+
+        if (! RecordingManager::exportAbcAuditionString (*voTrack, { 0, 1, 2 }, 1.5, abcWav, true))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-021 A/B/C audition export failed" << std::endl;
+            return 1;
+        }
+        {
+            juce::AudioFormatManager fm;
+            fm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (abcWav));
+            const double expectedSec = 0.8 + 0.6 + 0.7 + 2.0 * 1.5;
+            const double actualSec = static_cast<double> (reader->lengthInSamples) / reader->sampleRate;
+            if (std::abs (actualSec - expectedSec) > 0.05)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-021 A/B/C duration " << actualSec
+                          << " != " << expectedSec << std::endl;
+                return 1;
+            }
+        }
+
+        const auto voSession = voDir.getChildFile ("wo021_vo.tracktionedit");
+        app.currentEditFile = voSession;
+        app.sessionUntitled = false;
+        app.saveSession();
+        if (! app.loadSessionFromFileSafely (voSession))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-021 voice session reload failed" << std::endl;
+            return 1;
+        }
+        {
+            const auto reloadedTakes = RecordingManager::getTrackTakes (*te::getAudioTracks (*app.edit).getLast());
+            bool foundSlate = false;
+            for (const auto& info : reloadedTakes)
+                if (info.slate == "Take A - Intense")
+                    foundSlate = true;
+            if (! foundSlate)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-021 slate tag did not survive save/reload" << std::endl;
+                return 1;
+            }
+        }
+
+        //---- 3. ACX / BS.1770 pass-fail detection ------------------------------
+        const auto acxWav = voDir.getChildFile ("acx_pass.wav");
+        const auto clippedWav = voDir.getChildFile ("clipped.wav");
+        if (! writeTone (acxWav, 1000.0, 0.20f, 2.0, 0.7, 1.5)
+            || ! writeTone (clippedWav, 1000.0, 1.0f, 1.0, 0.0, 0.0))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-021 could not synthesize analyzer fixtures" << std::endl;
+            return 1;
+        }
+
+        const auto acxResult = tcs::vo::VocalSpecAnalyzer::analyzeWavFile (acxWav, "acx");
+        if (! acxResult.passed || ! std::isfinite (acxResult.lufs)
+            || acxResult.measurement != "bs1770_k_weighted_gated")
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-021 ACX-compliant WAV did not pass: "
+                      << acxResult.issues.joinIntoString (" | ") << std::endl;
+            return 1;
+        }
+
+        const auto clipResult = tcs::vo::VocalSpecAnalyzer::analyzeWavFile (clippedWav, "acx");
+        bool peakViolation = false;
+        for (const auto& issue : clipResult.issues)
+            if (issue.contains ("peak"))
+                peakViolation = true;
+        if (clipResult.passed || ! peakViolation)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-021 clipped WAV did not report a peak violation" << std::endl;
+            return 1;
+        }
+
+        voDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-021 vocal DSP, punch-and-roll, A/B/C export & BS.1770/ACX analyzer PASS" << std::endl;
+    }
+
+    //===========================================================================
+    // WO-022: Voice Acting Studio Suite Part 2
+    //===========================================================================
+    {
+        const auto voDir = tempDir.getChildFile ("tcs_wo022_smoke");
+        voDir.deleteRecursively();
+        voDir.createDirectory();
+
+        const auto callRpc = [&] (const juce::String& method, const juce::var& params) -> juce::var
+        {
+            auto* request = new juce::DynamicObject();
+            request->setProperty ("jsonrpc", "2.0");
+            request->setProperty ("id", 1);
+            request->setProperty ("method", method);
+            request->setProperty ("params", params);
+            const auto response = app.ipcServer.executeJsonRpcOnMessageThread (
+                juce::JSON::toString (juce::var (request), true));
+            juce::var parsed;
+            if (! juce::JSON::parse (response, parsed).wasOk() || parsed.hasProperty ("error"))
+                return {};
+            return parsed["result"];
+        };
+
+        auto* setParams = new juce::DynamicObject();
+        setParams->setProperty ("title", "WO-022 Booth Script");
+        setParams->setProperty ("text", "Line A for the booth.\nLine B for the booth.");
+        setParams->setProperty ("wpm", 144);
+        setParams->setProperty ("adr_enabled", true);
+        setParams->setProperty ("adr_line_sec", 4.5);
+
+        const auto setResult = callRpc ("vo.set_script", juce::var (setParams));
+        if (! setResult.isObject() || static_cast<int> (setResult["wpm"]) != 144)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022 vo.set_script did not round-trip" << std::endl;
+            return 1;
+        }
+
+        auto* mm = &app.edit->getMarkerManager();
+        if (auto marker = mm->createMarker (mm->getNextUniqueID(),
+                                            tracktion::TimePosition::fromSeconds (0.5),
+                                            tracktion::TimeDuration(), nullptr))
+            marker->setName ("Booth Cue 1");
+
+        const auto getResult = callRpc ("vo.get_script", juce::var (new juce::DynamicObject()));
+        const bool markerFound = getResult.isObject() && getResult["markers"].isArray()
+            && ! getResult["markers"].getArray()->isEmpty();
+        if (! getResult.isObject()
+            || getResult["title"].toString() != "WO-022 Booth Script"
+            || getResult["text"].toString() != "Line A for the booth.\nLine B for the booth."
+            || ! markerFound)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022 vo.get_script state/markers mismatch" << std::endl;
+            return 1;
+        }
+
+        // ADR cue pre-roll pips are finite; the live line window is silent.
+        {
+            tcs::vo::AdrCueConfig cfg;
+            constexpr double lineStart = 5.0;
+            for (int i = 0; i < tcs::vo::AdrCueGenerator::pipCount; ++i)
+            {
+                const double pipTime = lineStart
+                    - tcs::vo::AdrCueGenerator::pipLeadSeconds (i, cfg) + 0.00025;
+                const float v = tcs::vo::AdrCueGenerator::getMonitorSample (pipTime, lineStart, cfg);
+                if (! std::isfinite (v) || std::abs (v) < 1.0e-6f)
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-022 ADR pip " << i << " was silent" << std::endl;
+                    return 1;
+                }
+            }
+            if (std::abs (tcs::vo::AdrCueGenerator::getMonitorSample (5.2, lineStart, cfg)) >= 1.0e-6f)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-022 ADR cue leaked into the live line window" << std::endl;
+                return 1;
+            }
+            double remaining = 0.0;
+            if (tcs::vo::AdrCueGenerator::getPacerStage (1.0, remaining) != tcs::vo::PacerStage::inhale
+                || tcs::vo::AdrCueGenerator::getPacerStage (5.0, remaining) != tcs::vo::PacerStage::hold
+                || tcs::vo::AdrCueGenerator::getPacerStage (8.0, remaining) != tcs::vo::PacerStage::hiss)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-022 4-2-15 warm-up pacer stage mismatch" << std::endl;
+                return 1;
+            }
+        }
+
+        // Demo reel layout: one transaction wires the vocal strip and duck bus.
+        app.edit->ensureNumberOfAudioTracks (2);
+        auto* layoutParams = new juce::DynamicObject();
+        layoutParams->setProperty ("voice_track_index", 0);
+        layoutParams->setProperty ("bed_track_index", 1);
+        layoutParams->setProperty ("duck_threshold_db", -22.0);
+        layoutParams->setProperty ("duck_ratio", 6.0);
+        const auto layoutResult = callRpc ("vo.build_demo_reel_layout", juce::var (layoutParams));
+        if (! layoutResult.isObject()
+            || layoutResult["vocal_plugin"].toString() != "tcs_vocal_channel"
+            || layoutResult["duck_plugin"].toString() != "tcs_sidechain_comp")
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022 demo reel layout RPC did not wire plugins" << std::endl;
+            return 1;
+        }
+
+        const auto voSession = voDir.getChildFile ("wo022_booth.tracktionedit");
+        app.currentEditFile = voSession;
+        app.sessionUntitled = false;
+        app.saveSession();
+        if (! app.loadSessionFromFileSafely (voSession))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022 booth session reload failed" << std::endl;
+            return 1;
+        }
+
+        const auto reloaded = callRpc ("vo.get_script", juce::var (new juce::DynamicObject()));
+        if (! reloaded.isObject() || reloaded["title"].toString() != "WO-022 Booth Script")
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022 script did not survive save/reload" << std::endl;
+            return 1;
+        }
+
+        {
+            auto tracks = te::getAudioTracks (*app.edit);
+            bool foundVocal = false, foundDuck = false;
+            if (tracks.size() >= 2)
+            {
+                for (auto* p : tracks[0]->pluginList)
+                    if (dynamic_cast<VocalChannelPlugin*> (p) != nullptr) foundVocal = true;
+                for (auto* p : tracks[1]->pluginList)
+                    if (dynamic_cast<SidechainCompressorPlugin*> (p) != nullptr) foundDuck = true;
+            }
+            if (! foundVocal || ! foundDuck)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-022 demo reel plugins did not survive reload" << std::endl;
+                return 1;
+            }
+
+            if (PluginPresetManager::getCharacterFxMacroNames().size() != 4)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-022 four Character FX macros are missing" << std::endl;
+                return 1;
+            }
+            auto fxRack = app.edit->getRackList().addNewRack();
+            const bool macroApplied = PluginPresetManager::applyCharacterFxMacro (
+                *app.edit, *fxRack, "Sci-Fi Holo / Droid");
+            if (! macroApplied || fxRack->getPlugins().size() != 4)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-022 Character FX macro did not patch four modules" << std::endl;
+                return 1;
+            }
+            fxRack = nullptr;
+        }
+
+        voDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-022 teleprompter, ADR cue, demo-reel layout & Character FX PASS" << std::endl;
+    }
+
+    //===========================================================================
+    // WO-022B: boutique hardware faceplates & workspace suite switcher
+    //===========================================================================
+    {
+        const char* faceplateTypes[] {
+            Tr808DrumPlugin::xmlTypeName,
+            VintageSamplerPlugin::xmlTypeName,
+            AnalogTapePlugin::xmlTypeName,
+            SidechainCompressorPlugin::xmlTypeName,
+            VocalChannelPlugin::xmlTypeName
+        };
+
+        for (const char* typeName : faceplateTypes)
+        {
+            auto pluginPtr = app.edit->getPluginCache().createNewPlugin (typeName, {});
+            if (pluginPtr == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-022B could not instantiate " << typeName << std::endl;
+                return 1;
+            }
+
+            auto editor = createCustomEditorForPlugin (*pluginPtr);
+            if (editor == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-022B no bespoke editor for " << typeName << std::endl;
+                return 1;
+            }
+
+            editor->setSize (640, 320);
+            editor->resized();
+            editor.reset();
+            pluginPtr = nullptr;
+        }
+
+        app.setSize (1280, 840);
+        app.resized();
+
+        app.setWorkspaceMode (MainComponent::WorkspaceMode::modularRack);
+        if (app.getWorkspaceMode() != MainComponent::WorkspaceMode::modularRack
+            || ! app.modularRackComponent.isVisible())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022B Modular Rack workspace did not activate" << std::endl;
+            return 1;
+        }
+
+        app.setWorkspaceMode (MainComponent::WorkspaceMode::voBooth);
+        if (app.getWorkspaceMode() != MainComponent::WorkspaceMode::voBooth
+            || ! app.scriptPrompter.isVisible())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022B VO Booth workspace did not activate" << std::endl;
+            return 1;
+        }
+
+        app.setWorkspaceMode (MainComponent::WorkspaceMode::studio);
+        if (app.getWorkspaceMode() != MainComponent::WorkspaceMode::studio
+            || ! app.mixerComponent.isVisible())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022B Studio workspace did not restore" << std::endl;
+            return 1;
+        }
+
+        std::cout << "[SMOKE_TEST] WO-022B bespoke faceplates & workspace suite switcher PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -3643,8 +4141,9 @@ int MainComponent::runHeadlessSmokeTest()
                  "TR-808, 12-bit ZOH sampler, analog tape saturation & rack.add_module persistence, "
                  "harmonic progression, scale quantize, LUFS auto-balance, section duplicator, "
                  "sidechain Pin 3/4 ducking, multi-take comping, polyphonic audio-to-MIDI, "
-                 "cross-platform core isolation, VST3 scanner lifecycle, and the original CV envelope/step "
-                 "blueprint modules verified."
+                 "cross-platform core isolation, VST3 scanner lifecycle, the original CV envelope/step "
+                 "blueprint modules, the WO-021 voice acting suite, and WO-022 booth teleprompter "
+                 "and ADR/demo-reel workflow, and WO-022B hardware faceplates and workspace suites verified."
               << std::endl;
     return 0;
 }

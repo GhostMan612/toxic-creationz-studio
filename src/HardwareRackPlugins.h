@@ -6,8 +6,11 @@
 
 #include <tracktion_engine/tracktion_engine.h>
 
+#include "VocalChannelPlugin.h"
+
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -146,6 +149,18 @@ public:
             }
         }
 
+        const int auditionNote = pendingAuditionNote.exchange (-1);
+        if (auditionNote == 36)        trigger (voiceKick, 0.9f);
+        else if (auditionNote == 38)   trigger (voiceSnare, 0.9f);
+        else if (auditionNote == 42)
+        {
+            voices[voiceOHat].active = false;
+            trigger (voiceCHat, 0.9f);
+        }
+        else if (auditionNote == 46)   trigger (voiceOHat, 0.9f);
+        else if (auditionNote == 45)   trigger (voiceLowTom, 0.9f);
+        else if (auditionNote == 48)   trigger (voiceMidTom, 0.9f);
+
         for (int i = 0; i < n; ++i)
         {
             // Pin 1 / channel 0 is both "CV Accent In" and "Master L": read it
@@ -196,7 +211,16 @@ public:
     juce::String getName() const override { return "TR-808 Drum Synth"; }
     juce::String getPluginType() override { return xmlTypeName; }
 
+    /** Monitor-only audition trigger used by the bespoke faceplate pads. */
+    void triggerAudition (int noteNumber) noexcept
+    {
+        if (noteNumber == 36 || noteNumber == 38 || noteNumber == 42
+            || noteNumber == 45 || noteNumber == 46 || noteNumber == 48)
+            pendingAuditionNote.store (noteNumber);
+    }
+
 private:
+    std::atomic<int> pendingAuditionNote { -1 };
     static constexpr int voiceKick = 0, voiceSnare = 1, voiceCHat = 2;
     static constexpr int voiceOHat = 3, voiceLowTom = 4, voiceMidTom = 5;
     static constexpr int numVoices = 6;
@@ -542,6 +566,7 @@ public:
     void setGain (float g) noexcept           { gainValue = juce::jlimit (0.0f, 1.5f, g); gainParam->updateFromAttachedValue(); }
 
     int getNumVoicesForSmokeTest() const noexcept { return static_cast<int> (voices.size()); }
+    const juce::AudioBuffer<float>& getSampleBufferForPreview() const noexcept { return sampleBuffer; }
 
     void restorePluginStateFromValueTree (const juce::ValueTree& v) override
     {
@@ -773,6 +798,7 @@ public:
         const float baseDelay = 0.005f * sr;
         const float wowDepth = wow * 0.0045f * sr;
         const float flutterDepth = flutter * 0.0012f * sr;
+        float outPeak = 0.0f;
 
         for (int i = 0; i < n; ++i)
         {
@@ -817,10 +843,15 @@ public:
             const float wetL = 0.5f * (std::tanh (effDrive * (bumpedL + bias)) - biasOffset);
             const float wetR = 0.5f * (std::tanh (effDrive * (bumpedR + bias)) - biasOffset);
 
-            buf->setSample (0, base + i, inL * (1.0f - mix) + wetL * mix);
-            buf->setSample (1, base + i, inR * (1.0f - mix) + wetR * mix);
+            const float outL = inL * (1.0f - mix) + wetL * mix;
+            const float outR = inR * (1.0f - mix) + wetR * mix;
+            outPeak = std::max (outPeak, std::max (std::abs (outL), std::abs (outR)));
+            buf->setSample (0, base + i, outL);
+            buf->setSample (1, base + i, outR);
         }
 
+        currentLevelDb.store (juce::jlimit (-60.0f, 0.0f,
+            juce::Decibels::gainToDecibels (std::max (1.0e-5f, outPeak))));
         if (hasCvCh)
             buf->clear (2, base, n);
     }
@@ -829,6 +860,9 @@ public:
     void setWow (float w) noexcept     { wowValue = juce::jlimit (0.0f, 1.0f, w); wowParam->updateFromAttachedValue(); }
     void setFlutter (float f) noexcept { flutterValue = juce::jlimit (0.0f, 1.0f, f); flutterParam->updateFromAttachedValue(); }
     void setMix (float m) noexcept     { mixValue = juce::jlimit (0.0f, 1.0f, m); mixParam->updateFromAttachedValue(); }
+
+    /** Peak output level in dBFS, polled by the bespoke VU faceplate. */
+    std::atomic<float> currentLevelDb { -60.0f };
 
     void restorePluginStateFromValueTree (const juce::ValueTree& v) override
     {
@@ -889,4 +923,5 @@ inline void registerHardwareRackPlugins (te::Engine& engine)
     pm.createBuiltInType<Tr808DrumPlugin>();
     pm.createBuiltInType<VintageSamplerPlugin>();
     pm.createBuiltInType<AnalogTapePlugin>();
+    pm.createBuiltInType<VocalChannelPlugin>();
 }

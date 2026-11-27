@@ -12,12 +12,13 @@ namespace core
         juce::String sampler;
         juce::String tape;
         juce::String sidechain;
+        juce::String vocal;
         juce::String transcriber;
 
         bool complete() const noexcept
         {
             return tr808.isNotEmpty() && sampler.isNotEmpty() && tape.isNotEmpty()
-                && sidechain.isNotEmpty() && transcriber.isNotEmpty();
+                && sidechain.isNotEmpty() && vocal.isNotEmpty() && transcriber.isNotEmpty();
         }
     };
 

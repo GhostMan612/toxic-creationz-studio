@@ -7,6 +7,7 @@
 #include "HardwareRackPlugins.h"
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
+#include "VocalChannelPlugin.h"
 
 #include <functional>
 #include <tuple>
@@ -37,7 +38,10 @@ public:
     void resized() override;
     void paint (juce::Graphics& g) override;
     void paintOverChildren (juce::Graphics& g) override;
-    void mouseDown (const juce::MouseEvent& e) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override;
+    int findCableIndexAt (juce::Point<float> point) const;
     void refresh();
 
     // Read-only UI synchronisation. Must never touch the UndoManager.
@@ -109,6 +113,7 @@ private:
 
     juce::Array<RackNode> nodes;
     juce::Array<std::tuple<te::EditItemID, int, te::EditItemID, int>> connections;
+    int hoveredCableIndex = -1;
 
     bool connectMode = false;
     bool awaitingSecondEndpoint = false;

@@ -7,6 +7,7 @@
 #include "CvRackPlugins.h"
 #include "HardwareRackPlugins.h"
 #include "SidechainCompressorPlugin.h"
+#include "VocalChannelPlugin.h"
 
 namespace te = tracktion::engine;
 
@@ -23,6 +24,10 @@ public:
 
     static juce::StringArray getFactoryPresetNames (te::Plugin& plugin);
     static bool applyFactoryPreset (te::Plugin& plugin, const juce::String& presetName);
+
+    /** Four ready-to-patch multi-plugin Character FX macros (WO-022). */
+    static juce::StringArray getCharacterFxMacroNames();
+    static bool applyCharacterFxMacro (te::Edit& edit, te::RackType& rack, const juce::String& macroName);
 
     static juce::Array<juce::File> listUserPresetFiles (te::Plugin& plugin);
     static bool savePresetToFile (te::Plugin& plugin, const juce::File& targetFile);

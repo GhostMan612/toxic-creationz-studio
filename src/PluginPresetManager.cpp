@@ -265,6 +265,10 @@ juce::StringArray PluginPresetManager::getFactoryPresetNames (te::Plugin& plugin
     if (dynamic_cast<SidechainCompressorPlugin*> (&plugin) != nullptr)
         return { "EDM Pump", "Vocal Duck", "Glue Bus" };
 
+    if (dynamic_cast<VocalChannelPlugin*> (&plugin) != nullptr)
+        return { "ACX Audiobook", "Anime / Cartoon Lead", "Commercial Bright",
+                 "Deep Trailer / Villain", "Closet Booth Cleanup" };
+
     if (dynamic_cast<te::ReverbPlugin*> (&plugin) != nullptr)
         return { "Tight Room", "Cyber Hall", "Ambient Wash" };
 
@@ -795,7 +799,174 @@ bool PluginPresetManager::applyFactoryPreset (te::Plugin& plugin, const juce::St
         return false;
     }
 
+    if (auto* vocal = dynamic_cast<VocalChannelPlugin*> (&plugin))
+    {
+        const auto validNames = getFactoryPresetNames (plugin);
+        if (! validNames.contains (trimmed))
+            return false;
+
+        um.beginNewTransaction ("Load Preset: " + trimmed);
+        if (trimmed == "ACX Audiobook")
+        {
+            setParamIfPresent (*vocal, "hpfHz", 80.0f);
+            setParamIfPresent (*vocal, "gateThresholdDb", -52.0f);
+            setParamIfPresent (*vocal, "breathFloorDb", -14.0f);
+            setParamIfPresent (*vocal, "deEssFreqHz", 6800.0f);
+            setParamIfPresent (*vocal, "deEssAmount", 0.32f);
+            setParamIfPresent (*vocal, "ceilingDb", -3.0f);
+            setParamIfPresent (*vocal, "outputGainDb", 2.0f);
+            return true;
+        }
+        if (trimmed == "Anime / Cartoon Lead")
+        {
+            setParamIfPresent (*vocal, "hpfHz", 95.0f);
+            setParamIfPresent (*vocal, "gateThresholdDb", -44.0f);
+            setParamIfPresent (*vocal, "breathFloorDb", -8.0f);
+            setParamIfPresent (*vocal, "deEssFreqHz", 7600.0f);
+            setParamIfPresent (*vocal, "deEssAmount", 0.50f);
+            setParamIfPresent (*vocal, "ceilingDb", -3.0f);
+            setParamIfPresent (*vocal, "outputGainDb", 5.0f);
+            return true;
+        }
+        if (trimmed == "Commercial Bright")
+        {
+            setParamIfPresent (*vocal, "hpfHz", 110.0f);
+            setParamIfPresent (*vocal, "gateThresholdDb", -48.0f);
+            setParamIfPresent (*vocal, "breathFloorDb", -10.0f);
+            setParamIfPresent (*vocal, "deEssFreqHz", 8200.0f);
+            setParamIfPresent (*vocal, "deEssAmount", 0.42f);
+            setParamIfPresent (*vocal, "ceilingDb", -1.0f);
+            setParamIfPresent (*vocal, "outputGainDb", 3.0f);
+            return true;
+        }
+        if (trimmed == "Deep Trailer / Villain")
+        {
+            setParamIfPresent (*vocal, "hpfHz", 32.0f);
+            setParamIfPresent (*vocal, "gateThresholdDb", -60.0f);
+            setParamIfPresent (*vocal, "breathFloorDb", -18.0f);
+            setParamIfPresent (*vocal, "deEssFreqHz", 5200.0f);
+            setParamIfPresent (*vocal, "deEssAmount", 0.25f);
+            setParamIfPresent (*vocal, "ceilingDb", -3.0f);
+            setParamIfPresent (*vocal, "outputGainDb", -2.0f);
+            return true;
+        }
+        if (trimmed == "Closet Booth Cleanup")
+        {
+            setParamIfPresent (*vocal, "hpfHz", 150.0f);
+            setParamIfPresent (*vocal, "gateThresholdDb", -38.0f);
+            setParamIfPresent (*vocal, "breathFloorDb", -20.0f);
+            setParamIfPresent (*vocal, "deEssFreqHz", 6800.0f);
+            setParamIfPresent (*vocal, "deEssAmount", 0.55f);
+            setParamIfPresent (*vocal, "ceilingDb", -3.0f);
+            setParamIfPresent (*vocal, "outputGainDb", 6.0f);
+            return true;
+        }
+        return false;
+    }
+
     return false;
+}
+
+juce::StringArray PluginPresetManager::getCharacterFxMacroNames()
+{
+    return { "Radio / Comms Walkie", "Cavernous Villain / Monster",
+             "Heroic Broadcast Lead", "Sci-Fi Holo / Droid" };
+}
+
+bool PluginPresetManager::applyCharacterFxMacro (te::Edit& edit, te::RackType& rack,
+                                                 const juce::String& macroName)
+{
+    const auto trimmed = macroName.trim();
+    if (! getCharacterFxMacroNames().contains (trimmed))
+        return false;
+
+    auto& um = edit.getUndoManager();
+    um.beginNewTransaction ("Character FX: " + trimmed);
+
+    const auto addToRack = [&] (const char* type, float x, float y) -> te::Plugin*
+    {
+        auto p = edit.getPluginCache().createNewPlugin (type, {});
+        if (p != nullptr)
+            rack.addPlugin (p, { x, y }, false);
+        return p.get();
+    };
+
+    auto* vocal = dynamic_cast<VocalChannelPlugin*> (
+        addToRack (VocalChannelPlugin::xmlTypeName, 0.12f, 0.20f));
+    auto* wobble = dynamic_cast<CvWobbleFilterPlugin*> (
+        addToRack (CvWobbleFilterPlugin::xmlTypeName, 0.42f, 0.20f));
+    auto* tape = dynamic_cast<AnalogTapePlugin*> (
+        addToRack (AnalogTapePlugin::xmlTypeName, 0.68f, 0.20f));
+    auto* eq = dynamic_cast<te::EqualiserPlugin*> (
+        addToRack (te::EqualiserPlugin::xmlTypeName, 0.40f, 0.66f));
+
+    if (vocal == nullptr || wobble == nullptr || tape == nullptr || eq == nullptr)
+        return false;
+
+    if (trimmed == "Radio / Comms Walkie")
+    {
+        setParamIfPresent (*vocal, "hpfHz", 180.0f);
+        setParamIfPresent (*vocal, "gateThresholdDb", -45.0f);
+        setParamIfPresent (*vocal, "deEssFreqHz", 8200.0f);
+        setParamIfPresent (*vocal, "deEssAmount", 0.50f);
+        setParamIfPresent (*vocal, "outputGainDb", 4.0f);
+        setParamIfPresent (*wobble, "cutoffHz", 1400.0f);
+        setParamIfPresent (*wobble, "wobbleDepth", 0.10f);
+        setParamIfPresent (*wobble, "resonance", 1.20f);
+        setParamIfPresent (*tape, "drive", 3.5f);
+        setParamIfPresent (*tape, "mix", 0.70f);
+        eq->loGainValue = -12.0f; eq->midGainValue1 = 6.0f; eq->hiGainValue = -9.0f;
+    }
+    else if (trimmed == "Cavernous Villain / Monster")
+    {
+        setParamIfPresent (*vocal, "hpfHz", 20.0f);
+        setParamIfPresent (*vocal, "gateThresholdDb", -60.0f);
+        setParamIfPresent (*vocal, "breathFloorDb", -18.0f);
+        setParamIfPresent (*vocal, "deEssFreqHz", 5200.0f);
+        setParamIfPresent (*vocal, "deEssAmount", 0.25f);
+        setParamIfPresent (*vocal, "outputGainDb", -3.0f);
+        setParamIfPresent (*wobble, "cutoffHz", 320.0f);
+        setParamIfPresent (*wobble, "wobbleDepth", 0.80f);
+        setParamIfPresent (*wobble, "resonance", 2.50f);
+        setParamIfPresent (*tape, "drive", 6.0f);
+        setParamIfPresent (*tape, "wow", 0.90f);
+        setParamIfPresent (*tape, "flutter", 0.70f);
+        eq->loGainValue = 12.0f; eq->midGainValue1 = 2.0f; eq->hiGainValue = -6.0f;
+    }
+    else if (trimmed == "Heroic Broadcast Lead")
+    {
+        setParamIfPresent (*vocal, "hpfHz", 90.0f);
+        setParamIfPresent (*vocal, "gateThresholdDb", -50.0f);
+        setParamIfPresent (*vocal, "deEssFreqHz", 7200.0f);
+        setParamIfPresent (*vocal, "deEssAmount", 0.40f);
+        setParamIfPresent (*vocal, "ceilingDb", -1.0f);
+        setParamIfPresent (*vocal, "outputGainDb", 4.0f);
+        setParamIfPresent (*wobble, "cutoffHz", 9000.0f);
+        setParamIfPresent (*wobble, "wobbleDepth", 0.15f);
+        setParamIfPresent (*tape, "drive", 2.0f);
+        setParamIfPresent (*tape, "mix", 0.35f);
+        eq->loGainValue = -3.0f; eq->midGainValue1 = 4.0f; eq->hiGainValue = 7.0f;
+    }
+    else
+    {
+        setParamIfPresent (*vocal, "hpfHz", 150.0f);
+        setParamIfPresent (*vocal, "gateThresholdDb", -55.0f);
+        setParamIfPresent (*vocal, "deEssFreqHz", 9000.0f);
+        setParamIfPresent (*vocal, "deEssAmount", 0.80f);
+        setParamIfPresent (*vocal, "outputGainDb", 2.0f);
+        setParamIfPresent (*wobble, "cutoffHz", 2400.0f);
+        setParamIfPresent (*wobble, "wobbleDepth", 0.95f);
+        setParamIfPresent (*wobble, "resonance", 4.50f);
+        setParamIfPresent (*tape, "drive", 4.0f);
+        setParamIfPresent (*tape, "flutter", 0.60f);
+        setParamIfPresent (*tape, "mix", 0.60f);
+        eq->loGainValue = -9.0f; eq->midGainValue1 = 10.0f; eq->hiGainValue = 3.0f;
+    }
+
+    if (eq->loGain != nullptr)    eq->loGain->updateFromAttachedValue();
+    if (eq->midGain1 != nullptr)  eq->midGain1->updateFromAttachedValue();
+    if (eq->hiGain != nullptr)    eq->hiGain->updateFromAttachedValue();
+    return true;
 }
 
 juce::Array<juce::File> PluginPresetManager::listUserPresetFiles (te::Plugin& plugin)

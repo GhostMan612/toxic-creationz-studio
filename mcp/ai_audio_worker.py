@@ -593,6 +593,126 @@ def transcribe_polyphonic_basic_pitch(
         return fallback
 
 
+def generate_vo_practice_script(
+    genre: str = "anime",
+    emotion: str = "determined",
+    duration_sec: float = 15.0,
+) -> dict[str, Any]:
+    """Deterministic, copyright-free audition copy with 5-P direction cues.
+
+    Zero external dependencies so booth CI and headless runs stay reproducible.
+    The returned payload can be pushed directly into the DAW teleprompter with
+    ``vo.set_script`` via the FastMCP ``generate_vo_practice_script`` tool.
+    """
+    selected = (genre or "anime").strip().lower()
+    if selected not in {"anime", "cartoon", "commercial", "villain", "game_barks", "audiobook"}:
+        selected = "anime"
+
+    feeling = (emotion or "determined").strip().lower() or "determined"
+    duration = min(120.0, max(5.0, float(duration_sec)))
+
+    scripts: dict[str, tuple[str, str, list[str]]] = {
+        "anime": (
+            "Dawn at the Gate",
+            "determined",
+            [
+                "The sky is still dark, but I can hear the city waking up.",
+                "If tomorrow needs a hero, then tonight I start training.",
+                "I am not running because I am afraid. I am running because I believe.",
+                "When the bell rings, answer it. That is all a hero has to do.",
+            ],
+        ),
+        "cartoon": (
+            "The Last Pancake",
+            "playful",
+            [
+                "Ladies and gentlemen, gather round for the greatest pancake in the universe.",
+                "One side is golden, the other side is a mystery. That is called balance.",
+                "Nobody flip it! I repeat, nobody flip it!",
+                "Fine. I will flip it. But only because the syrup asked me to.",
+            ],
+        ),
+        "commercial": (
+            "Morning, Made Simple",
+            "warm",
+            [
+                "There is a better way to start the day.",
+                "One small ritual. One clear moment. Before the noise begins.",
+                "Quiet coffee. Clean light. A plan you can actually keep.",
+                "Morning, made simple. Starting tomorrow, starting now.",
+            ],
+        ),
+        "villain": (
+            "The Quiet Throne",
+            "menacing",
+            [
+                "You expected a throne of fire. I built one of silence.",
+                "Every door you opened, I had already closed from the inside.",
+                "Do not mistake patience for mercy. I have simply been waiting.",
+                "When the last light goes out, you will remember my name.",
+            ],
+        ),
+        "game_barks": (
+            "Training Ground Barks",
+            "sharp",
+            [
+                "Move! We have no time to waste.",
+                "Flank left, I will take the center.",
+                "Shield up! Something is coming through the trees.",
+                "Hold the line. Now!",
+            ],
+        ),
+        "audiobook": (
+            "The Lighthouse Keeper",
+            "steady",
+            [
+                "Every evening, the keeper lit the lamp before the tide turned.",
+                "He said the light was not for ships. It was for the people waiting on shore.",
+                "The storm arrived without warning, and the glass began to shake.",
+                "Still, he counted the seconds between each wave, and he read on.",
+            ],
+        ),
+    }
+
+    title, default_feeling, lines = scripts[selected]
+    direction = {
+        "pitch": "chest-forward, bright top notes" if selected in {"anime", "commercial"} else "low, grounded placement",
+        "pace": "forward and energized" if selected in {"anime", "game_barks"} else "measured, deliberate",
+        "placement": "mask resonance, close mic" if selected != "villain" else "low resonance, backed off the mic",
+        "posture": "standing, ribs open, jaw loose",
+        "personality": feeling,
+    }
+
+    cue_count = max(2, min(6, round(duration / 5.0)))
+    span = duration / cue_count
+    adr_windows = [
+        {
+            "index": i + 1,
+            "start_sec": round(i * span, 2),
+            "end_sec": round(min(duration, (i + 1) * span), 2),
+            "cue": lines[i % len(lines)],
+        }
+        for i in range(cue_count)
+    ]
+
+    wpm = 140 if selected in {"anime", "cartoon", "game_barks"} else 125
+    text = "\n".join(lines)
+    return {
+        "genre": selected,
+        "emotion": feeling,
+        "duration_sec": duration,
+        "title": title,
+        "text": text,
+        "wpm": wpm,
+        "adr_enabled": True,
+        "adr_line_sec": round(span, 2),
+        "direction": direction,
+        "five_p": direction,
+        "adr_windows": adr_windows,
+        "default_emotion": default_feeling,
+    }
+
+
 def _main() -> int:
     parser = argparse.ArgumentParser(description="Toxic Creationz Studio AI audio stem worker")
     parser.add_argument("--action", default="generate", choices=["generate", "separate"])

@@ -7,6 +7,7 @@
 #include "AudioToMidiTranscriber.h"
 #include "HardwareRackPlugins.h"
 #include "SidechainCompressorPlugin.h"
+#include "VocalChannelPlugin.h"
 
 namespace tcs
 {
@@ -19,6 +20,7 @@ namespace core
         ids.sampler    = VintageSamplerPlugin::xmlTypeName;
         ids.tape       = AnalogTapePlugin::xmlTypeName;
         ids.sidechain  = SidechainCompressorPlugin::xmlTypeName;
+        ids.vocal      = VocalChannelPlugin::xmlTypeName;
         ids.transcriber = "AudioToMidiTranscriber";
         return ids;
     }
