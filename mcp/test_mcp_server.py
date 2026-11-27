@@ -872,6 +872,60 @@ class McpWorkerTests(unittest.TestCase):
             timeout=15.0,
         )
 
+    def test_forge_game_sfx_batch_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"count": 4})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.forge_game_sfx_batch(
+                "ui_click", count=99, seed=7, output_path="/tmp/sfx",
+                duration_sec=99.0, peak_db=99.0))
+
+        self.assertEqual(res["count"], 4)
+        mock_rpc.assert_awaited_once_with(
+            "game.forge_sfx_batch",
+            {"category": "ui_click", "count": 16, "seed": 7, "output_dir": "/tmp/sfx",
+             "prefix": "", "duration_sec": 10.0, "peak_db": 0.0,
+             "import_first_to_track": -1},
+            timeout=30.0,
+        )
+
+    def test_export_seamless_game_loop_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"output_file": "C:/tmp/loop.wav"})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.export_seamless_game_loop(
+                start_beat=1.0, end_beat=9.0, output_path="C:/tmp/loop.wav",
+                tail_seconds=99.0, target_lufs=-99.0))
+
+        self.assertEqual(res["output_file"], "C:/tmp/loop.wav")
+        mock_rpc.assert_awaited_once_with(
+            "audio.export_seamless_loop",
+            {"start_beat": 1.0, "end_beat": 9.0, "output_path": "C:/tmp/loop.wav",
+             "tail_seconds": 5.0, "target_lufs": -40.0},
+            timeout=30.0,
+        )
+
+    def test_wo023_engine_and_exporter_sources(self) -> None:
+        root = _MCP_DIR.parent
+        engine = (root / "src" / "SfxForgeEngine.h").read_text(encoding="utf-8")
+        for marker in ("gunshotTactical", "breachExplosion", "footstepSurface", "uiClick",
+                       "meleeImpact", "doorBreach", "sciFiPulse", "ambientDrone",
+                       "generateSfxVariations", "withBitsPerSample (16)"):
+            self.assertIn(marker, engine)
+        exporter = (root / "src" / "MixdownExporter.h").read_text(encoding="utf-8")
+        self.assertIn("exportSeamlessLoopWav", exporter)
+        self.assertIn("targetLufs", exporter)
+
+    def test_wo023_rpc_methods_registered(self) -> None:
+        server = (_MCP_DIR.parent / "src" / "DawIpcServer.cpp").read_text(encoding="utf-8")
+        for method in ("game.forge_sfx_batch", "audio.export_seamless_loop"):
+            self.assertIn(method, server)
+        self.assertIn("SfxForgeEngine.h", server)
+        isolation = (_MCP_DIR.parent / "src" / "CoreIsolationCheck.cpp").read_text(encoding="utf-8")
+        self.assertIn("SfxForgeEngine.h", isolation)
+
 
 if __name__ == "__main__":
     unittest.main()

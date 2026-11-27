@@ -8,6 +8,7 @@
 #include "MixdownExporter.h"
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
+#include "SfxForgeEngine.h"
 #include "VocalChannelPlugin.h"
 #include "WaveformEditorComponent.h"
 
@@ -393,6 +394,8 @@ juce::String DawIpcServer::enqueueAndWaitForMessageThread (const juce::String& r
                 timeoutMs = 15000;
             else if (reqMethod == "recording.punch_and_roll" || reqMethod == "recording.export_abc_audition")
                 timeoutMs = 15000;
+            else if (reqMethod == "game.forge_sfx_batch" || reqMethod == "audio.export_seamless_loop")
+                timeoutMs = 30000;
         }
     }
 
@@ -2592,6 +2595,100 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         res->setProperty ("duck_plugin", SidechainCompressorPlugin::xmlTypeName);
         res->setProperty ("vocal_preset", "ACX Audiobook");
         res->setProperty ("duck_preset", "Vocal Duck");
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-023: game.forge_sfx_batch — deterministic procedural SFX variations
+    if (method == "game.forge_sfx_batch")
+    {
+        const auto category = tcs::game::SfxForgeEngine::parseCategory (
+            params.getProperty ("category", "gunshot_tactical").toString());
+        const int count = juce::jlimit (1, 16, static_cast<int> (params.getProperty ("count", 6)));
+        const std::uint64_t seed = static_cast<std::uint64_t> (
+            juce::jlimit (0.0, 1.0e9, static_cast<double> (params.getProperty ("seed", 42))));
+        const double durationSec = juce::jlimit (0.05, 10.0,
+            static_cast<double> (params.getProperty ("duration_sec", 0.5)));
+        const double peakDb = juce::jlimit (-60.0, 0.0,
+            static_cast<double> (params.getProperty ("peak_db", -1.0)));
+        const juce::String prefixRaw = params.getProperty ("prefix", "").toString().trim();
+        const juce::String prefix = prefixRaw.isNotEmpty()
+            ? prefixRaw : tcs::game::SfxForgeEngine::categoryName (category);
+
+        juce::File outDir;
+        const juce::String rawDir = params.getProperty ("output_dir", "").toString().trim();
+        if (rawDir.isNotEmpty())
+            outDir = juce::File::isAbsolutePath (rawDir) ? juce::File (rawDir)
+                                                        : juce::File::getCurrentWorkingDirectory().getChildFile (rawDir);
+        else
+            outDir = (getTakesDirectoryCallback ? getTakesDirectoryCallback() : juce::File::getSpecialLocation (juce::File::tempDirectory))
+                         .getChildFile ("SfxForge");
+
+        juce::Array<juce::File> files;
+        const int written = tcs::game::SfxForgeEngine::generateSfxVariations (
+            category, outDir, prefix, count, seed, durationSec, peakDb, &files);
+        if (written <= 0)
+            return makeErrorResponse (id, -32603, "SFX batch produced no WAV files");
+
+        juce::Array<juce::var> paths;
+        for (const auto& file : files)
+            paths.add (file.getFullPathName());
+
+        const int importTrack = static_cast<int> (params.getProperty ("import_first_to_track", -1));
+        if (importTrack >= 0 && edit != nullptr)
+        {
+            auto tracks = te::getAudioTracks (*edit);
+            if (juce::isPositiveAndBelow (importTrack, tracks.size()))
+            {
+                const double endBeat = edit->tempoSequence
+                    .toBeats (tracktion::TimePosition::fromSeconds (durationSec)).inBeats();
+                RecordingManager::addRecordedTake (*edit, *tracks[importTrack], files.getFirst(),
+                                                   0.0, endBeat);
+                if (onEditMutatedByRpc)
+                    onEditMutatedByRpc ("Imported forged SFX take onto track " + juce::String (importTrack));
+            }
+        }
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("category", tcs::game::SfxForgeEngine::categoryName (category));
+        res->setProperty ("count", written);
+        res->setProperty ("seed", static_cast<juce::int64> (seed));
+        res->setProperty ("output_dir", outDir.getFullPathName());
+        res->setProperty ("files", juce::var (paths));
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-023: audio.export_seamless_loop — click-free tail-wrapped game loop
+    if (method == "audio.export_seamless_loop")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+
+        const double startBeat = static_cast<double> (params.getProperty ("start_beat", 0.0));
+        const double endBeat = static_cast<double> (params.getProperty ("end_beat", 8.0));
+        if (! std::isfinite (startBeat) || ! std::isfinite (endBeat) || endBeat <= startBeat)
+            return makeErrorResponse (id, -32602, "Invalid start_beat / end_beat");
+
+        const juce::String rawOut = params.getProperty ("output_path", "").toString().trim();
+        if (rawOut.isEmpty())
+            return makeErrorResponse (id, -32602, "Missing output_path");
+        const juce::File outWav = juce::File::isAbsolutePath (rawOut) ? juce::File (rawOut)
+            : juce::File::getCurrentWorkingDirectory().getChildFile (rawOut);
+
+        const double tailSeconds = juce::jlimit (0.1, 5.0,
+            static_cast<double> (params.getProperty ("tail_seconds", 2.0)));
+        const double targetLufs = juce::jlimit (-40.0, -3.0,
+            static_cast<double> (params.getProperty ("target_lufs", -14.0)));
+
+        if (! MixdownExporter::exportSeamlessLoopWav (*edit, startBeat, endBeat, outWav, targetLufs, tailSeconds))
+            return makeErrorResponse (id, -32603, "Seamless loop render failed");
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("output_file", outWav.getFullPathName());
+        res->setProperty ("start_beat", startBeat);
+        res->setProperty ("end_beat", endBeat);
+        res->setProperty ("tail_seconds", tailSeconds);
+        res->setProperty ("target_lufs", targetLufs);
+        res->setProperty ("measurement", "bs1770_k_weighted_gated");
         return makeResultResponse (id, juce::var (res));
     }
 

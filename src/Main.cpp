@@ -8,6 +8,7 @@
 #include "PlatformConfig.h"
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
+#include "SfxForgeEngine.h"
 #include "StudioPluginWindow.h"
 #include "VocalChannelPlugin.h"
 #include "VocalSpecAnalyzer.h"
@@ -4100,6 +4101,152 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-022B bespoke faceplates & workspace suite switcher PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-023: Game Audio Forge & seamless loop renderer
+    //===========================================================================
+    {
+        const auto forgeDir = tempDir.getChildFile ("tcs_wo023_smoke");
+        forgeDir.deleteRecursively();
+        forgeDir.createDirectory();
+
+        const auto checkBatch = [&] (tcs::game::SfxCategory category, const juce::String& prefix) -> bool
+        {
+            juce::Array<juce::File> files;
+            const int written = tcs::game::SfxForgeEngine::generateSfxVariations (
+                category, forgeDir, prefix, 4, 42, 0.25, -1.0, &files);
+            if (written != 4 || files.size() != 4)
+                return false;
+
+            juce::AudioFormatManager fm;
+            fm.registerBasicFormats();
+            juce::AudioBuffer<float> first, second;
+            for (int i = 0; i < files.size(); ++i)
+            {
+                std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (files[i]));
+                if (reader == nullptr || reader->lengthInSamples <= 0)
+                    return false;
+                juce::AudioBuffer<float> buf (1, static_cast<int> (reader->lengthInSamples));
+                buf.clear();
+                reader->read (&buf, 0, buf.getNumSamples(), 0, true, false);
+                const float peak = buf.getMagnitude (0, buf.getNumSamples());
+                const float limit = std::pow (10.0f, -0.9f / 20.0f);
+                if (! std::isfinite (peak) || peak <= 1.0e-5f || peak > limit)
+                    return false;
+                if (i == 0) first = buf;
+                if (i == 1) second = buf;
+            }
+
+            float difference = 0.0f;
+            for (int i = 0; i < juce::jmin (first.getNumSamples(), second.getNumSamples()); i += 8)
+                difference += std::abs (first.getSample (0, i) - second.getSample (0, i));
+            return difference > 1.0e-4f;
+        };
+
+        if (! checkBatch (tcs::game::SfxCategory::gunshotTactical, "gun")
+            || ! checkBatch (tcs::game::SfxCategory::uiClick, "click"))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-023 SFX variation batch was silent or not diverse" << std::endl;
+            return 1;
+        }
+
+        // A quiet drone clip gives the seamless-loop renderer real audio to wrap.
+        juce::Array<juce::File> droneFiles;
+        tcs::game::SfxForgeEngine::generateSfxVariations (
+            tcs::game::SfxCategory::ambientDrone, forgeDir, "loopbed", 1, 7, 4.0, -6.0, &droneFiles);
+        if (droneFiles.isEmpty())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-023 loop bed was not rendered" << std::endl;
+            return 1;
+        }
+
+        app.edit->ensureNumberOfAudioTracks (1);
+        auto* loopTrack = te::getAudioTracks (*app.edit).getFirst();
+        const tracktion::TimeRange loopRange {
+            tracktion::TimePosition::fromSeconds (0.0),
+            tracktion::TimePosition::fromSeconds (4.0)
+        };
+        const te::ClipPosition clipPos { loopRange, tracktion::TimeDuration::fromSeconds (0.0) };
+        bool clipInserted = false;
+        {
+            auto clip = loopTrack->insertWaveClip ("WO-023 Loop Bed", droneFiles.getFirst(), clipPos, false);
+            if (clip != nullptr)
+            {
+                clip->getSourceFileReference().setToFile (
+                    droneFiles.getFirst(), te::SourceFileReference::PathStyle::alwaysAbsolute, false);
+                clipInserted = true;
+            }
+        }
+        if (! clipInserted)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-023 loop bed clip was not inserted" << std::endl;
+            return 1;
+        }
+
+        const auto loopWav = forgeDir.getChildFile ("seamless_loop.wav");
+        if (! MixdownExporter::exportSeamlessLoopWav (*app.edit, 0.0, 8.0, loopWav, -14.0, 2.0))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-023 seamless loop render failed" << std::endl;
+            return 1;
+        }
+
+        juce::AudioFormatManager loopFm;
+        loopFm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> loopReader (loopFm.createReaderFor (loopWav));
+        if (loopReader == nullptr || loopReader->lengthInSamples < 512)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-023 loop WAV is unreadable" << std::endl;
+            return 1;
+        }
+        juce::AudioBuffer<float> loopBuf (2, static_cast<int> (loopReader->lengthInSamples));
+        loopBuf.clear();
+        loopReader->read (&loopBuf, 0, loopBuf.getNumSamples(), 0, true, true);
+
+        const float boundary = std::abs (loopBuf.getSample (0, 0)
+                                        - loopBuf.getSample (0, loopBuf.getNumSamples() - 1));
+        tcs::loudness::KWeightedLoudnessMeter checkMeter (loopReader->sampleRate, 2);
+        for (int i = 0; i < loopBuf.getNumSamples(); ++i)
+            checkMeter.processFrame (loopBuf.getSample (0, i), loopBuf.getSample (1, i));
+        const double lufs = checkMeter.getLoudnessLufs();
+
+        if (loopBuf.getMagnitude (0, loopBuf.getNumSamples()) <= 1.0e-5f
+            || boundary >= 0.05f || std::abs (lufs + 14.0) > 1.5)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-023 loop boundary=" << boundary
+                      << " lufs=" << lufs << std::endl;
+            return 1;
+        }
+
+        // RPC round-trip for the forge batch.
+        auto* forgeParams = new juce::DynamicObject();
+        forgeParams->setProperty ("category", "ui_click");
+        forgeParams->setProperty ("count", 2);
+        forgeParams->setProperty ("seed", 99);
+        forgeParams->setProperty ("output_dir", forgeDir.getChildFile ("rpc").getFullPathName());
+        forgeParams->setProperty ("prefix", "rpc_click");
+        forgeParams->setProperty ("duration_sec", 0.2);
+        forgeParams->setProperty ("peak_db", -1.0);
+        forgeParams->setProperty ("import_first_to_track", -1);
+        auto* rpcRequest = new juce::DynamicObject();
+        rpcRequest->setProperty ("jsonrpc", "2.0");
+        rpcRequest->setProperty ("id", 1);
+        rpcRequest->setProperty ("method", "game.forge_sfx_batch");
+        rpcRequest->setProperty ("params", juce::var (forgeParams));
+        const auto rpcResponse = app.ipcServer.executeJsonRpcOnMessageThread (
+            juce::JSON::toString (juce::var (rpcRequest), true));
+        juce::var rpcParsed;
+        if (! juce::JSON::parse (rpcResponse, rpcParsed).wasOk()
+            || rpcParsed.hasProperty ("error")
+            || ! rpcParsed["result"].isObject()
+            || static_cast<int> (rpcParsed["result"]["count"]) != 2)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-023 game.forge_sfx_batch RPC round-trip failed" << std::endl;
+            return 1;
+        }
+
+        forgeDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-023 procedural SFX forge & seamless loop renderer PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -4143,7 +4290,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "sidechain Pin 3/4 ducking, multi-take comping, polyphonic audio-to-MIDI, "
                  "cross-platform core isolation, VST3 scanner lifecycle, the original CV envelope/step "
                  "blueprint modules, the WO-021 voice acting suite, and WO-022 booth teleprompter "
-                 "and ADR/demo-reel workflow, and WO-022B hardware faceplates and workspace suites verified."
+                 "and ADR/demo-reel workflow, WO-022B hardware faceplates and workspace suites, "
+                 "and the WO-023 game SFX forge / seamless loop renderer verified."
               << std::endl;
     return 0;
 }

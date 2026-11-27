@@ -18,6 +18,10 @@
   WO-022B added boutique hardware faceplates, custom rotary/fader/LED LookAndFeel
   controls, catenary rack cables with hover/right-click disconnect, and the
   Studio / Modular Rack / VO Booth workspace suite switcher (Phase 8/9 placeholders only).
+- Phase 8 Game Forge opened on `dev/v1.2-game-forge` with the WO-023..WO-026 blueprints
+  committed. WO-023 (procedural `SfxForgeEngine`, seeded variation batcher, zero-click
+  seamless loop renderer, 2 RPCs + 2 MCP tools) implemented directly on that branch
+  with no PR; Python suite now 44/44.
 - Full repo sweep / reconciliation (local on `fix/repo-sweep-reconciliation`): verified
   WO-001..WO-020 against source; restored the two unimplemented briefing CV modules
   (`CvEnvelopeFollowerPlugin`, `CvStepModulatorPlugin`), fixed the unreachable Android

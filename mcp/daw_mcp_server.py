@@ -787,5 +787,49 @@ async def build_vo_demo_reel_layout(
     return await send_daw_rpc("vo.build_demo_reel_layout", params, timeout=15.0)
 
 
+@mcp.tool()
+async def forge_game_sfx_batch(
+    category: str = "gunshot_tactical",
+    count: int = 6,
+    seed: int = 42,
+    output_path: str = "",
+    prefix: str = "",
+    duration_sec: float = 0.5,
+    peak_db: float = -1.0,
+    import_first_to_track: int = -1,
+) -> dict[str, Any]:
+    """Forge seeded, non-repetitive procedural game SFX takes into a WAV batch."""
+    params: dict[str, Any] = {
+        "category": category.strip().lower(),
+        "count": min(16, max(1, int(count))),
+        "seed": max(0, int(seed)),
+        "output_dir": output_path.strip(),
+        "prefix": prefix.strip(),
+        "duration_sec": min(10.0, max(0.05, float(duration_sec))),
+        "peak_db": min(0.0, max(-60.0, float(peak_db))),
+        "import_first_to_track": int(import_first_to_track),
+    }
+    return await send_daw_rpc("game.forge_sfx_batch", params, timeout=30.0)
+
+
+@mcp.tool()
+async def export_seamless_game_loop(
+    start_beat: float = 0.0,
+    end_beat: float = 8.0,
+    output_path: str = "",
+    tail_seconds: float = 2.0,
+    target_lufs: float = -14.0,
+) -> dict[str, Any]:
+    """Render a beat range with tail-wrapped, click-free looping and BS.1770 normalization."""
+    params: dict[str, Any] = {
+        "start_beat": float(start_beat),
+        "end_beat": float(end_beat),
+        "output_path": output_path.strip(),
+        "tail_seconds": min(5.0, max(0.1, float(tail_seconds))),
+        "target_lufs": min(-3.0, max(-40.0, float(target_lufs))),
+    }
+    return await send_daw_rpc("audio.export_seamless_loop", params, timeout=30.0)
+
+
 if __name__ == "__main__":
     mcp.run()

@@ -64,6 +64,7 @@ add_library(tcs_core STATIC
     src/MixdownExporter.cpp
     src/PluginPresetManager.cpp
     src/AudioToMidiTranscriber.cpp
+    src/SfxForgeEngine.cpp
 )
 target_include_directories(tcs_core PUBLIC src)
 target_compile_options(tcs_core PRIVATE ${TCS_PLATFORM_COMPILE_OPTIONS})
@@ -146,6 +147,7 @@ if(TCS_BUILD_DESKTOP_APP)
         src/WaveformEditorComponent.cpp
         src/MixdownExporter.h
         src/MixdownExporter.cpp
+        src/SfxForgeEngine.h
         src/MidiKeyboardDock.h
         src/MidiKeyboardDock.cpp
         src/ScriptPrompterComponent.h
