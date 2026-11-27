@@ -219,12 +219,25 @@ async def generate_bgm_arrangement(
     key: str = "Am",
     energy: int = 4,
     bars: int = 8,
+    scale: str | None = None,
+    seed: int | None = None,
+    complexity: str | None = None,
+    time_signature: str | None = None,
+    bpm: float | None = None,
 ) -> dict[str, Any]:
-    """Generate a multi-stem time-stretched and pitch-shifted riff BGM arrangement."""
-    return await send_daw_rpc(
-        "bgm.generate",
-        {"genre": genre, "key": key, "energy": energy, "bars": bars},
-    )
+    """Generate a multi-stem BGM arrangement with optional theory-engine controls."""
+    params: dict[str, Any] = {"genre": genre, "key": key, "energy": energy, "bars": bars}
+    if scale is not None:
+        params["scale"] = scale.strip().lower()
+    if seed is not None:
+        params["seed"] = max(0, int(seed))
+    if complexity is not None:
+        params["complexity"] = complexity.strip().lower()
+    if time_signature is not None:
+        params["time_signature"] = time_signature.strip()
+    if bpm is not None:
+        params["bpm"] = max(30.0, min(300.0, float(bpm)))
+    return await send_daw_rpc("bgm.generate", params)
 
 
 @mcp.tool()
@@ -539,22 +552,32 @@ async def generate_chord_progression(
     octave: int = 4,
     velocity: int = 96,
     voice_lead: bool = True,
+    seed: int | None = None,
+    bars: int | None = None,
+    complexity: str | None = None,
+    time_signature: str | None = None,
 ) -> dict[str, Any]:
     """Generate a Roman-numeral voice-led chord progression on a MIDI/instrument track."""
-    return await send_daw_rpc(
-        "midi.generate_progression",
-        {
-            "track_index": max(0, track_index),
-            "key": key.strip() or "C",
-            "scale": scale.strip().lower() or "minor",
-            "progression": progression or ["i", "VI", "III", "VII"],
-            "start_beat": max(0.0, start_beat),
-            "beats_per_chord": max(0.25, min(32.0, beats_per_chord)),
-            "octave": max(1, min(7, octave)),
-            "velocity": max(1, min(127, velocity)),
-            "voice_lead": voice_lead,
-        },
-    )
+    params: dict[str, Any] = {
+        "track_index": max(0, track_index),
+        "key": key.strip() or "C",
+        "scale": scale.strip().lower() or "minor",
+        "progression": progression or ["i", "VI", "III", "VII"],
+        "start_beat": max(0.0, start_beat),
+        "beats_per_chord": max(0.25, min(32.0, beats_per_chord)),
+        "octave": max(1, min(7, octave)),
+        "velocity": max(1, min(127, velocity)),
+        "voice_lead": voice_lead,
+    }
+    if seed is not None:
+        params["seed"] = max(0, int(seed))
+    if bars is not None:
+        params["bars"] = max(8, min(64, int(bars)))
+    if complexity is not None:
+        params["complexity"] = complexity.strip().lower()
+    if time_signature is not None:
+        params["time_signature"] = time_signature.strip()
+    return await send_daw_rpc("midi.generate_progression", params)
 
 
 @mcp.tool()
@@ -880,6 +903,37 @@ async def export_godot_audio_pack(
         "bpm": float(bpm),
     }
     return await send_daw_rpc("game.export_godot_pack", params, timeout=30.0)
+
+
+@mcp.tool()
+async def get_music_theory_catalog() -> dict[str, Any]:
+    """Return all 12 keys, 16 scales/modes, 14 genre profiles and time signatures."""
+    return await send_daw_rpc("theory.get_catalog", {})
+
+
+@mcp.tool()
+async def generate_song_arrangement(
+    genre: str = "ambient_cinematic",
+    key: str = "C",
+    scale: str = "",
+    bars: int = 16,
+    bpm: float = 0.0,
+    seed: int = 42,
+    complexity: str = "standard",
+    include_counter_melody: bool = True,
+) -> dict[str, Any]:
+    """Generate a seeded multi-section Drums/Bass/Chords/Lead(+Counter) song arrangement."""
+    params: dict[str, Any] = {
+        "genre": genre.strip().lower(),
+        "key": key.strip() or "C",
+        "scale": scale.strip().lower(),
+        "bars": max(8, min(64, int(bars))),
+        "bpm": max(0.0, min(300.0, float(bpm))),
+        "seed": max(0, int(seed)),
+        "complexity": complexity.strip().lower(),
+        "include_counter_melody": bool(include_counter_melody),
+    }
+    return await send_daw_rpc("midi.generate_song_arrangement", params, timeout=30.0)
 
 
 if __name__ == "__main__":

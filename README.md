@@ -55,6 +55,7 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 | **WO-022B (Phase 7C)** | Boutique hardware faceplates, `StudioLookAndFeel` knobs/faders/LEDs, catenary rack cables with right-click disconnect, and the Studio / Modular Rack / VO Booth workspace switcher. |
 | **WO-023 (Phase 8A)** | `SfxForgeEngine`: 8 zero-asset procedural game SFX categories with seeded variation batches and a phase-locked, click-free seamless loop renderer with BS.1770 LUFS normalization. |
 | **WO-024 (Phase 8B)** | Game Audio & Asset Forge Suite: `GameForgeComponent` dock, adaptive intensity BGM stems, VOX bark trimming/normalization and Godot 4 / asset-vault `audio_manifest.json` export. |
+| **WO-024B (Phase 8C)** | `MusicTheoryEngine`: 12 keys, 16 scales/modes, 14 genre DNA profiles, Euclidean rhythms, rich voicings and a seeded multi-section song-form/motif/counter-melody generator wired into the BGM UI, JSON-RPC and FastMCP. |
 
 ---
 

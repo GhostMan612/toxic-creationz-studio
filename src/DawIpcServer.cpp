@@ -9,6 +9,7 @@
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
 #include "GameAssetExporter.h"
+#include "MusicTheoryEngine.h"
 #include "SfxForgeEngine.h"
 #include "VocalChannelPlugin.h"
 #include "WaveformEditorComponent.h"
@@ -397,7 +398,7 @@ juce::String DawIpcServer::enqueueAndWaitForMessageThread (const juce::String& r
                 timeoutMs = 15000;
             else if (reqMethod == "game.forge_sfx_batch" || reqMethod == "audio.export_seamless_loop"
                      || reqMethod == "game.export_adaptive_stems" || reqMethod == "game.process_vox_barks"
-                     || reqMethod == "game.export_godot_pack")
+                     || reqMethod == "game.export_godot_pack" || reqMethod == "midi.generate_song_arrangement")
                 timeoutMs = 30000;
         }
     }
@@ -879,6 +880,12 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         req.targetPitchClass = RiffLibrary::parseKeyPitchClass (req.targetKeyLabel);
         req.targetEnergy     = juce::jlimit (1, 5, static_cast<int> (params.getProperty ("energy", 4)));
         req.totalBars        = juce::jlimit (4, 32, static_cast<int> (params.getProperty ("bars", 8)));
+        req.scale            = params.getProperty ("scale", "").toString().trim().toLowerCase();
+        req.seed             = static_cast<std::uint64_t> (juce::jmax (0,
+            static_cast<int> (params.getProperty ("seed", 42))));
+        req.complexity       = params.getProperty ("complexity", "standard").toString().trim().toLowerCase();
+        req.timeSignature    = params.getProperty ("time_signature", "4/4").toString().trim();
+        req.bpm              = static_cast<double> (params.getProperty ("bpm", 0.0));
 
         edit->getUndoManager().beginNewTransaction ("MCP Generate BGM");
 
@@ -892,6 +899,11 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         res->setProperty ("clips_created", clipsCreated);
         res->setProperty ("genre", req.genre);
         res->setProperty ("key", req.targetKeyLabel);
+        res->setProperty ("scale", req.scale);
+        res->setProperty ("seed", static_cast<juce::int64> (req.seed));
+        res->setProperty ("bars", req.totalBars);
+        res->setProperty ("complexity", req.complexity);
+        res->setProperty ("time_signature", req.timeSignature);
 
         return makeResultResponse (id, juce::var (res));
     }
@@ -1673,11 +1685,13 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
 
         const juce::String keyName   = params.getProperty ("key", "C").toString().trim();
         const juce::String scaleName = params.getProperty ("scale", "minor").toString().trim().toLowerCase();
-        const auto scale = getScaleIntervals (scaleName, false);
-        if (scale.size() < 7)
+        auto scale = tcs::theory::MusicTheoryEngine::scaleIntervals (scaleName);
+        if (scale.size() < 5)
+            scale = getScaleIntervals (scaleName, false);
+        if (scale.size() < 5)
             return makeErrorResponse (id, -32602, "Unsupported scale for chord generation: " + scaleName);
 
-        const int keyPc = RiffLibrary::parseKeyPitchClass (keyName);
+        const int keyPc = tcs::theory::MusicTheoryEngine::parseKey (keyName);
         const double startBeat     = std::max (0.0, static_cast<double> (params.getProperty ("start_beat", 0.0)));
         const double beatsPerChord = std::clamp (static_cast<double> (params.getProperty ("beats_per_chord", 4.0)), 0.25, 32.0);
         const int octave           = juce::jlimit (1, 7, static_cast<int> (params.getProperty ("octave", 4)));
@@ -1781,6 +1795,10 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         out->setProperty ("notes_written", notesWritten);
         out->setProperty ("start_beat", startBeat);
         out->setProperty ("end_beat", endBeat);
+        out->setProperty ("scale", scaleName);
+        out->setProperty ("seed", static_cast<juce::int64> (static_cast<int> (params.getProperty ("seed", 42))));
+        out->setProperty ("bar_count", juce::jlimit (8, 64, static_cast<int> (params.getProperty ("bars", 8))));
+
         return makeResultResponse (id, juce::var (out));
     }
 
@@ -2838,6 +2856,102 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         res->setProperty ("output_dir", rootDir.getFullPathName());
         res->setProperty ("asset_count", assets.size());
         res->setProperty ("manifest", rootDir.getChildFile ("audio_manifest.json").getFullPathName());
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-024B: theory.get_catalog — 12 keys, 16 scales, 14 genres, 5 time signatures
+    if (method == "theory.get_catalog")
+    {
+        auto* res = new juce::DynamicObject();
+        const auto toVarArray = [] (const juce::StringArray& source)
+        {
+            juce::Array<juce::var> out;
+            for (const auto& item : source)
+                out.add (item);
+            return juce::var (out);
+        };
+        res->setProperty ("keys", toVarArray (tcs::theory::MusicTheoryEngine::keys()));
+        res->setProperty ("scales", toVarArray (tcs::theory::MusicTheoryEngine::scales()));
+        res->setProperty ("genres", toVarArray (tcs::theory::MusicTheoryEngine::genres()));
+        res->setProperty ("time_signatures", toVarArray (tcs::theory::MusicTheoryEngine::timeSignatures()));
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-024B: midi.generate_song_arrangement — multi-section song-form builder
+    if (method == "midi.generate_song_arrangement")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+
+        const auto genre = params.getProperty ("genre", "ambient_cinematic").toString().trim().toLowerCase();
+        auto profile = tcs::theory::MusicTheoryEngine::genreProfile (genre);
+        const auto key = params.getProperty ("key", "C").toString().trim();
+        auto scale = params.getProperty ("scale", "").toString().trim().toLowerCase();
+        if (scale.isEmpty())
+            scale = profile.signatureScale;
+        const int bars = juce::jlimit (8, 64, static_cast<int> (params.getProperty ("bars", 16)));
+        const double bpm = static_cast<double> (params.getProperty ("bpm", 0.0));
+        const int seed = juce::jmax (0, static_cast<int> (params.getProperty ("seed", 42)));
+        const auto complexity = params.getProperty ("complexity", "standard").toString().trim().toLowerCase();
+        const bool withCounter = static_cast<bool> (params.getProperty ("include_counter_melody", true));
+
+        auto plan = tcs::theory::MusicTheoryEngine::generateStructuredArrangement (
+            genre, key, scale, bars, bpm, static_cast<std::uint64_t> (seed), complexity, withCounter);
+
+        edit->ensureNumberOfAudioTracks (plan.trackNames.size());
+        auto tracks = te::getAudioTracks (*edit);
+        const double endBeat = static_cast<double> (plan.bars) * 4.0;
+        const tracktion::TimeRange fullRange {
+            edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (0.0)),
+            edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (endBeat))
+        };
+
+        auto& um = edit->getUndoManager();
+        um.beginNewTransaction ("MCP Generate Song Arrangement");
+
+        juce::StringArray created;
+        int totalNotes = 0;
+        for (int ti = 0; ti < plan.trackNames.size() && ti < tracks.size(); ++ti)
+        {
+            auto* track = tracks[ti];
+            track->setName (plan.trackNames[ti]);
+            auto* clip = dynamic_cast<te::MidiClip*> (track->insertNewClip (
+                te::TrackItem::Type::midi, plan.trackNames[ti], fullRange, nullptr));
+            if (clip == nullptr)
+                continue;
+
+            auto& seq = clip->getSequence();
+            int written = 0;
+            for (const auto& note : plan.notes)
+            {
+                if (note.track != ti)
+                    continue;
+                seq.addNote (note.midi,
+                             tracktion::BeatPosition::fromBeats (note.startBeat),
+                             tracktion::BeatDuration::fromBeats (note.lengthBeats),
+                             note.velocity, 0, &um);
+                ++written;
+            }
+            totalNotes += written;
+            created.add (plan.trackNames[ti]);
+        }
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP generated " + juce::String (totalNotes) + " notes across "
+                                + juce::String (created.size()) + " arrangement tracks");
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("genre", plan.genre);
+        res->setProperty ("key", plan.key);
+        res->setProperty ("scale", plan.scale);
+        res->setProperty ("bpm", plan.bpm);
+        res->setProperty ("bars", plan.bars);
+        res->setProperty ("seed", plan.seed);
+        res->setProperty ("complexity", plan.complexity);
+        res->setProperty ("time_signature", plan.timeSignature);
+        res->setProperty ("sections", juce::var (plan.sections));
+        res->setProperty ("tracks_created", juce::var (created));
+        res->setProperty ("total_notes", totalNotes);
         return makeResultResponse (id, juce::var (res));
     }
 

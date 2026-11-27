@@ -5,6 +5,7 @@
 #include <juce_core/juce_core.h>
 #include <tracktion_engine/tracktion_engine.h>
 
+#include <cstdint>
 #include <vector>
 
 namespace te = tracktion::engine;
@@ -38,6 +39,11 @@ struct BgmRequest
     juce::String targetKeyLabel = "Am";
     int targetEnergy = 4;     // 1..5
     int totalBars = 8;        // 8 or 16 bars
+    juce::String scale;       // WO-024B: 16 modes/modes
+    std::uint64_t seed = 42;
+    juce::String complexity { "standard" };
+    juce::String timeSignature { "4/4" };
+    double bpm = 0.0;
 };
 
 //==============================================================================

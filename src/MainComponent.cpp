@@ -612,6 +612,30 @@ MainComponent::MainComponent()
                      && ! parsedResponse.hasProperty ("error");
         gameForgeComponent.setStatus (ok ? "OK: " + method : "Failed: " + method);
     };
+    bgmGeneratorComponent.onGenerateAdvanced = [this]
+    {
+        const auto req = bgmGeneratorComponent.getAdvancedRequest();
+        auto* params = new juce::DynamicObject();
+        params->setProperty ("genre", req.genre);
+        params->setProperty ("key", req.key);
+        params->setProperty ("scale", req.scale);
+        params->setProperty ("bars", req.bars);
+        params->setProperty ("bpm", 0.0);
+        params->setProperty ("seed", req.seed);
+        params->setProperty ("complexity", req.complexity);
+        params->setProperty ("include_counter_melody", true);
+        auto* request = new juce::DynamicObject();
+        request->setProperty ("jsonrpc", "2.0");
+        request->setProperty ("id", 143);
+        request->setProperty ("method", "midi.generate_song_arrangement");
+        request->setProperty ("params", juce::var (params));
+        const auto response = ipcServer.executeJsonRpcOnMessageThread (
+            juce::JSON::toString (juce::var (request), true));
+        juce::var parsed;
+        if (juce::JSON::parse (response, parsed).wasOk() && ! parsed.hasProperty ("error")
+            && bgmGeneratorComponent.onBgmGenerated)
+            bgmGeneratorComponent.onBgmGenerated (static_cast<int> (parsed["result"]["total_notes"]));
+    };
     rpgBoardPlaceholder.setEnabled (false);
     addAndMakeVisible (gameForgePlaceholder);
     addAndMakeVisible (rpgBoardPlaceholder);

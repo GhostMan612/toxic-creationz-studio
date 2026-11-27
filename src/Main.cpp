@@ -9,6 +9,7 @@
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
 #include "GameAssetExporter.h"
+#include "MusicTheoryEngine.h"
 #include "SfxForgeEngine.h"
 #include "StudioPluginWindow.h"
 #include "VocalChannelPlugin.h"
@@ -4290,8 +4291,6 @@ int MainComponent::runHeadlessSmokeTest()
         }
         if (! stemsOk)
         {
-            std::cerr << "[SMOKE_TEST] DEBUG WO-024 stems=" << stems
-                      << " files=" << stemFiles.size() << " frames=" << stemFrames << std::endl;
             std::cerr << "[SMOKE_TEST] FAIL: WO-024 adaptive stems were not phase-locked" << std::endl;
             return 1;
         }
@@ -4380,6 +4379,149 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-024 adaptive stems, VOX barks & Godot manifest PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-024B: Deep music theory & multi-section song-form engine
+    //===========================================================================
+    {
+        namespace theory = tcs::theory;
+        const auto catalogReq = juce::String (R"({"jsonrpc":"2.0","id":401,"method":"theory.get_catalog","params":{}})");
+        juce::var catalogParsed;
+        const auto catalogResponse = app.ipcServer.executeJsonRpcOnMessageThread (catalogReq);
+        bool catalogOk = juce::JSON::parse (catalogResponse, catalogParsed).wasOk()
+                      && ! catalogParsed.hasProperty ("error")
+                      && catalogParsed["result"]["keys"].isArray()
+                      && catalogParsed["result"]["scales"].isArray()
+                      && catalogParsed["result"]["genres"].isArray()
+                      && catalogParsed["result"]["keys"].getArray()->size() == 12
+                      && catalogParsed["result"]["scales"].getArray()->size() == 16
+                      && catalogParsed["result"]["genres"].getArray()->size() == 14;
+        if (! catalogOk)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024B theory catalog counts were wrong" << std::endl;
+            return 1;
+        }
+
+        int euclidPulses = 0;
+        for (int hit : theory::MusicTheoryEngine::generateEuclideanPattern (16, 5, 0))
+            euclidPulses += hit;
+        if (euclidPulses != 5)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024B Euclidean(16,5) pulses=" << euclidPulses << std::endl;
+            return 1;
+        }
+
+        struct TheoryCase { const char* genre; const char* key; const char* scale; };
+        const TheoryCase cases[] {
+            { "metal_heavy", "D", "phrygian" },
+            { "anime_action", "F#", "hirajoshi" },
+            { "cosmic_horror", "C", "locrian" }
+        };
+
+        juce::String firstSignature;
+        juce::String secondSignature;
+        for (const auto& testCase : cases)
+        {
+            const auto keyPc = theory::MusicTheoryEngine::parseKey (testCase.key);
+            const auto intervals = theory::MusicTheoryEngine::scaleIntervals (testCase.scale);
+            const auto plan = theory::MusicTheoryEngine::generateStructuredArrangement (
+                testCase.genre, testCase.key, testCase.scale, 16, 0.0, 42, "standard", true);
+            if (plan.notes.empty() || plan.sections.size() != 5 || plan.trackNames.size() < 5)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-024B arrangement for " << testCase.genre
+                          << " was incomplete" << std::endl;
+                return 1;
+            }
+
+            int melodicNotes = 0;
+            juce::String signature;
+            for (const auto& note : plan.notes)
+            {
+                if (note.track < 1 || note.midi < 48 || note.midi > 76)
+                    continue;
+                ++melodicNotes;
+                signature += juce::String (note.midi) + ",";
+                if (! theory::MusicTheoryEngine::isInScale (note.midi, keyPc, intervals))
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-024B note " << note.midi
+                              << " outside " << testCase.scale << std::endl;
+                    return 1;
+                }
+            }
+            if (melodicNotes < 8)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-024B no melodic notes for " << testCase.genre << std::endl;
+                return 1;
+            }
+            if (firstSignature.isEmpty()) firstSignature = signature;
+            else if (secondSignature.isEmpty()) secondSignature = signature;
+
+            auto* params = new juce::DynamicObject();
+            params->setProperty ("genre", testCase.genre);
+            params->setProperty ("key", testCase.key);
+            params->setProperty ("scale", testCase.scale);
+            params->setProperty ("bars", 16);
+            params->setProperty ("bpm", 0.0);
+            params->setProperty ("seed", 42);
+            params->setProperty ("complexity", "standard");
+            params->setProperty ("include_counter_melody", true);
+            auto* request = new juce::DynamicObject();
+            request->setProperty ("jsonrpc", "2.0");
+            request->setProperty ("id", 402);
+            request->setProperty ("method", "midi.generate_song_arrangement");
+            request->setProperty ("params", juce::var (params));
+            const auto response = app.ipcServer.executeJsonRpcOnMessageThread (
+                juce::JSON::toString (juce::var (request), true));
+            juce::var parsed;
+            if (! juce::JSON::parse (response, parsed).wasOk() || parsed.hasProperty ("error")
+                || ! parsed["result"].isObject()
+                || static_cast<int> (parsed["result"]["total_notes"]) < 8
+                || parsed["result"]["tracks_created"].getArray() == nullptr
+                || parsed["result"]["tracks_created"].getArray()->size() < 5
+                || parsed["result"]["sections"].getArray() == nullptr
+                || parsed["result"]["sections"].getArray()->size() != 5)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-024B song arrangement RPC failed for "
+                          << testCase.genre << std::endl;
+                return 1;
+            }
+        }
+
+        const auto other = theory::MusicTheoryEngine::generateStructuredArrangement (
+            "anime_action", "F#", "hirajoshi", 16, 0.0, 1337, "standard", true);
+        juce::String otherSignature;
+        for (const auto& note : other.notes)
+            if (note.track >= 1 && note.midi >= 48 && note.midi <= 76)
+                otherSignature += juce::String (note.midi) + ",";
+        if (firstSignature == secondSignature || secondSignature == otherSignature)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024B genres/seeds produced identical motifs" << std::endl;
+            return 1;
+        }
+
+        const auto theorySessionFile = tempDir.getChildFile ("aidaw_wo024b_theory.tracktionedit");
+        app.currentEditFile = theorySessionFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+        if (! theorySessionFile.existsAsFile() || ! app.loadSessionFromFileSafely (theorySessionFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024B arrangement session round-trip failed" << std::endl;
+            return 1;
+        }
+        int reloadedMidiClips = 0;
+        for (auto* track : te::getAudioTracks (*app.edit))
+            for (auto* clip : track->getClips())
+                if (dynamic_cast<te::MidiClip*> (clip) != nullptr)
+                    ++reloadedMidiClips;
+        theorySessionFile.deleteFile();
+        if (reloadedMidiClips < 5)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024B arrangement MIDI clips did not persist" << std::endl;
+            return 1;
+        }
+
+        std::cout << "[SMOKE_TEST] WO-024B music theory catalog, scales, song forms & persistence PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -4425,7 +4567,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "blueprint modules, the WO-021 voice acting suite, and WO-022 booth teleprompter "
                  "and ADR/demo-reel workflow, WO-022B hardware faceplates and workspace suites, "
                  "and the WO-023 game SFX forge / seamless loop renderer, plus WO-024 adaptive "
-                 "stems, VOX bark batching and the Godot 4 audio manifest verified."
+                 "stems, VOX bark batching and the Godot 4 audio manifest, and the WO-024B music theory "
+                 "catalog, scale-pure song forms, seed variation and arrangement persistence verified."
               << std::endl;
     return 0;
 }

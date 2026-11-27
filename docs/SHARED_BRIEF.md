@@ -26,6 +26,11 @@
   `GameForgeComponent` dock drives seeded SFX forging, adaptive phase-locked stems,
   VOX bark trimming/normalization and a Godot 4 `audio_manifest.json` pack; 3 RPCs +
   3 MCP tools, Python 48/48.
+- Phase 8 deep music theory (`WO-024B`) is complete on `dev/v1.2-game-forge`:
+  `MusicTheoryEngine` (12 keys, 16 scales/modes, 14 genre profiles, Bjorklund-style
+  Euclidean rhythms, multi-section song-form/motif/counter-melody generator), wired
+  into the BGM UI, IPC (`theory.get_catalog`, `midi.generate_song_arrangement`) and
+  FastMCP; Python 52/52.
 - Full repo sweep / reconciliation (local on `fix/repo-sweep-reconciliation`): verified
   WO-001..WO-020 against source; restored the two unimplemented briefing CV modules
   (`CvEnvelopeFollowerPlugin`, `CvStepModulatorPlugin`), fixed the unreachable Android

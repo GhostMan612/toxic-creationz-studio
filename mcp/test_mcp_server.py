@@ -988,5 +988,66 @@ class McpWorkerTests(unittest.TestCase):
                        "game.export_godot_pack"):
             self.assertIn(method, server)
 
+    def test_get_music_theory_catalog_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"keys": ["C"], "scales": [], "genres": []})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.get_music_theory_catalog())
+
+        self.assertEqual(res["keys"], ["C"])
+        mock_rpc.assert_awaited_once_with("theory.get_catalog", {})
+
+    def test_generate_song_arrangement_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"tracks_created": ["Drums"], "total_notes": 12})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.generate_song_arrangement(
+                "metal_heavy", "D", "phrygian", 99, 0.0, -1, "DENSE", False))
+
+        self.assertEqual(res["total_notes"], 12)
+        mock_rpc.assert_awaited_once_with(
+            "midi.generate_song_arrangement",
+            {"genre": "metal_heavy", "key": "D", "scale": "phrygian", "bars": 64,
+             "bpm": 0.0, "seed": 0, "complexity": "dense",
+             "include_counter_melody": False},
+            timeout=30.0,
+        )
+
+    def test_generate_chord_progression_expanded_modes(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"notes_written": 9})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            asyncio.run(srv.generate_chord_progression(
+                key="F#", scale="HIRAJOSHI", seed=7, bars=32,
+                complexity="sparse", time_signature="7/8"))
+
+        _, kwargs = mock_rpc.await_args
+        params = mock_rpc.await_args.args[1]
+        self.assertEqual(params["scale"], "hirajoshi")
+        self.assertEqual(params["seed"], 7)
+        self.assertEqual(params["bars"], 32)
+        self.assertEqual(params["complexity"], "sparse")
+        self.assertEqual(params["time_signature"], "7/8")
+
+    def test_generate_bgm_forwarding_expanded_params(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"clips_created": 4})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.generate_bgm_arrangement(
+                "anime_action", "F#", energy=5, bars=32, scale="HIRAJOSHI",
+                seed=123, complexity="dense", time_signature="6/8", bpm=151.0))
+
+        self.assertEqual(res["clips_created"], 4)
+        mock_rpc.assert_awaited_once_with("bgm.generate", {
+            "genre": "anime_action", "key": "F#", "energy": 5, "bars": 32,
+            "scale": "hirajoshi", "seed": 123, "complexity": "dense",
+            "time_signature": "6/8", "bpm": 151.0,
+        })
+
+
 if __name__ == "__main__":
     unittest.main()
