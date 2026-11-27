@@ -774,6 +774,7 @@ void ModularRackComponent::showAddMachineMenu()
     menu.addItem (22, "CV 1-to-4 Splitter");
     menu.addItem (24, "CV Envelope Follower");
     menu.addItem (25, "CV Step Modulator");
+    menu.addItem (26, "Vocal Booth Strip");
 
     const auto vstTypes = engine.getPluginManager().knownPluginList.getTypes();
     if (! vstTypes.isEmpty())
@@ -817,6 +818,7 @@ void ModularRackComponent::showAddMachineMenu()
             case 22: safeThis->addMachineToRack (CvUtilityPlugin::xmlTypeName); break;
             case 24: safeThis->addMachineToRack (CvEnvelopeFollowerPlugin::xmlTypeName); break;
             case 25: safeThis->addMachineToRack (CvStepModulatorPlugin::xmlTypeName); break;
+            case 26: safeThis->addMachineToRack (VocalChannelPlugin::xmlTypeName); break;
             default:
                 if (chosenId >= 100)
                 {

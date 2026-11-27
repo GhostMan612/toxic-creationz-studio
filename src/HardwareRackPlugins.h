@@ -6,6 +6,8 @@
 
 #include <tracktion_engine/tracktion_engine.h>
 
+#include "VocalChannelPlugin.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -889,4 +891,5 @@ inline void registerHardwareRackPlugins (te::Engine& engine)
     pm.createBuiltInType<Tr808DrumPlugin>();
     pm.createBuiltInType<VintageSamplerPlugin>();
     pm.createBuiltInType<AnalogTapePlugin>();
+    pm.createBuiltInType<VocalChannelPlugin>();
 }

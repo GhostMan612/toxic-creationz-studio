@@ -7,6 +7,7 @@
 #include "HardwareRackPlugins.h"
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
+#include "VocalChannelPlugin.h"
 
 #include <functional>
 #include <tuple>

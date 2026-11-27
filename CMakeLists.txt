@@ -133,6 +133,7 @@ if(TCS_BUILD_DESKTOP_APP)
         src/CvRackPlugins.h
         src/HardwareRackPlugins.h
         src/SidechainCompressorPlugin.h
+        src/VocalChannelPlugin.h
         src/ModularRackComponent.h
         src/ModularRackComponent.cpp
         src/RiffLibrary.h

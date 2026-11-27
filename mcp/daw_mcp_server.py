@@ -491,7 +491,7 @@ async def add_rack_machine(
     machine_type: str = "4osc",
     rack_index: int = 0,
 ) -> dict[str, Any]:
-    """Insert a synth, sampler, effect, or CV utility ('4osc', 'sampler', 'compressor', 'chorus', 'phaser', 'lowpass', 'pitchshift', 'reverb', 'delay', 'eq', 'cv_lfo', 'cv_wobble', 'cv_splitter', 'cv_envelope', 'cv_step') into a modular rack."""
+    """Insert a synth, sampler, effect, or CV utility ('4osc', 'sampler', 'compressor', 'chorus', 'phaser', 'lowpass', 'pitchshift', 'reverb', 'delay', 'eq', 'cv_lfo', 'cv_wobble', 'cv_splitter', 'cv_envelope', 'cv_step', 'vocal_strip') into a modular rack."""
     return await send_daw_rpc(
         "rack.add_machine",
         {
@@ -511,7 +511,7 @@ async def add_rack_module(
     """Insert a CV or hardware module into a modular rack.
 
     module_type: 'cv_lfo', 'cv_filter', 'cv_splitter', 'cv_envelope', 'cv_step',
-    'tr808', 'sampler', 'tape', or '4osc'. x/y are normalised 0..1 rack positions.
+    'vocal_strip', 'tr808', 'sampler', 'tape', or '4osc'. x/y are normalised 0..1 rack positions.
     """
     return await send_daw_rpc(
         "rack.add_module",
@@ -656,6 +656,66 @@ async def separate_audio_stems(
             imported.append(imp_res)
 
     return {"separation": sep_meta, "imported": imported}
+
+
+@mcp.tool()
+async def analyze_vo_specs(
+    file_path: str = "",
+    track_index: int = 0,
+    clip_index: int = 0,
+    profile: str = "acx",
+) -> dict[str, Any]:
+    """Analyze a WAV (or the selected audio clip) against ACX or audition loudness specs."""
+    selected = (profile or "acx").strip().lower()
+    if selected not in ("acx", "audition"):
+        selected = "acx"
+    params: dict[str, Any] = {
+        "file_path": file_path.strip(),
+        "track_index": max(0, track_index),
+        "clip_index": max(0, clip_index),
+        "profile": selected,
+    }
+    return await send_daw_rpc("audio.analyze_vo_specs", params, timeout=15.0)
+
+
+@mcp.tool()
+async def export_abc_audition(
+    track_index: int = 0,
+    take_indices: list[int] | None = None,
+    gap_seconds: float = 1.5,
+    mono: bool = True,
+    output_path: str = "",
+) -> dict[str, Any]:
+    """Concatenate A/B/C slate takes with clean gaps into a submission-ready WAV."""
+    params: dict[str, Any] = {
+        "track_index": max(0, track_index),
+        "take_indices": take_indices or [0, 1, 2],
+        "gap_seconds": min(10.0, max(0.0, float(gap_seconds))),
+        "mono": bool(mono),
+        "output_path": output_path.strip(),
+    }
+    return await send_daw_rpc("recording.export_abc_audition", params, timeout=15.0)
+
+
+@mcp.tool()
+async def punch_and_roll_splice(
+    track_index: int = 0,
+    prior_wav: str = "",
+    new_take_wav: str = "",
+    punch_seconds: float = 0.0,
+    crossfade_ms: float = 15.0,
+    output_path: str = "",
+) -> dict[str, Any]:
+    """Stitch the pre-punch portion of a prior WAV into the new take with an equal-power crossfade."""
+    params: dict[str, Any] = {
+        "track_index": max(0, track_index),
+        "prior_wav": prior_wav.strip(),
+        "new_take_wav": new_take_wav.strip(),
+        "punch_seconds": max(0.0, float(punch_seconds)),
+        "crossfade_ms": min(100.0, max(5.0, float(crossfade_ms))),
+        "output_path": output_path.strip(),
+    }
+    return await send_daw_rpc("recording.punch_and_roll", params, timeout=15.0)
 
 
 if __name__ == "__main__":

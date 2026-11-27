@@ -754,6 +754,63 @@ class McpWorkerTests(unittest.TestCase):
         self.assertIn("$Header[1] -ne 0x5A", text)
         self.assertIn("ZipFile]::OpenRead", text)
 
+    def test_analyze_vo_specs_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"passed": True, "lufs": -18.4, "measurement": "bs1770_k_weighted_gated"})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.analyze_vo_specs("/tmp/vo.wav", profile="ACX"))
+
+        self.assertTrue(res["passed"])
+        mock_rpc.assert_awaited_once_with(
+            "audio.analyze_vo_specs",
+            {"file_path": "/tmp/vo.wav", "track_index": 0, "clip_index": 0, "profile": "acx"},
+            timeout=15.0,
+        )
+
+    def test_export_abc_audition_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"output_file": "C:/tmp/abc.wav"})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.export_abc_audition(1, take_indices=[2, 0], gap_seconds=99.0, mono=False))
+
+        self.assertEqual(res["output_file"], "C:/tmp/abc.wav")
+        mock_rpc.assert_awaited_once_with(
+            "recording.export_abc_audition",
+            {"track_index": 1, "take_indices": [2, 0], "gap_seconds": 10.0, "mono": False, "output_path": ""},
+            timeout=15.0,
+        )
+
+    def test_punch_and_roll_splice_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"output_file": "C:/tmp/punch.wav"})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.punch_and_roll_splice(0, "a.wav", "b.wav", punch_seconds=2.5, crossfade_ms=1.0))
+
+        self.assertEqual(res["output_file"], "C:/tmp/punch.wav")
+        mock_rpc.assert_awaited_once_with(
+            "recording.punch_and_roll",
+            {"track_index": 0, "prior_wav": "a.wav", "new_take_wav": "b.wav",
+             "punch_seconds": 2.5, "crossfade_ms": 5.0, "output_path": ""},
+            timeout=15.0,
+        )
+
+    def test_wo021_plugin_and_analyzer_sources(self) -> None:
+        root = _MCP_DIR.parent
+        plugin = (root / "src" / "VocalChannelPlugin.h").read_text(encoding="utf-8")
+        for marker in ("tcs_vocal_channel", "Vocal Booth Strip", "currentLimiterGrDb",
+                       "deEssFreqHz", "breathFloorDb", "ceilingDb"):
+            self.assertIn(marker, plugin)
+        analyzer = (root / "src" / "VocalSpecAnalyzer.h").read_text(encoding="utf-8")
+        for marker in ("LoudnessMeter.h", "bs1770_k_weighted_gated", 'out.profile == "acx"',
+                       "Audition integrated loudness", "noiseFloorDb", "headSilenceSec", "tailSilenceSec"):
+            self.assertIn(marker, analyzer)
+        server = (root / "src" / "DawIpcServer.cpp").read_text(encoding="utf-8")
+        for method in ("audio.analyze_vo_specs", "recording.export_abc_audition", "recording.punch_and_roll"):
+            self.assertIn(method, server)
+
 
 if __name__ == "__main__":
     unittest.main()

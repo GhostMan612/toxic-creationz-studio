@@ -4,9 +4,11 @@
 #include "AutomationManager.h"
 #include "HardwareRackPlugins.h"
 #include "LoudnessMeter.h"
+#include "VocalSpecAnalyzer.h"
 #include "MixdownExporter.h"
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
+#include "VocalChannelPlugin.h"
 #include "WaveformEditorComponent.h"
 
 #include <algorithm>
@@ -388,6 +390,8 @@ juce::String DawIpcServer::enqueueAndWaitForMessageThread (const juce::String& r
             else if (reqMethod == "mixer.auto_balance_lufs" || reqMethod == "arrangement.duplicate_section")
                 timeoutMs = 10000;
             else if (reqMethod == "recording.comp_takes")
+                timeoutMs = 15000;
+            else if (reqMethod == "recording.punch_and_roll" || reqMethod == "recording.export_abc_audition")
                 timeoutMs = 15000;
         }
     }
@@ -1539,6 +1543,7 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         else if (rawType == "cv_envelope" || rawType == "cv_envelope_follower") xmlType = CvEnvelopeFollowerPlugin::xmlTypeName;
         else if (rawType == "cv_step" || rawType == "cv_step_modulator") xmlType = CvStepModulatorPlugin::xmlTypeName;
         else if (rawType == "sidechain_comp") xmlType = SidechainCompressorPlugin::xmlTypeName;
+        else if (rawType == "vocal_strip") xmlType = VocalChannelPlugin::xmlTypeName;
         else
             return makeErrorResponse (id, -32602, "Unsupported machine_type: " + rawType);
 
@@ -1612,6 +1617,7 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         else if (rawType == "tape")                      xmlType = AnalogTapePlugin::xmlTypeName;
         else if (rawType == "4osc")                      xmlType = te::FourOscPlugin::xmlTypeName;
         else if (rawType == "sidechain_comp")            xmlType = SidechainCompressorPlugin::xmlTypeName;
+        else if (rawType == "vocal_strip")               xmlType = VocalChannelPlugin::xmlTypeName;
         else
             return makeErrorResponse (id, -32602, "Unsupported module_type: " + rawType);
 
@@ -2303,6 +2309,164 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         }
 
         return makeErrorResponse (id, -32602, "Invalid comp action: " + action);
+    }
+
+    // WO-021: audio.analyze_vo_specs — BS.1770 / ACX / audition spec analyzer
+    if (method == "audio.analyze_vo_specs")
+    {
+        const juce::String profileRaw = params.getProperty ("profile", "acx").toString().trim().toLowerCase();
+        const juce::String profile = (profileRaw == "audition") ? "audition" : "acx";
+        juce::File wav;
+
+        const juce::String rawPath = params.getProperty ("file_path", "").toString().trim();
+        if (rawPath.isNotEmpty())
+        {
+            wav = juce::File::isAbsolutePath (rawPath) ? juce::File (rawPath)
+                                                       : juce::File::getCurrentWorkingDirectory().getChildFile (rawPath);
+        }
+        else if (edit != nullptr)
+        {
+            const int trackIdx = static_cast<int> (params.getProperty ("track_index", 0));
+            const int clipIdx = static_cast<int> (params.getProperty ("clip_index", 0));
+            auto tracks = te::getAudioTracks (*edit);
+            if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+                return makeErrorResponse (id, -32602, "Invalid track_index");
+
+            int seen = 0;
+            for (auto* c : tracks[trackIdx]->getClips())
+            {
+                if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+                {
+                    if (seen++ == clipIdx)
+                    {
+                        wav = wc->getSourceFileReference().getFile();
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (! wav.existsAsFile())
+            return makeErrorResponse (id, -32602, "Missing or unreadable file_path / clip for spec analysis");
+
+        const auto analysis = tcs::vo::VocalSpecAnalyzer::analyzeWavFile (wav, profile);
+        juce::Array<juce::var> issues;
+        for (const auto& issue : analysis.issues)
+            issues.add (issue);
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("passed", analysis.passed);
+        res->setProperty ("profile", analysis.profile);
+        res->setProperty ("measurement", analysis.measurement);
+        res->setProperty ("file_path", wav.getFullPathName());
+        res->setProperty ("lufs", analysis.lufs);
+        res->setProperty ("rms_db", analysis.rmsDb);
+        res->setProperty ("peak_db", analysis.peakDb);
+        res->setProperty ("noise_floor_db", analysis.noiseFloorDb);
+        res->setProperty ("head_silence_sec", analysis.headSilenceSec);
+        res->setProperty ("tail_silence_sec", analysis.tailSilenceSec);
+        res->setProperty ("sample_rate", analysis.sampleRate);
+        res->setProperty ("num_channels", analysis.numChannels);
+        res->setProperty ("duration_sec", analysis.durationSec);
+        res->setProperty ("issues", juce::var (issues));
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-021: recording.export_abc_audition — concatenate tagged takes with gaps
+    if (method == "recording.export_abc_audition")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+        const int trackIdx = static_cast<int> (params.getProperty ("track_index", 0));
+        auto tracks = te::getAudioTracks (*edit);
+        if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "Invalid track_index");
+
+        std::vector<int> takeIndices;
+        if (const auto* arr = params.getProperty ("take_indices", juce::var()).getArray())
+            for (const auto& v : *arr)
+                takeIndices.push_back (static_cast<int> (v));
+        if (takeIndices.empty())
+            takeIndices = { 0, 1, 2 };
+
+        const double gapSeconds = juce::jlimit (0.0, 10.0,
+            static_cast<double> (params.getProperty ("gap_seconds", 1.5)));
+        const bool mono = static_cast<bool> (params.getProperty ("mono", true));
+
+        juce::File outWav;
+        const juce::String rawOut = params.getProperty ("output_path", "").toString().trim();
+        if (rawOut.isNotEmpty())
+            outWav = juce::File::isAbsolutePath (rawOut) ? juce::File (rawOut)
+                                                        : juce::File::getCurrentWorkingDirectory().getChildFile (rawOut);
+        else
+        {
+            const juce::File dir = getTakesDirectoryCallback ? getTakesDirectoryCallback()
+                : juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("tcs_abc_audition");
+            outWav = dir.getNonexistentChildFile ("ABC_Audition", ".wav", false);
+        }
+
+        if (! RecordingManager::exportAbcAuditionString (*tracks[trackIdx], takeIndices, gapSeconds, outWav, mono))
+            return makeErrorResponse (id, -32603, "Could not export A/B/C audition string");
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("output_file", outWav.getFullPathName());
+        res->setProperty ("track_index", trackIdx);
+        res->setProperty ("gap_seconds", gapSeconds);
+        res->setProperty ("mono", mono);
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-021: recording.punch_and_roll — stitch prior take into a new take
+    if (method == "recording.punch_and_roll")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+        const int trackIdx = static_cast<int> (params.getProperty ("track_index", 0));
+        auto tracks = te::getAudioTracks (*edit);
+        if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "Invalid track_index");
+
+        const auto resolveFile = [] (const juce::String& raw) -> juce::File
+        {
+            const auto trimmed = raw.trim();
+            return juce::File::isAbsolutePath (trimmed) ? juce::File (trimmed)
+                                                        : juce::File::getCurrentWorkingDirectory().getChildFile (trimmed);
+        };
+        const juce::File priorWav = resolveFile (params.getProperty ("prior_wav", "").toString());
+        const juce::File newWav = resolveFile (params.getProperty ("new_take_wav", "").toString());
+        if (! priorWav.existsAsFile() || ! newWav.existsAsFile())
+            return makeErrorResponse (id, -32602, "prior_wav / new_take_wav must exist");
+
+        const double punchSeconds = static_cast<double> (params.getProperty ("punch_seconds", 0.0));
+        const double xfadeMs = juce::jlimit (5.0, 100.0,
+            static_cast<double> (params.getProperty ("crossfade_ms", 15.0)));
+        RecordingManager::configurePunchAndRoll (3.0, xfadeMs);
+
+        juce::File outWav;
+        const juce::String rawOut = params.getProperty ("output_path", "").toString().trim();
+        if (rawOut.isNotEmpty())
+            outWav = resolveFile (rawOut);
+        else
+        {
+            const juce::File dir = getTakesDirectoryCallback ? getTakesDirectoryCallback()
+                : juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("tcs_punch_roll");
+            outWav = dir.getNonexistentChildFile ("PunchRoll", ".wav", false);
+        }
+
+        const juce::File result = RecordingManager::executePunchAndRollSplice (
+            *edit, *tracks[trackIdx], priorWav, newWav, punchSeconds, xfadeMs, outWav);
+        if (! result.existsAsFile())
+            return makeErrorResponse (id, -32603, "Punch-and-roll splice failed");
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("Punch-and-roll splice at " + juce::String (punchSeconds, 2) + " s");
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("output_file", result.getFullPathName());
+        res->setProperty ("track_index", trackIdx);
+        res->setProperty ("punch_seconds", punchSeconds);
+        res->setProperty ("crossfade_ms", xfadeMs);
+        return makeResultResponse (id, juce::var (res));
     }
 
     return makeErrorResponse (id, -32601, "Method not found: " + method);

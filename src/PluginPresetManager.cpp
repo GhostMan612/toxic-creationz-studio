@@ -265,6 +265,10 @@ juce::StringArray PluginPresetManager::getFactoryPresetNames (te::Plugin& plugin
     if (dynamic_cast<SidechainCompressorPlugin*> (&plugin) != nullptr)
         return { "EDM Pump", "Vocal Duck", "Glue Bus" };
 
+    if (dynamic_cast<VocalChannelPlugin*> (&plugin) != nullptr)
+        return { "ACX Audiobook", "Anime / Cartoon Lead", "Commercial Bright",
+                 "Deep Trailer / Villain", "Closet Booth Cleanup" };
+
     if (dynamic_cast<te::ReverbPlugin*> (&plugin) != nullptr)
         return { "Tight Room", "Cyber Hall", "Ambient Wash" };
 
@@ -790,6 +794,71 @@ bool PluginPresetManager::applyFactoryPreset (te::Plugin& plugin, const juce::St
             setParamIfPresent (*comp, "releaseMs", 180.0f);
             setParamIfPresent (*comp, "makeupDb", 1.5f);
             setParamIfPresent (*comp, "mix", 0.75f);
+            return true;
+        }
+        return false;
+    }
+
+    if (auto* vocal = dynamic_cast<VocalChannelPlugin*> (&plugin))
+    {
+        const auto validNames = getFactoryPresetNames (plugin);
+        if (! validNames.contains (trimmed))
+            return false;
+
+        um.beginNewTransaction ("Load Preset: " + trimmed);
+        if (trimmed == "ACX Audiobook")
+        {
+            setParamIfPresent (*vocal, "hpfHz", 80.0f);
+            setParamIfPresent (*vocal, "gateThresholdDb", -52.0f);
+            setParamIfPresent (*vocal, "breathFloorDb", -14.0f);
+            setParamIfPresent (*vocal, "deEssFreqHz", 6800.0f);
+            setParamIfPresent (*vocal, "deEssAmount", 0.32f);
+            setParamIfPresent (*vocal, "ceilingDb", -3.0f);
+            setParamIfPresent (*vocal, "outputGainDb", 2.0f);
+            return true;
+        }
+        if (trimmed == "Anime / Cartoon Lead")
+        {
+            setParamIfPresent (*vocal, "hpfHz", 95.0f);
+            setParamIfPresent (*vocal, "gateThresholdDb", -44.0f);
+            setParamIfPresent (*vocal, "breathFloorDb", -8.0f);
+            setParamIfPresent (*vocal, "deEssFreqHz", 7600.0f);
+            setParamIfPresent (*vocal, "deEssAmount", 0.50f);
+            setParamIfPresent (*vocal, "ceilingDb", -3.0f);
+            setParamIfPresent (*vocal, "outputGainDb", 5.0f);
+            return true;
+        }
+        if (trimmed == "Commercial Bright")
+        {
+            setParamIfPresent (*vocal, "hpfHz", 110.0f);
+            setParamIfPresent (*vocal, "gateThresholdDb", -48.0f);
+            setParamIfPresent (*vocal, "breathFloorDb", -10.0f);
+            setParamIfPresent (*vocal, "deEssFreqHz", 8200.0f);
+            setParamIfPresent (*vocal, "deEssAmount", 0.42f);
+            setParamIfPresent (*vocal, "ceilingDb", -1.0f);
+            setParamIfPresent (*vocal, "outputGainDb", 3.0f);
+            return true;
+        }
+        if (trimmed == "Deep Trailer / Villain")
+        {
+            setParamIfPresent (*vocal, "hpfHz", 32.0f);
+            setParamIfPresent (*vocal, "gateThresholdDb", -60.0f);
+            setParamIfPresent (*vocal, "breathFloorDb", -18.0f);
+            setParamIfPresent (*vocal, "deEssFreqHz", 5200.0f);
+            setParamIfPresent (*vocal, "deEssAmount", 0.25f);
+            setParamIfPresent (*vocal, "ceilingDb", -3.0f);
+            setParamIfPresent (*vocal, "outputGainDb", -2.0f);
+            return true;
+        }
+        if (trimmed == "Closet Booth Cleanup")
+        {
+            setParamIfPresent (*vocal, "hpfHz", 150.0f);
+            setParamIfPresent (*vocal, "gateThresholdDb", -38.0f);
+            setParamIfPresent (*vocal, "breathFloorDb", -20.0f);
+            setParamIfPresent (*vocal, "deEssFreqHz", 6800.0f);
+            setParamIfPresent (*vocal, "deEssAmount", 0.55f);
+            setParamIfPresent (*vocal, "ceilingDb", -3.0f);
+            setParamIfPresent (*vocal, "outputGainDb", 6.0f);
             return true;
         }
         return false;

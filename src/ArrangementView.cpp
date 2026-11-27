@@ -625,7 +625,42 @@ void ArrangementView::mouseDown (const juce::MouseEvent& e)
             const auto takes = RecordingManager::getTrackTakes (*track);
             if (takes.size() >= 2)
             {
-                if (e.mods.isShiftDown())
+                if (e.mods.isRightButtonDown())
+                {
+                    juce::PopupMenu menu;
+                    menu.addSectionHeader ("Punch & Roll");
+                    menu.addItem (1, "3 s pre-roll / 15 ms crossfade");
+                    menu.addItem (2, "1 s pre-roll / 5 ms crossfade");
+                    menu.addItem (3, "10 s pre-roll / 100 ms crossfade");
+                    menu.addSeparator();
+                    menu.addSectionHeader ("Slate Active Take");
+                    menu.addItem (10, "Take A - Intense");
+                    menu.addItem (11, "Take B - Dry");
+                    menu.addItem (12, "Take C - Alternate");
+
+                    juce::Component::SafePointer<ArrangementView> safeThis (this);
+                    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
+                        [safeThis, track, takes] (int chosenId)
+                    {
+                        if (safeThis == nullptr || safeThis->edit == nullptr || track == nullptr)
+                            return;
+
+                        if (chosenId == 1)      RecordingManager::configurePunchAndRoll (3.0, 15.0);
+                        else if (chosenId == 2) RecordingManager::configurePunchAndRoll (1.0, 5.0);
+                        else if (chosenId == 3) RecordingManager::configurePunchAndRoll (10.0, 100.0);
+                        else if (chosenId >= 10 && chosenId <= 12)
+                        {
+                            int active = 0;
+                            for (int t = 0; t < takes.size(); ++t)
+                                if (takes[t].active)
+                                    active = t;
+                            const char* labels[] { "Take A - Intense", "Take B - Dry", "Take C - Alternate" };
+                            RecordingManager::tagTakeSlate (*safeThis->edit, *track, active, labels[chosenId - 10]);
+                        }
+                        safeThis->repaint();
+                    });
+                }
+                else if (e.mods.isShiftDown())
                 {
                     RecordingManager::flattenCompToClip (
                         *edit, *track, takes[0].startBeat, takes[0].endBeat, 10.0);

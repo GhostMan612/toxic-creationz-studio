@@ -4,6 +4,7 @@
 #include "HardwareRackPlugins.h"
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
+#include "VocalChannelPlugin.h"
 
 //==============================================================================
 // ChannelStrip
@@ -423,6 +424,7 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
     menu.addItem (17, "12-Bit Vintage Sampler");
     menu.addItem (18, "Analog Tape Deck");
     menu.addItem (19, "Sidechain Compressor");
+    menu.addItem (20, "Vocal Booth Strip");
     menu.addSeparator();
     menu.addSectionHeader ("Built-In Effects");
     menu.addItem (2, "4-Band Equaliser (EQ)");
@@ -514,6 +516,12 @@ void MixerComponent::ChannelStrip::showAddPluginMenu()
             safeThis->edit.getUndoManager().beginNewTransaction ("Add Sidechain Compressor");
             if (auto comp = safeThis->edit.getPluginCache().createNewPlugin (SidechainCompressorPlugin::xmlTypeName, {}))
                 tr->pluginList.insertPlugin (comp, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
+        }
+        else if (chosenId == 20)
+        {
+            safeThis->edit.getUndoManager().beginNewTransaction ("Add Vocal Booth Strip");
+            if (auto vocal = safeThis->edit.getPluginCache().createNewPlugin (VocalChannelPlugin::xmlTypeName, {}))
+                tr->pluginList.insertPlugin (vocal, MixerComponent::getInsertIndexForNewPlugin (*tr), nullptr);
         }
         else if (chosenId >= 16 && chosenId <= 18)
         {

@@ -6,6 +6,12 @@
 - Merged (PRs #13-#16): cross-platform CI repairs — Linux XInput2 headers, `macos-15`
   runner label, Linux core-isolation build fixes, and `libatomic` link. `main` @ `3ef620c`
   is green on both Windows and cross-platform workflows.
+- Phase 7 is active on `dev/v1.1-vas` (branched from `bddfb78` after the `v1.0.0` tag).
+  WO-021 (Voice Acting Studio Suite) implemented directly on that branch with no PR
+  per the work order: `VocalChannelPlugin` (4-stage HPF/gate/de-esser/limiter +
+  5 VO presets), punch-and-roll splice, slate-tagged takes, A/B/C audition export,
+  `VocalSpecAnalyzer` (BS.1770 + ACX/audition checks), 3 RPCs + 3 MCP tools,
+  and 4 new Python tests (36/36 total).
 - Full repo sweep / reconciliation (local on `fix/repo-sweep-reconciliation`): verified
   WO-001..WO-020 against source; restored the two unimplemented briefing CV modules
   (`CvEnvelopeFollowerPlugin`, `CvStepModulatorPlugin`), fixed the unreachable Android

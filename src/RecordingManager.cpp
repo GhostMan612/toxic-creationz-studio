@@ -447,6 +447,7 @@ namespace
     const juce::Identifier kStartProp { "startBeat" };
     const juce::Identifier kEndProp   { "endBeat" };
     const juce::Identifier kActiveProp { "activeTake" };
+    const juce::Identifier kSlateProp  { "slate" };
 
     juce::File takeFileDirForLanes (const juce::ValueTree& lanes)
     {
@@ -494,6 +495,7 @@ juce::Array<RecordingManager::TakeInfo> RecordingManager::getTrackTakes (const t
             TakeInfo info;
             info.file = take.getProperty (kFileProp).toString();
             info.name = take.getProperty (kNameProp).toString();
+            info.slate = take.getProperty (kSlateProp, "").toString();
             info.startBeat = static_cast<double> (take.getProperty (kStartProp, 0.0));
             info.endBeat = static_cast<double> (take.getProperty (kEndProp, 0.0));
             info.active = (takeIndex == active);
@@ -505,14 +507,16 @@ juce::Array<RecordingManager::TakeInfo> RecordingManager::getTrackTakes (const t
 }
 
 bool RecordingManager::addRecordedTake (te::Edit& edit, te::AudioTrack& track,
-                                        const juce::File& wavFile, double startBeat, double endBeat)
+                                        const juce::File& wavFile, double startBeat, double endBeat,
+                                        bool startTransaction)
 {
     if (! wavFile.existsAsFile() || ! std::isfinite (startBeat) || ! std::isfinite (endBeat)
         || endBeat <= startBeat)
         return false;
 
     auto& um = edit.getUndoManager();
-    um.beginNewTransaction ("Add Recorded Take");
+    if (startTransaction)
+        um.beginNewTransaction ("Add Recorded Take");
 
     auto lanes = track.state.getChildWithName (kLanesTree);
     if (! lanes.isValid())
@@ -697,4 +701,206 @@ juce::File RecordingManager::flattenCompToClip (te::Edit& edit, te::AudioTrack& 
         return compFile;
     }
     return {};
+}
+
+void RecordingManager::configurePunchAndRoll (double preRollSeconds, double crossfadeMs)
+{
+    punchPreRollSeconds = juce::jlimit (1.0, 10.0, preRollSeconds);
+    punchCrossfadeMs = juce::jlimit (5.0, 100.0, crossfadeMs);
+}
+
+juce::File RecordingManager::executePunchAndRollSplice (te::Edit& edit, te::AudioTrack& track,
+                                                        const juce::File& priorWav, const juce::File& newTakeWav,
+                                                        double punchTimeSeconds, double crossfadeMs,
+                                                        const juce::File& outWav)
+{
+    if (! priorWav.existsAsFile() || ! newTakeWav.existsAsFile()
+        || ! std::isfinite (punchTimeSeconds) || punchTimeSeconds <= 0.0
+        || ! std::isfinite (crossfadeMs) || crossfadeMs < 0.0)
+        return {};
+
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> priorReader (fm.createReaderFor (priorWav));
+    std::unique_ptr<juce::AudioFormatReader> newReader (fm.createReaderFor (newTakeWav));
+    if (priorReader == nullptr || newReader == nullptr
+        || priorReader->sampleRate <= 0.0 || newReader->lengthInSamples <= 0)
+        return {};
+
+    const double sampleRate = priorReader->sampleRate;
+    const int channels = static_cast<int> (std::min<unsigned int> (
+        2u, std::max<unsigned int> (1u, std::max (priorReader->numChannels, newReader->numChannels))));
+    const int punchSamples = static_cast<int> (std::min<juce::int64> (
+        priorReader->lengthInSamples, static_cast<juce::int64> (std::lround (punchTimeSeconds * sampleRate))));
+    const int totalSamples = static_cast<int> (std::min<juce::int64> (
+        newReader->lengthInSamples, static_cast<juce::int64> (60.0 * sampleRate)));
+    if (punchSamples <= 0 || totalSamples <= 0)
+        return {};
+
+    const int xfadeSamples = juce::jlimit (0, punchSamples - 1,
+        static_cast<int> (std::lround (crossfadeMs * 0.001 * sampleRate)));
+
+    juce::AudioBuffer<float> priorBuffer (channels, punchSamples);
+    juce::AudioBuffer<float> newBuffer (channels, totalSamples);
+    priorBuffer.clear();
+    newBuffer.clear();
+    priorReader->read (&priorBuffer, 0, punchSamples, 0, true, channels > 1);
+    newReader->read (&newBuffer, 0, totalSamples, 0, true, channels > 1);
+
+    juce::AudioBuffer<float> stitched (channels, totalSamples);
+    stitched.clear();
+    const int fadeStart = punchSamples - xfadeSamples;
+    for (int ch = 0; ch < channels; ++ch)
+    {
+        for (int s = 0; s < punchSamples; ++s)
+            stitched.setSample (ch, s, priorBuffer.getSample (ch, s));
+        for (int s = fadeStart; s < punchSamples; ++s)
+        {
+            const float t = xfadeSamples > 0
+                ? static_cast<float> (s - fadeStart) / static_cast<float> (xfadeSamples) : 1.0f;
+            const float fadeOut = std::cos (t * juce::MathConstants<float>::halfPi);
+            const float fadeIn  = std::sin (t * juce::MathConstants<float>::halfPi);
+            stitched.setSample (ch, s, priorBuffer.getSample (ch, s) * fadeOut
+                                        + newBuffer.getSample (ch, s) * fadeIn);
+        }
+        for (int s = punchSamples; s < totalSamples; ++s)
+            stitched.setSample (ch, s, newBuffer.getSample (ch, s));
+    }
+
+    outWav.getParentDirectory().createDirectory();
+    {
+        auto fs = std::make_unique<juce::FileOutputStream> (outWav);
+        if (! fs->openedOk())
+            return {};
+        fs->setPosition (0);
+        fs->truncate();
+        std::unique_ptr<juce::OutputStream> os (fs.release());
+        juce::WavAudioFormat wavFormat;
+        const auto options = juce::AudioFormatWriterOptions{}
+                                 .withSampleRate (sampleRate).withNumChannels (channels).withBitsPerSample (16);
+        std::unique_ptr<juce::AudioFormatWriter> writer (wavFormat.createWriterFor (os, options));
+        if (writer == nullptr || ! writer->writeFromAudioSampleBuffer (stitched, 0, totalSamples))
+            return {};
+    }
+
+    auto& um = edit.getUndoManager();
+    um.beginNewTransaction ("Punch and Roll Splice");
+    const double durationSec = static_cast<double> (totalSamples) / sampleRate;
+    const double endBeat = edit.tempoSequence
+        .toBeats (tracktion::TimePosition::fromSeconds (durationSec)).inBeats();
+    addRecordedTake (edit, track, outWav, 0.0, endBeat, false);
+
+    const tracktion::TimeRange clipRange {
+        tracktion::TimePosition::fromSeconds (0.0),
+        tracktion::TimePosition::fromSeconds (durationSec)
+    };
+    const te::ClipPosition clipPos { clipRange, tracktion::TimeDuration::fromSeconds (0.0) };
+    if (auto clip = track.insertWaveClip ("Punch Splice", outWav, clipPos, false))
+        clip->getSourceFileReference().setToFile (
+            outWav, te::SourceFileReference::PathStyle::alwaysAbsolute, false);
+
+    return outWav;
+}
+
+bool RecordingManager::tagTakeSlate (te::Edit& edit, te::AudioTrack& track,
+                                     int takeIndex, const juce::String& slate)
+{
+    auto lanes = track.state.getChildWithName (kLanesTree);
+    if (! lanes.isValid() || takeIndex < 0)
+        return false;
+
+    int flat = 0;
+    for (auto lane : lanes)
+    {
+        if (lane.getType() != kLaneTree)
+            continue;
+        for (auto take : lane)
+        {
+            if (take.getType() != kTakeTree)
+                continue;
+            if (flat == takeIndex)
+            {
+                auto& um = edit.getUndoManager();
+                um.beginNewTransaction ("Tag Take Slate");
+                take.setProperty (kSlateProp, slate.trim(), &um);
+                return true;
+            }
+            ++flat;
+        }
+    }
+    return false;
+}
+
+bool RecordingManager::exportAbcAuditionString (te::AudioTrack& track,
+                                                const std::vector<int>& takeIndices,
+                                                double gapSeconds, const juce::File& outWav,
+                                                bool monoMixdown)
+{
+    if (takeIndices.empty() || ! std::isfinite (gapSeconds) || gapSeconds < 0.0)
+        return false;
+
+    const auto allTakes = getTrackTakes (track);
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+
+    std::vector<std::unique_ptr<juce::AudioFormatReader>> readers;
+    juce::int64 totalSamples = 0;
+    const double sampleRate = 44100.0;
+    const int gapSamples = static_cast<int> (std::lround (gapSeconds * sampleRate));
+
+    for (int idx : takeIndices)
+    {
+        if (! juce::isPositiveAndBelow (idx, allTakes.size()))
+            return false;
+        const juce::File file (allTakes[idx].file);
+        if (! file.existsAsFile())
+            return false;
+        readers.push_back (std::unique_ptr<juce::AudioFormatReader> (fm.createReaderFor (file)));
+        if (readers.back() == nullptr || readers.back()->lengthInSamples <= 0)
+            return false;
+        totalSamples += readers.back()->lengthInSamples;
+    }
+    totalSamples += static_cast<juce::int64> (gapSamples) * static_cast<juce::int64> (readers.size() - 1);
+    if (totalSamples <= 0 || totalSamples > static_cast<juce::int64> (10.0 * sampleRate))
+        return false;
+
+    const int channels = monoMixdown ? 1 : 2;
+    juce::AudioBuffer<float> output (channels, static_cast<int> (totalSamples));
+    output.clear();
+
+    int dest = 0;
+    for (size_t i = 0; i < readers.size(); ++i)
+    {
+        auto* reader = readers[i].get();
+        const int len = static_cast<int> (reader->lengthInSamples);
+        juce::AudioBuffer<float> takeBuffer (2, len);
+        takeBuffer.clear();
+        reader->read (&takeBuffer, 0, len, 0, true, reader->numChannels > 1);
+
+        for (int s = 0; s < len; ++s)
+        {
+            const float l = takeBuffer.getSample (0, s);
+            const float r = reader->numChannels > 1 ? takeBuffer.getSample (1, s) : l;
+            output.setSample (0, dest + s, monoMixdown ? 0.5f * (l + r) : l);
+            if (! monoMixdown)
+                output.setSample (1, dest + s, r);
+        }
+        dest += len + gapSamples;
+    }
+
+    outWav.getParentDirectory().createDirectory();
+    auto fs = std::make_unique<juce::FileOutputStream> (outWav);
+    if (! fs->openedOk())
+        return false;
+    fs->setPosition (0);
+    fs->truncate();
+    std::unique_ptr<juce::OutputStream> os (fs.release());
+    juce::WavAudioFormat wavFormat;
+    const auto options = juce::AudioFormatWriterOptions{}
+                             .withSampleRate (sampleRate).withNumChannels (channels).withBitsPerSample (16);
+    std::unique_ptr<juce::AudioFormatWriter> writer (wavFormat.createWriterFor (os, options));
+    if (writer == nullptr)
+        return false;
+
+    return writer->writeFromAudioSampleBuffer (output, 0, output.getNumSamples());
 }
