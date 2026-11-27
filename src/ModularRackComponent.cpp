@@ -1,5 +1,7 @@
 #include "ModularRackComponent.h"
 
+#include <array>
+#include <cmath>
 namespace
 {
     const juce::Colour rackBackground  (0xff1e2128);
@@ -19,6 +21,49 @@ namespace
     constexpr int pinSize    = 8;
     constexpr int minCanvasW = 760;
     constexpr int minCanvasH = 520;
+
+    struct CableGeometry
+    {
+        juce::Path path;
+        std::array<juce::Point<float>, 17> samples {};
+    };
+
+    CableGeometry buildCable (juce::Point<float> a, juce::Point<float> b)
+    {
+        CableGeometry out;
+        const float dx = b.x - a.x;
+        const float sag = juce::jlimit (14.0f, 70.0f, std::abs (dx) * 0.18f + 14.0f);
+        const auto c1 = juce::Point<float> (a.x + dx * 0.28f, a.y + sag);
+        const auto c2 = juce::Point<float> (a.x + dx * 0.72f, b.y + sag);
+        out.path.startNewSubPath (a);
+        out.path.cubicTo (c1, c2, b);
+
+        for (int i = 0; i < 17; ++i)
+        {
+            const float t = static_cast<float> (i) / 16.0f;
+            const float u = 1.0f - t;
+            out.samples[i] = a * (u * u * u) + c1 * (3.0f * u * u * t)
+                           + c2 * (3.0f * u * t * t) + b * (t * t * t);
+        }
+        return out;
+    }
+
+    bool cableContains (const CableGeometry& cable, juce::Point<float> point, float tolerance)
+    {
+        for (const auto& sample : cable.samples)
+            if (sample.getDistanceFrom (point) <= tolerance)
+                return true;
+        return false;
+    }
+
+    juce::Colour cableColour (int srcPin, int dstPin)
+    {
+        if (srcPin == 0 && dstPin == 0)
+            return juce::Colour (0xff38bdf8); // MIDI = cyan
+        if (srcPin >= 2 || dstPin >= 2)
+            return juce::Colour (0xffffb020); // CV = amber
+        return juce::Colour (0xff2dff8f);     // Audio = emerald
+    }
 }
 
 ModularRackComponent::ModularRackComponent (te::Engine& engineRef)
@@ -474,6 +519,7 @@ void ModularRackComponent::paintOverChildren (juce::Graphics& g)
 
     const auto plugins = selectedRack->getPlugins();
 
+    int cableIndex = 0;
     for (auto* conn : selectedRack->getConnections())
     {
         const auto srcID  = conn->sourceID.get();
@@ -495,8 +541,26 @@ void ModularRackComponent::paintOverChildren (juce::Graphics& g)
             continue;
 
         const bool isMidiWire = (conn->sourcePin.get() == 0 && conn->destPin.get() == 0);
-        g.setColour (isMidiWire ? midiPinColour : wireColour);
-        g.drawLine (juce::Line<float> (srcPin.getCentre(), dstPin.getCentre()), 2.0f);
+        juce::ignoreUnused (isMidiWire);
+        const auto geometry = buildCable (srcPin.getCentre(), dstPin.getCentre());
+        const bool hovered = cableIndex == hoveredCableIndex;
+        const auto colour = cableColour (conn->sourcePin.get(), conn->destPin.get());
+
+        g.setColour (juce::Colours::black.withAlpha (0.35f));
+        g.strokePath (geometry.path,
+                      juce::PathStrokeType (hovered ? 7.0f : 5.0f, juce::PathStrokeType::curved),
+                      juce::AffineTransform::translation (0.0f, 2.0f));
+
+        if (hovered)
+        {
+            g.setColour (colour.withAlpha (0.30f));
+            g.strokePath (geometry.path, juce::PathStrokeType (10.0f, juce::PathStrokeType::curved));
+        }
+
+        g.setColour (colour);
+        g.strokePath (geometry.path, juce::PathStrokeType (hovered ? 4.0f : 2.6f,
+                                                           juce::PathStrokeType::curved));
+        ++cableIndex;
     }
 
     if (awaitingSecondEndpoint && firstPinIndex >= 0)
@@ -516,9 +580,74 @@ void ModularRackComponent::paintOverChildren (juce::Graphics& g)
     }
 }
 
+int ModularRackComponent::findCableIndexAt (juce::Point<float> point) const
+{
+    if (selectedRack == nullptr)
+        return -1;
+
+    const auto plugins = selectedRack->getPlugins();
+    int cableIndex = 0;
+    for (auto* conn : selectedRack->getConnections())
+    {
+        const auto srcID = conn->sourceID.get();
+        const auto dstID = conn->destID.get();
+        const int srcIdx = srcID.isValid() ? plugins.indexOf (selectedRack->getPluginForID (srcID)) : -1;
+        const int dstIdx = dstID.isValid() ? plugins.indexOf (selectedRack->getPluginForID (dstID)) : -1;
+        if ((srcID.isValid() && srcIdx < 0) || (dstID.isValid() && dstIdx < 0))
+            continue;
+
+        const auto srcPin = srcID.isValid()
+                                ? getPinRectInRack (srcIdx, conn->sourcePin.get(), false)
+                                : getRackIoPinRectInRack (conn->sourcePin.get(), true);
+        const auto dstPin = dstID.isValid()
+                                ? getPinRectInRack (dstIdx, conn->destPin.get(), true)
+                                : getRackIoPinRectInRack (conn->destPin.get(), false);
+        if (! srcPin.isEmpty() && ! dstPin.isEmpty()
+            && cableContains (buildCable (srcPin.getCentre(), dstPin.getCentre()), point, 9.0f))
+            return cableIndex;
+        ++cableIndex;
+    }
+    return -1;
+}
+
+void ModularRackComponent::mouseMove (const juce::MouseEvent& e)
+{
+    const int found = findCableIndexAt (e.getEventRelativeTo (this).position);
+    if (found != hoveredCableIndex)
+    {
+        hoveredCableIndex = found;
+        repaint();
+    }
+}
+
+void ModularRackComponent::mouseExit (const juce::MouseEvent&)
+{
+    if (hoveredCableIndex != -1)
+    {
+        hoveredCableIndex = -1;
+        repaint();
+    }
+}
+
 void ModularRackComponent::mouseDown (const juce::MouseEvent& e)
 {
-    if (e.eventComponent != &nodesContainer || ! connectMode || selectedRack == nullptr)
+    if (selectedRack == nullptr)
+        return;
+
+    if (e.mods.isRightButtonDown())
+    {
+        const int found = findCableIndexAt (e.getEventRelativeTo (this).position);
+        const auto connectionsNow = selectedRack->getConnections();
+        if (found >= 0 && found < connectionsNow.size())
+        {
+            auto* conn = connectionsNow[found];
+            removeConnection (conn->sourceID.get(), conn->sourcePin.get(),
+                              conn->destID.get(), conn->destPin.get());
+        }
+        return;
+    }
+
+    if (e.eventComponent != &nodesContainer || ! connectMode)
         return;
 
     const auto rel = e.getEventRelativeTo (this).position;
@@ -1000,6 +1129,17 @@ void ModularRackComponent::NodeView::paint (juce::Graphics& g)
     g.fillAll (bgCol);
     g.setColour (juce::Colours::black.withAlpha (0.25f));
     g.drawRect (getLocalBounds().toFloat(), 1.0f);
+
+    // Rack-ear screw heads on every module card.
+    for (int sx = 0; sx < 2; ++sx)
+    {
+        const auto screw = juce::Rectangle<float> (4.0f + sx * (getWidth() - 12.0f), 4.0f, 5.0f, 5.0f);
+        g.setColour (juce::Colour (0xff64748b));
+        g.fillEllipse (screw);
+        g.setColour (juce::Colour (0xff1a1e24));
+        g.drawLine (screw.getX() + 1.0f, screw.getCentreY(),
+                    screw.getRight() - 1.0f, screw.getCentreY(), 1.0f);
+    }
 
     g.setColour (juce::Colours::white);
     g.setFont (juce::Font (juce::FontOptions (12.5f, juce::Font::bold)));

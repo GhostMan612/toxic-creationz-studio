@@ -154,6 +154,8 @@ if(TCS_BUILD_DESKTOP_APP)
         src/RecordingManager.cpp
         src/StudioLookAndFeel.h
         src/StudioPluginWindow.h
+        src/HardwarePluginEditors.h
+        src/HardwarePluginEditors.cpp
         src/PluginPresetManager.h
         src/PluginPresetManager.cpp
         src/AutomationManager.h

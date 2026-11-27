@@ -4,6 +4,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <tracktion_engine/tracktion_engine.h>
 
+#include "HardwarePluginEditors.h"
 #include "PluginPresetManager.h"
 
 #include <algorithm>
@@ -732,7 +733,9 @@ public:
     void recreateEditor()
     {
         setEditor (nullptr);
-        auto ed = plugin.createEditor();
+        auto ed = createCustomEditorForPlugin (plugin);
+        if (ed == nullptr)
+            ed = plugin.createEditor();
 
         if (ed == nullptr)
             ed = std::make_unique<GenericTracktionPluginEditor> (plugin);

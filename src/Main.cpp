@@ -2,6 +2,7 @@
 #include "AudioToMidiTranscriber.h"
 #include "CoreIsolationCheck.h"
 #include "AdrCueGenerator.h"
+#include "HardwarePluginEditors.h"
 #include "HardwareRackPlugins.h"
 #include "LoudnessMeter.h"
 #include "PlatformConfig.h"
@@ -4035,6 +4036,70 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-022 teleprompter, ADR cue, demo-reel layout & Character FX PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-022B: boutique hardware faceplates & workspace suite switcher
+    //===========================================================================
+    {
+        const char* faceplateTypes[] {
+            Tr808DrumPlugin::xmlTypeName,
+            VintageSamplerPlugin::xmlTypeName,
+            AnalogTapePlugin::xmlTypeName,
+            SidechainCompressorPlugin::xmlTypeName,
+            VocalChannelPlugin::xmlTypeName
+        };
+
+        for (const char* typeName : faceplateTypes)
+        {
+            auto pluginPtr = app.edit->getPluginCache().createNewPlugin (typeName, {});
+            if (pluginPtr == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-022B could not instantiate " << typeName << std::endl;
+                return 1;
+            }
+
+            auto editor = createCustomEditorForPlugin (*pluginPtr);
+            if (editor == nullptr)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-022B no bespoke editor for " << typeName << std::endl;
+                return 1;
+            }
+
+            editor->setSize (640, 320);
+            editor->resized();
+            editor.reset();
+            pluginPtr = nullptr;
+        }
+
+        app.setSize (1280, 840);
+        app.resized();
+
+        app.setWorkspaceMode (MainComponent::WorkspaceMode::modularRack);
+        if (app.getWorkspaceMode() != MainComponent::WorkspaceMode::modularRack
+            || ! app.modularRackComponent.isVisible())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022B Modular Rack workspace did not activate" << std::endl;
+            return 1;
+        }
+
+        app.setWorkspaceMode (MainComponent::WorkspaceMode::voBooth);
+        if (app.getWorkspaceMode() != MainComponent::WorkspaceMode::voBooth
+            || ! app.scriptPrompter.isVisible())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022B VO Booth workspace did not activate" << std::endl;
+            return 1;
+        }
+
+        app.setWorkspaceMode (MainComponent::WorkspaceMode::studio);
+        if (app.getWorkspaceMode() != MainComponent::WorkspaceMode::studio
+            || ! app.mixerComponent.isVisible())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-022B Studio workspace did not restore" << std::endl;
+            return 1;
+        }
+
+        std::cout << "[SMOKE_TEST] WO-022B bespoke faceplates & workspace suite switcher PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -4078,7 +4143,7 @@ int MainComponent::runHeadlessSmokeTest()
                  "sidechain Pin 3/4 ducking, multi-take comping, polyphonic audio-to-MIDI, "
                  "cross-platform core isolation, VST3 scanner lifecycle, the original CV envelope/step "
                  "blueprint modules, the WO-021 voice acting suite, and WO-022 booth teleprompter "
-                 "and ADR/demo-reel workflow verified."
+                 "and ADR/demo-reel workflow, and WO-022B hardware faceplates and workspace suites verified."
               << std::endl;
     return 0;
 }
