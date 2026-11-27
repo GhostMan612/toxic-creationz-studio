@@ -7,6 +7,7 @@
 #include "AudioToMidiTranscriber.h"
 #include "HardwareRackPlugins.h"
 #include "SidechainCompressorPlugin.h"
+#include "GameAssetExporter.h"
 #include "SfxForgeEngine.h"
 #include "VocalChannelPlugin.h"
 

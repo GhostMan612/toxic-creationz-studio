@@ -22,6 +22,10 @@
   committed. WO-023 (procedural `SfxForgeEngine`, seeded variation batcher, zero-click
   seamless loop renderer, 2 RPCs + 2 MCP tools) implemented directly on that branch
   with no PR; Python suite now 44/44.
+- Phase 8 Game Audio & Asset Forge Suite (WO-023..WO-024) is complete: the
+  `GameForgeComponent` dock drives seeded SFX forging, adaptive phase-locked stems,
+  VOX bark trimming/normalization and a Godot 4 `audio_manifest.json` pack; 3 RPCs +
+  3 MCP tools, Python 48/48.
 - Full repo sweep / reconciliation (local on `fix/repo-sweep-reconciliation`): verified
   WO-001..WO-020 against source; restored the two unimplemented briefing CV modules
   (`CvEnvelopeFollowerPlugin`, `CvStepModulatorPlugin`), fixed the unreachable Android

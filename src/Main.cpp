@@ -8,6 +8,7 @@
 #include "PlatformConfig.h"
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
+#include "GameAssetExporter.h"
 #include "SfxForgeEngine.h"
 #include "StudioPluginWindow.h"
 #include "VocalChannelPlugin.h"
@@ -4247,6 +4248,138 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-023 procedural SFX forge & seamless loop renderer PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-024: Game Audio & Asset Forge Suite
+    //===========================================================================
+    {
+        const auto packDir = tempDir.getChildFile ("tcs_wo024_smoke");
+        packDir.deleteRecursively();
+        packDir.createDirectory();
+        app.edit->ensureNumberOfAudioTracks (3);
+        for (int i = 0; i < 3; ++i)
+            te::getAudioTracks (*app.edit)[i]->setName ("layer" + juce::String (i));
+
+        juce::Array<tcs::game::StemLayer> layers;
+        for (int i = 0; i < 2; ++i)
+        {
+            tcs::game::StemLayer layer;
+            layer.name = i == 0 ? "calm" : "combat";
+            layer.trackIndices.add (i);
+            layers.add (layer);
+        }
+        juce::Array<juce::File> stemFiles;
+        const int stems = tcs::game::GameAssetExporter::exportAdaptiveBgmStems (
+            *app.edit, 0.0, 8.0, packDir, layers, -14.0, &stemFiles);
+
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        int stemFrames = -1;
+        bool stemsOk = stems == 2 && stemFiles.size() == 2;
+        for (const auto& file : stemFiles)
+        {
+            std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (file));
+            if (reader == nullptr || reader->lengthInSamples <= 0)
+            {
+                stemsOk = false;
+                break;
+            }
+            if (stemFrames < 0)
+                stemFrames = static_cast<int> (reader->lengthInSamples);
+            else if (stemFrames != static_cast<int> (reader->lengthInSamples))
+                stemsOk = false;
+        }
+        if (! stemsOk)
+        {
+            std::cerr << "[SMOKE_TEST] DEBUG WO-024 stems=" << stems
+                      << " files=" << stemFiles.size() << " frames=" << stemFrames << std::endl;
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024 adaptive stems were not phase-locked" << std::endl;
+            return 1;
+        }
+
+        // Bark fixture: 0.2 s silence + a click + 0.2 s silence.
+        auto barkBuffer = tcs::game::SfxForgeEngine::renderSfx (
+            tcs::game::SfxCategory::uiClick, tcs::game::SfxRenderParams {});
+        const int silentFrames = static_cast<int> (barkBuffer.getNumSamples() * 0.8);
+        juce::AudioBuffer<float> padded (1, barkBuffer.getNumSamples() + silentFrames * 2);
+        padded.clear();
+        for (int i = 0; i < barkBuffer.getNumSamples(); ++i)
+            padded.setSample (0, silentFrames + i, barkBuffer.getSample (0, i));
+        const auto barkInput = packDir.getChildFile ("raw_bark.wav");
+        if (! tcs::game::GameAssetExporter::writeWav (padded, barkInput, 44100.0, 1))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024 bark fixture could not be written" << std::endl;
+            return 1;
+        }
+
+        juce::Array<juce::File> barkInputs { barkInput };
+        juce::Array<juce::File> barkOutputs;
+        const int barks = tcs::game::GameAssetExporter::processVoxBarkBatch (
+            barkInputs, packDir, "hero", "attack", -16.0, &barkOutputs);
+        bool barkOk = barks == 1 && barkOutputs.size() == 1;
+        if (barkOk)
+        {
+            std::unique_ptr<juce::AudioFormatReader> barkReader (fm.createReaderFor (barkOutputs.getFirst()));
+            barkOk = barkReader != nullptr
+                  && barkReader->lengthInSamples < static_cast<juce::int64> (padded.getNumSamples());
+            if (barkOk)
+            {
+                juce::AudioBuffer<float> barkOut (1, static_cast<int> (barkReader->lengthInSamples));
+                barkOut.clear();
+                barkReader->read (&barkOut, 0, barkOut.getNumSamples(), 0, true, false);
+                const float peak = barkOut.getMagnitude (0, barkOut.getNumSamples());
+                barkOk = peak > 1.0e-5f && peak <= std::pow (10.0f, -0.9f / 20.0f);
+            }
+        }
+        if (! barkOk)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024 bark trim/normalize failed" << std::endl;
+            return 1;
+        }
+
+        auto* packParams = new juce::DynamicObject();
+        packParams->setProperty ("output_dir", packDir.getFullPathName());
+        packParams->setProperty ("include_manifest", true);
+        packParams->setProperty ("bpm", 120.0);
+        auto* packReq = new juce::DynamicObject();
+        packReq->setProperty ("jsonrpc", "2.0");
+        packReq->setProperty ("id", 301);
+        packReq->setProperty ("method", "game.export_godot_pack");
+        packReq->setProperty ("params", juce::var (packParams));
+        const auto packResponse = app.ipcServer.executeJsonRpcOnMessageThread (
+            juce::JSON::toString (juce::var (packReq), true));
+        juce::var packParsed;
+        bool manifestOk = juce::JSON::parse (packResponse, packParsed).wasOk()
+                       && ! packParsed.hasProperty ("error")
+                       && static_cast<int> (packParsed["result"]["asset_count"]) >= 3;
+        const auto manifestText = packDir.getChildFile ("audio_manifest.json").loadFileAsString();
+        juce::var manifestVar;
+        manifestOk = manifestOk && juce::JSON::parse (manifestText, manifestVar).wasOk()
+                  && manifestVar.hasProperty ("schema_version")
+                  && manifestVar.hasProperty ("bpm")
+                  && manifestVar["assets"].isArray();
+        if (manifestOk)
+        {
+            for (const auto& asset : *manifestVar["assets"].getArray())
+            {
+                if (! asset.isObject() || ! asset.hasProperty ("path")
+                    || ! asset.hasProperty ("category") || ! asset.hasProperty ("lufs")
+                    || ! asset.hasProperty ("peak_db") || ! asset.hasProperty ("variation_group"))
+                {
+                    manifestOk = false;
+                    break;
+                }
+            }
+        }
+        if (! manifestOk)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024 Godot manifest was incomplete" << std::endl;
+            return 1;
+        }
+
+        packDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-024 adaptive stems, VOX barks & Godot manifest PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -4291,7 +4424,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "cross-platform core isolation, VST3 scanner lifecycle, the original CV envelope/step "
                  "blueprint modules, the WO-021 voice acting suite, and WO-022 booth teleprompter "
                  "and ADR/demo-reel workflow, WO-022B hardware faceplates and workspace suites, "
-                 "and the WO-023 game SFX forge / seamless loop renderer verified."
+                 "and the WO-023 game SFX forge / seamless loop renderer, plus WO-024 adaptive "
+                 "stems, VOX bark batching and the Godot 4 audio manifest verified."
               << std::endl;
     return 0;
 }

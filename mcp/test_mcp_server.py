@@ -926,6 +926,67 @@ class McpWorkerTests(unittest.TestCase):
         isolation = (_MCP_DIR.parent / "src" / "CoreIsolationCheck.cpp").read_text(encoding="utf-8")
         self.assertIn("SfxForgeEngine.h", isolation)
 
+    def test_export_adaptive_bgm_stems_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"count": 2})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.export_adaptive_bgm_stems(
+                0.0, 8.0, "C:/pack", {"calm": [0], "combat": [1, 2]}, -99.0))
+
+        self.assertEqual(res["count"], 2)
+        mock_rpc.assert_awaited_once_with(
+            "game.export_adaptive_stems",
+            {"start_beat": 0.0, "end_beat": 8.0, "output_dir": "C:/pack",
+             "layers": {"calm": [0], "combat": [1, 2]}, "target_lufs": -40.0},
+            timeout=30.0,
+        )
+
+    def test_process_vox_barks_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"count": 3})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.process_vox_barks(
+                [" C:/a.wav ", "C:/b.wav"], "C:/pack", " hero_attack ", 99.0))
+
+        self.assertEqual(res["count"], 3)
+        mock_rpc.assert_awaited_once_with(
+            "game.process_vox_barks",
+            {"input_files": ["C:/a.wav", "C:/b.wav"], "output_dir": "C:/pack",
+             "prefix": "hero_attack", "target_lufs": 0.0},
+            timeout=30.0,
+        )
+
+    def test_export_godot_audio_pack_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"asset_count": 12})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.export_godot_audio_pack("C:/pack", False, 128.0))
+
+        self.assertEqual(res["asset_count"], 12)
+        mock_rpc.assert_awaited_once_with(
+            "game.export_godot_pack",
+            {"output_dir": "C:/pack", "include_manifest": False, "bpm": 128.0},
+            timeout=30.0,
+        )
+
+    def test_wo024_cpp_sources_declare_required_symbols(self) -> None:
+        root = _MCP_DIR.parent
+        exporter = (root / "src" / "GameAssetExporter.h").read_text(encoding="utf-8")
+        for marker in ("exportAdaptiveBgmStems", "processVoxBarkBatch",
+                       "writeAudioManifestJson", "audio_manifest.json",
+                       "variation_group", "lufs"):
+            self.assertIn(marker, exporter)
+        dock = (root / "src" / "GameForgeComponent.cpp").read_text(encoding="utf-8")
+        for method in ("game.forge_sfx_batch", "audio.export_seamless_loop",
+                       "game.export_adaptive_stems", "game.export_godot_pack"):
+            self.assertIn(method, dock)
+        server = (root / "src" / "DawIpcServer.cpp").read_text(encoding="utf-8")
+        for method in ("game.export_adaptive_stems", "game.process_vox_barks",
+                       "game.export_godot_pack"):
+            self.assertIn(method, server)
 
 if __name__ == "__main__":
     unittest.main()

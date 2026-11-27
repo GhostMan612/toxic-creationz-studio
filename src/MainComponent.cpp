@@ -155,6 +155,8 @@ MainComponent::MainComponent()
     midiKeyboardDock.setVisible (false);
     addAndMakeVisible (scriptPrompter);
     scriptPrompter.setVisible (false);
+    addAndMakeVisible (gameForgeComponent);
+    gameForgeComponent.setVisible (false);
 
     mixerComponent.setRecordingManager (&recordingManager);
     arrangementView.setRecordingManager (&recordingManager);
@@ -583,7 +585,33 @@ MainComponent::MainComponent()
         tab->setClickingTogglesState (true);
         addAndMakeVisible (tab);
     }
-    gameForgePlaceholder.setEnabled (false);
+    gameForgePlaceholder.setClickingTogglesState (true);
+    gameForgePlaceholder.setToggleState (false, juce::dontSendNotification);
+    gameForgePlaceholder.onClick = [this]
+    {
+        gameForgeComponent.setVisible (gameForgePlaceholder.getToggleState());
+        resized();
+    };
+    gameForgeComponent.onAction = [this] (const juce::String& method, const juce::String& paramsJson)
+    {
+        juce::var parsedParams;
+        if (! juce::JSON::parse (paramsJson, parsedParams).wasOk())
+        {
+            gameForgeComponent.setStatus ("Invalid parameters");
+            return;
+        }
+        auto* request = new juce::DynamicObject();
+        request->setProperty ("jsonrpc", "2.0");
+        request->setProperty ("id", 142);
+        request->setProperty ("method", method);
+        request->setProperty ("params", parsedParams);
+        const auto response = ipcServer.executeJsonRpcOnMessageThread (
+            juce::JSON::toString (juce::var (request), true));
+        juce::var parsedResponse;
+        const bool ok = juce::JSON::parse (response, parsedResponse).wasOk()
+                     && ! parsedResponse.hasProperty ("error");
+        gameForgeComponent.setStatus (ok ? "OK: " + method : "Failed: " + method);
+    };
     rpgBoardPlaceholder.setEnabled (false);
     addAndMakeVisible (gameForgePlaceholder);
     addAndMakeVisible (rpgBoardPlaceholder);
@@ -1571,6 +1599,12 @@ void MainComponent::resized()
     if (scriptPrompter.isVisible())
     {
         scriptPrompter.setBounds (area.removeFromBottom (170));
+        area.removeFromBottom (4);
+    }
+
+    if (gameForgeComponent.isVisible())
+    {
+        gameForgeComponent.setBounds (area.removeFromBottom (162));
         area.removeFromBottom (4);
     }
 

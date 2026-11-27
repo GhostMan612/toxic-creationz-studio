@@ -65,6 +65,7 @@ add_library(tcs_core STATIC
     src/PluginPresetManager.cpp
     src/AudioToMidiTranscriber.cpp
     src/SfxForgeEngine.cpp
+    src/GameAssetExporter.cpp
 )
 target_include_directories(tcs_core PUBLIC src)
 target_compile_options(tcs_core PRIVATE ${TCS_PLATFORM_COMPILE_OPTIONS})
@@ -148,6 +149,9 @@ if(TCS_BUILD_DESKTOP_APP)
         src/MixdownExporter.h
         src/MixdownExporter.cpp
         src/SfxForgeEngine.h
+        src/GameAssetExporter.h
+        src/GameForgeComponent.h
+        src/GameForgeComponent.cpp
         src/MidiKeyboardDock.h
         src/MidiKeyboardDock.cpp
         src/ScriptPrompterComponent.h

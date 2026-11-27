@@ -8,6 +8,7 @@
 #include "MixdownExporter.h"
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
+#include "GameAssetExporter.h"
 #include "SfxForgeEngine.h"
 #include "VocalChannelPlugin.h"
 #include "WaveformEditorComponent.h"
@@ -394,7 +395,9 @@ juce::String DawIpcServer::enqueueAndWaitForMessageThread (const juce::String& r
                 timeoutMs = 15000;
             else if (reqMethod == "recording.punch_and_roll" || reqMethod == "recording.export_abc_audition")
                 timeoutMs = 15000;
-            else if (reqMethod == "game.forge_sfx_batch" || reqMethod == "audio.export_seamless_loop")
+            else if (reqMethod == "game.forge_sfx_batch" || reqMethod == "audio.export_seamless_loop"
+                     || reqMethod == "game.export_adaptive_stems" || reqMethod == "game.process_vox_barks"
+                     || reqMethod == "game.export_godot_pack")
                 timeoutMs = 30000;
         }
     }
@@ -2689,6 +2692,152 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         res->setProperty ("tail_seconds", tailSeconds);
         res->setProperty ("target_lufs", targetLufs);
         res->setProperty ("measurement", "bs1770_k_weighted_gated");
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-024: game.export_adaptive_stems — phase-locked intensity layers
+    if (method == "game.export_adaptive_stems")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+        const double startBeat = static_cast<double> (params.getProperty ("start_beat", 0.0));
+        const double endBeat = static_cast<double> (params.getProperty ("end_beat", 8.0));
+        if (! std::isfinite (startBeat) || ! std::isfinite (endBeat) || endBeat <= startBeat)
+            return makeErrorResponse (id, -32602, "Invalid start_beat / end_beat");
+
+        const juce::String rawDir = params.getProperty ("output_dir", "").toString().trim();
+        if (rawDir.isEmpty())
+            return makeErrorResponse (id, -32602, "Missing output_dir");
+        const juce::File outDir = juce::File::isAbsolutePath (rawDir) ? juce::File (rawDir)
+            : juce::File::getCurrentWorkingDirectory().getChildFile (rawDir);
+        const double targetLufs = juce::jlimit (-40.0, -3.0,
+            static_cast<double> (params.getProperty ("target_lufs", -14.0)));
+
+        juce::Array<tcs::game::StemLayer> layers;
+        const auto layersVar = params.getProperty ("layers", juce::var());
+        if (auto* object = layersVar.getDynamicObject())
+        {
+            for (const auto& prop : object->getProperties())
+            {
+                tcs::game::StemLayer layer;
+                layer.name = prop.name.toString().trim();
+                if (layer.name.isEmpty())
+                    continue;
+                if (auto* array = prop.value.getArray())
+                {
+                    for (const auto& v : *array)
+                        layer.trackIndices.add (static_cast<int> (v));
+                }
+                else if (prop.value.isInt() || prop.value.isInt64() || prop.value.isDouble())
+                    layer.trackIndices.add (static_cast<int> (prop.value));
+                layers.add (layer);
+            }
+        }
+        if (layers.isEmpty())
+            return makeErrorResponse (id, -32602, "Missing layers map");
+
+        juce::Array<juce::File> files;
+        const int written = tcs::game::GameAssetExporter::exportAdaptiveBgmStems (
+            *edit, startBeat, endBeat, outDir, layers, targetLufs, &files);
+        if (written <= 0)
+            return makeErrorResponse (id, -32603, "No adaptive stems were rendered");
+
+        juce::Array<juce::var> paths;
+        for (const auto& file : files)
+            paths.add (file.getFullPathName());
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("count", written);
+        res->setProperty ("output_dir", outDir.getFullPathName());
+        res->setProperty ("start_beat", startBeat);
+        res->setProperty ("end_beat", endBeat);
+        res->setProperty ("target_lufs", targetLufs);
+        res->setProperty ("files", juce::var (paths));
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-024: game.process_vox_barks — trim, fade and normalize VOX barks
+    if (method == "game.process_vox_barks")
+    {
+        const juce::String rawDir = params.getProperty ("output_dir", "").toString().trim();
+        if (rawDir.isEmpty())
+            return makeErrorResponse (id, -32602, "Missing output_dir");
+        const juce::File outDir = juce::File::isAbsolutePath (rawDir) ? juce::File (rawDir)
+            : juce::File::getCurrentWorkingDirectory().getChildFile (rawDir);
+
+        const juce::String prefix = params.getProperty ("prefix", "actor_bark").toString().trim();
+        const auto split = prefix.indexOfChar ('_');
+        const juce::String actor = split > 0 ? prefix.substring (0, split) : prefix;
+        const juce::String action = split > 0 ? prefix.substring (split + 1) : "bark";
+        const double targetLufs = juce::jlimit (-60.0, 0.0,
+            static_cast<double> (params.getProperty ("target_lufs", -16.0)));
+
+        juce::Array<juce::File> inputs;
+        if (auto* array = params.getProperty ("input_files", juce::var()).getArray())
+        {
+            for (const auto& v : *array)
+            {
+                const auto path = v.toString().trim();
+                if (path.isNotEmpty())
+                    inputs.add (juce::File (path));
+            }
+        }
+        if (inputs.isEmpty())
+            return makeErrorResponse (id, -32602, "Missing input_files");
+
+        juce::Array<juce::File> files;
+        const int written = tcs::game::GameAssetExporter::processVoxBarkBatch (
+            inputs, outDir, actor, action, targetLufs, &files);
+        if (written <= 0)
+            return makeErrorResponse (id, -32603, "No VOX barks were processed");
+
+        juce::Array<juce::var> paths;
+        for (const auto& file : files)
+            paths.add (file.getFullPathName());
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("count", written);
+        res->setProperty ("output_dir", outDir.getFullPathName());
+        res->setProperty ("target_lufs", targetLufs);
+        res->setProperty ("files", juce::var (paths));
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-024: game.export_godot_pack — gather all WAVs and write audio_manifest.json
+    if (method == "game.export_godot_pack")
+    {
+        const juce::String rawDir = params.getProperty ("output_dir", "").toString().trim();
+        if (rawDir.isEmpty())
+            return makeErrorResponse (id, -32602, "Missing output_dir");
+        const juce::File rootDir = juce::File::isAbsolutePath (rawDir) ? juce::File (rawDir)
+            : juce::File::getCurrentWorkingDirectory().getChildFile (rawDir);
+        rootDir.createDirectory();
+
+        juce::Array<tcs::game::ManifestAsset> assets;
+        for (const auto* category : { "bgm", "sfx", "ambient", "vox" })
+        {
+            const auto dir = rootDir.getChildFile (category);
+            if (! dir.isDirectory())
+                continue;
+            const auto wavs = dir.findChildFiles (juce::File::findFiles, false, "*.wav");
+            for (const auto& wav : wavs)
+            {
+                const auto relative = juce::String (category) + "/" + wav.getFileName();
+                auto asset = tcs::game::GameAssetExporter::analyseAsset (
+                    wav, relative, category, juce::String (category) == "bgm", category);
+                assets.add (asset);
+            }
+        }
+
+        if (params.getProperty ("include_manifest", true))
+            if (! tcs::game::GameAssetExporter::writeAudioManifestJson (
+                    rootDir, static_cast<double> (params.getProperty ("bpm", 120.0)), assets))
+                return makeErrorResponse (id, -32603, "Could not write audio_manifest.json");
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("output_dir", rootDir.getFullPathName());
+        res->setProperty ("asset_count", assets.size());
+        res->setProperty ("manifest", rootDir.getChildFile ("audio_manifest.json").getFullPathName());
         return makeResultResponse (id, juce::var (res));
     }
 

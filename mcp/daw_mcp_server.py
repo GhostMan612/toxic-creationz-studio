@@ -831,5 +831,56 @@ async def export_seamless_game_loop(
     return await send_daw_rpc("audio.export_seamless_loop", params, timeout=30.0)
 
 
+@mcp.tool()
+async def export_adaptive_bgm_stems(
+    start_beat: float = 0.0,
+    end_beat: float = 8.0,
+    output_path: str = "",
+    layers: dict[str, list[int]] | None = None,
+    target_lufs: float = -14.0,
+) -> dict[str, Any]:
+    """Export phase-locked adaptive intensity BGM stems for Godot 4 crossfades."""
+    params: dict[str, Any] = {
+        "start_beat": float(start_beat),
+        "end_beat": float(end_beat),
+        "output_dir": output_path.strip(),
+        "layers": layers or {"calm": [0], "combat": [1]},
+        "target_lufs": min(-3.0, max(-40.0, float(target_lufs))),
+    }
+    return await send_daw_rpc("game.export_adaptive_stems", params, timeout=30.0)
+
+
+@mcp.tool()
+async def process_vox_barks(
+    input_files: list[str],
+    output_path: str = "",
+    prefix: str = "actor_bark",
+    target_lufs: float = -16.0,
+) -> dict[str, Any]:
+    """Trim, fade and normalize VOX bark WAVs to a -16 LUFS game-ready batch."""
+    params: dict[str, Any] = {
+        "input_files": [p.strip() for p in input_files],
+        "output_dir": output_path.strip(),
+        "prefix": prefix.strip(),
+        "target_lufs": min(0.0, max(-60.0, float(target_lufs))),
+    }
+    return await send_daw_rpc("game.process_vox_barks", params, timeout=30.0)
+
+
+@mcp.tool()
+async def export_godot_audio_pack(
+    output_path: str = "",
+    include_manifest: bool = True,
+    bpm: float = 120.0,
+) -> dict[str, Any]:
+    """Build a Godot 4 / asset-vault pack with audio_manifest.json."""
+    params: dict[str, Any] = {
+        "output_dir": output_path.strip(),
+        "include_manifest": bool(include_manifest),
+        "bpm": float(bpm),
+    }
+    return await send_daw_rpc("game.export_godot_pack", params, timeout=30.0)
+
+
 if __name__ == "__main__":
     mcp.run()
