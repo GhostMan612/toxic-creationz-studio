@@ -60,6 +60,7 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 | **WO-026 (Phase 9B)** | `RpgSoundboardComponent` 4×4 live pad dock, GM character-voice toggle, encounter cue MCP bridge and persisted custom pad WAV paths. |
 | **WO-027 (Phase 10)** | Ghost Tutor: in-app chat dock, compiled knowledge fallback, localhost Ollama brain, guided walkthroughs, confirm-before-act chips and `ghost.*` RPC/MCP surface. |
 | **WO-028 (Phase 11)** | GhostBrain Co-Producer: deterministic audio identification, strictly local voice prints with explicit consent, reference-conditioned multi-stem generation and one-undo arrangement import. |
+| **WO-029 (Phase 12)** | True-to-hardware faceplates: 11-column TR-808 with bound voice levels and display-only step LEDs, SP-1200 4×4 pad grid/LCD, rotating tape reels, hardware comp and vocal strips. |
 
 ---
 

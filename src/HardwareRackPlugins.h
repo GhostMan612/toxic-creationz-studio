@@ -45,18 +45,33 @@ public:
         snareSnappyValue.referTo(state, juce::Identifier ("snareSnappy"),getUndoManager(), 0.65f);
         hatDecayValue.referTo   (state, juce::Identifier ("hatDecay"),   getUndoManager(), 0.14f);
         accentValue.referTo     (state, juce::Identifier ("accent"),     getUndoManager(), 0.60f);
+        kickLevelValue.referTo  (state, juce::Identifier ("kickLevel"),  getUndoManager(), 1.0f);
+        snareLevelValue.referTo (state, juce::Identifier ("snareLevel"), getUndoManager(), 1.0f);
+        lowTomLevelValue.referTo(state, juce::Identifier ("lowTomLevel"),getUndoManager(), 1.0f);
+        midTomLevelValue.referTo(state, juce::Identifier ("midTomLevel"),getUndoManager(), 1.0f);
+        hatLevelValue.referTo   (state, juce::Identifier ("hatLevel"),   getUndoManager(), 1.0f);
 
         kickDecayParam  = addParam ("kickDecay",  "Kick Decay (s)",  { 0.08f, 1.20f });
         kickToneParam   = addParam ("kickTone",   "Kick Tone (Hz)",  { 38.0f, 90.0f });
         snareSnappyParam= addParam ("snareSnappy","Snare Snappy",    { 0.00f, 1.00f });
         hatDecayParam   = addParam ("hatDecay",   "Hat Decay (s)",   { 0.03f, 0.60f });
         accentParam     = addParam ("accent",     "Accent Depth",    { 0.00f, 1.00f });
+        kickLevelParam  = addParam ("kickLevel",  "Kick Level",      { 0.00f, 1.50f });
+        snareLevelParam = addParam ("snareLevel", "Snare Level",     { 0.00f, 1.50f });
+        lowTomLevelParam= addParam ("lowTomLevel","Low Tom Level",   { 0.00f, 1.50f });
+        midTomLevelParam= addParam ("midTomLevel","Mid Tom Level",   { 0.00f, 1.50f });
+        hatLevelParam   = addParam ("hatLevel",   "Hat Level",       { 0.00f, 1.50f });
 
         kickDecayParam->attachToCurrentValue  (kickDecayValue);
         kickToneParam->attachToCurrentValue   (kickToneValue);
         snareSnappyParam->attachToCurrentValue(snareSnappyValue);
         hatDecayParam->attachToCurrentValue   (hatDecayValue);
         accentParam->attachToCurrentValue     (accentValue);
+        kickLevelParam->attachToCurrentValue  (kickLevelValue);
+        snareLevelParam->attachToCurrentValue (snareLevelValue);
+        lowTomLevelParam->attachToCurrentValue(lowTomLevelValue);
+        midTomLevelParam->attachToCurrentValue(midTomLevelValue);
+        hatLevelParam->attachToCurrentValue   (hatLevelValue);
     }
 
     ~Tr808DrumPlugin() override
@@ -66,6 +81,11 @@ public:
         if (snareSnappyParam != nullptr) snareSnappyParam->detachFromCurrentValue();
         if (hatDecayParam != nullptr)    hatDecayParam->detachFromCurrentValue();
         if (accentParam != nullptr)      accentParam->detachFromCurrentValue();
+        if (kickLevelParam != nullptr)  kickLevelParam->detachFromCurrentValue();
+        if (snareLevelParam != nullptr) snareLevelParam->detachFromCurrentValue();
+        if (lowTomLevelParam != nullptr)lowTomLevelParam->detachFromCurrentValue();
+        if (midTomLevelParam != nullptr)midTomLevelParam->detachFromCurrentValue();
+        if (hatLevelParam != nullptr)   hatLevelParam->detachFromCurrentValue();
         notifyListenersOfDeletion();
     }
 
@@ -126,6 +146,11 @@ public:
         const float snappy= juce::jlimit (0.0f, 1.0f, snareSnappyParam->getCurrentValue());
         const float hDec  = juce::jlimit (0.03f, 0.60f, hatDecayParam->getCurrentValue());
         const float accentDepth = juce::jlimit (0.0f, 1.0f, accentParam->getCurrentValue());
+        const float kickLevel = juce::jlimit (0.0f, 1.5f, static_cast<float> (kickLevelParam->getCurrentValue()));
+        const float snareLevel = juce::jlimit (0.0f, 1.5f, static_cast<float> (snareLevelParam->getCurrentValue()));
+        const float lowTomLevel = juce::jlimit (0.0f, 1.5f, static_cast<float> (lowTomLevelParam->getCurrentValue()));
+        const float midTomLevel = juce::jlimit (0.0f, 1.5f, static_cast<float> (midTomLevelParam->getCurrentValue()));
+        const float hatLevel = juce::jlimit (0.0f, 1.5f, static_cast<float> (hatLevelParam->getCurrentValue()));
 
         if (fc.bufferForMidiMessages != nullptr)
         {
@@ -170,15 +195,16 @@ public:
             const float accent = juce::jlimit (0.25f, 2.0f,
                                                1.0f + cv * accentDepth * 0.8f);
 
-            float kick = 0.0f, snare = 0.0f, hat = 0.0f, tom = 0.0f;
+            float kick = 0.0f, snare = 0.0f, hat = 0.0f, lowTom = 0.0f, midTom = 0.0f;
 
             // Bridged-T damped sine sweep: kick + two toms.
             renderDampedSine (voices[voiceKick],   kick,
                               tone * 3.2f, tone, kDec, sampleInc);
-            renderDampedSine (voices[voiceLowTom], tom,
+            renderDampedSine (voices[voiceLowTom], lowTom,
                               tone * 2.4f, tone * 1.30f, kDec * 0.70f, sampleInc);
-            renderDampedSine (voices[voiceMidTom], tom,
+            renderDampedSine (voices[voiceMidTom], midTom,
                               tone * 3.0f, tone * 1.65f, kDec * 0.55f, sampleInc);
+            const float tom = lowTom * lowTomLevel + midTom * midTomLevel;
 
             // Snare: dual-tone body + 1-pole HP white noise.
             renderSnare (voices[voiceSnare], snare, snappy, sampleInc);
@@ -187,13 +213,14 @@ public:
             renderHat (voices[voiceCHat], hat, hDec, sampleInc);
             renderHat (voices[voiceOHat], hat, hDec * 3.0f, sampleInc);
 
-            const float master = (kick * 0.95f + snare * 0.62f + hat * 0.40f + tom * 0.55f) * accent;
+            const float master = (kick * kickLevel * 0.95f + snare * snareLevel * 0.62f
+                                  + hat * hatLevel * 0.40f + tom * 0.55f) * accent;
 
             buf->setSample (0, base + i, master);
             buf->setSample (1, base + i, master);
-            if (numCh > 2) buf->setSample (2, base + i, kick  * accent);
-            if (numCh > 3) buf->setSample (3, base + i, snare * accent);
-            if (numCh > 4) buf->setSample (4, base + i, (hat * 0.6f + tom) * accent);
+            if (numCh > 2) buf->setSample (2, base + i, kick  * kickLevel * accent);
+            if (numCh > 3) buf->setSample (3, base + i, snare * snareLevel * accent);
+            if (numCh > 4) buf->setSample (4, base + i, (hat * hatLevel * 0.6f + tom) * accent);
         }
     }
 
@@ -202,7 +229,9 @@ public:
     void restorePluginStateFromValueTree (const juce::ValueTree& v) override
     {
         te::copyPropertiesToCachedValues (v, kickDecayValue, kickToneValue,
-                                          snareSnappyValue, hatDecayValue, accentValue);
+                                          snareSnappyValue, hatDecayValue, accentValue,
+                                          kickLevelValue, snareLevelValue, lowTomLevelValue,
+                                          midTomLevelValue, hatLevelValue);
 
         for (auto* p : getAutomatableParameters())
             p->updateFromAttachedValue();
@@ -327,7 +356,9 @@ private:
     }
 
     juce::CachedValue<float> kickDecayValue, kickToneValue, snareSnappyValue, hatDecayValue, accentValue;
+    juce::CachedValue<float> kickLevelValue, snareLevelValue, lowTomLevelValue, midTomLevelValue, hatLevelValue;
     te::AutomatableParameter::Ptr kickDecayParam, kickToneParam, snareSnappyParam, hatDecayParam, accentParam;
+    te::AutomatableParameter::Ptr kickLevelParam, snareLevelParam, lowTomLevelParam, midTomLevelParam, hatLevelParam;
     std::array<DrumVoice, numVoices> voices {};
     std::uint32_t rngSeed = 0x9e3779b9u;
     double lastSampleRate = 44100.0;

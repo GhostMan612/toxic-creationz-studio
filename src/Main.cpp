@@ -18,6 +18,7 @@
 #include "VocalSpecAnalyzer.h"
 
 #include <algorithm>
+#include <bitset>
 #include <chrono>
 #include <cmath>
 #include <future>
@@ -4949,6 +4950,97 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-028 clip identify, local voice prints & one-undo stems PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-029: True-to-hardware rack faceplates
+    //===========================================================================
+    {
+        struct FaceplateCase { const char* type; int minWidth; };
+        const FaceplateCase cases[5] {
+            { Tr808DrumPlugin::xmlTypeName, 840 },
+            { VintageSamplerPlugin::xmlTypeName, 700 },
+            { AnalogTapePlugin::xmlTypeName, 620 },
+            { SidechainCompressorPlugin::xmlTypeName, 620 },
+            { VocalChannelPlugin::xmlTypeName, 620 }
+        };
+
+        const auto verifyEditors = [&] (bool checkWidths) -> bool
+        {
+            for (const auto& testCase : cases)
+            {
+                auto pluginPtr = app.edit->getPluginCache().createNewPlugin (testCase.type, {});
+                if (pluginPtr == nullptr)
+                    return false;
+                auto editor = createCustomEditorForPlugin (*pluginPtr);
+                if (editor == nullptr)
+                    return false;
+                const int width = editor->getWidth();
+                if (checkWidths && width < testCase.minWidth)
+                    return false;
+                auto* base = dynamic_cast<HardwareEditorBase*> (editor.get());
+                if (base == nullptr || base->countUnboundSliders() != 0)
+                    return false;
+                editor.reset();
+                pluginPtr = nullptr;
+            }
+            return true;
+        };
+
+        if (! verifyEditors (true))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-029 faceplate construction or parameter binding failed" << std::endl;
+            return 1;
+        }
+
+        auto drumPtr = app.edit->getPluginCache().createNewPlugin (Tr808DrumPlugin::xmlTypeName, {});
+        auto tapePtr = app.edit->getPluginCache().createNewPlugin (AnalogTapePlugin::xmlTypeName, {});
+        auto drumEditor = createCustomEditorForPlugin (*drumPtr);
+        auto tapeEditor = createCustomEditorForPlugin (*tapePtr);
+        auto* drumFace = dynamic_cast<Tr808Editor*> (drumEditor.get());
+        auto* tapeFace = dynamic_cast<AnalogTapeEditor*> (tapeEditor.get());
+        if (drumFace == nullptr || tapeFace == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-029 playhead display editors missing" << std::endl;
+            return 1;
+        }
+
+        const bool dirtyBefore = app.hasUnsavedChanges();
+        std::bitset<16> seenSteps;
+        for (int i = 0; i <= 16; ++i)
+        {
+            const double beat = static_cast<double> (i) * 0.25;
+            drumFace->syncFromPlayheadBeats (beat, true);
+            tapeFace->syncFromPlayheadBeats (beat, true);
+            if (drumFace->getActiveStep() >= 0)
+                seenSteps.set (drumFace->getActiveStep());
+        }
+        const float angleWhilePlaying = tapeFace->getReelAngle();
+        tapeFace->syncFromPlayheadBeats (9.0, false);
+        if (seenSteps.count() < 8 || angleWhilePlaying <= 0.0f
+            || std::abs (tapeFace->getReelAngle() - angleWhilePlaying) > 1.0e-6f
+            || app.hasUnsavedChanges() != dirtyBefore)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-029 step LEDs / tape reels were not display-only" << std::endl;
+            return 1;
+        }
+
+        const auto faceSession = tempDir.getChildFile ("aidaw_wo029_faces.tracktionedit");
+        app.currentEditFile = faceSession;
+        app.sessionUntitled = false;
+        app.saveSession();
+        drumEditor.reset();
+        tapeEditor.reset();
+        drumPtr = nullptr;
+        tapePtr = nullptr;
+        if (! app.loadSessionFromFileSafely (faceSession) || ! verifyEditors (true))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-029 faceplate save/reload round-trip failed" << std::endl;
+            return 1;
+        }
+        faceSession.deleteFile();
+
+        std::cout << "[SMOKE_TEST] WO-029 true-to-hardware faceplates & display-only playhead sync PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -4999,7 +5091,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "and the WO-025 procedural RPG soundboard, biome crossfade and one-shot pool, "
                  "and the WO-026 encounter cues, GM voice toggle and custom pad persistence, "
                  "and the WO-027 Ghost Tutor bundle answers, proposed actions and state persistence, "
-                 "and the WO-028 one-undo multi-stem arrangement and clip-info resolution verified."
+                 "and the WO-028 one-undo multi-stem arrangement and clip-info resolution, "
+                 "and the WO-029 true-to-hardware faceplates and display-only playhead sync verified."
               << std::endl;
     return 0;
 }
