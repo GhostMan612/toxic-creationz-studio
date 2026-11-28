@@ -15,6 +15,7 @@
 #include "MidiKeyboardDock.h"
 #include "RecordingManager.h"
 #include "GameForgeComponent.h"
+#include "RpgSoundboardComponent.h"
 #include "ScriptPrompterComponent.h"
 #include "StudioLookAndFeel.h"
 #include "StudioPluginWindow.h"
@@ -118,6 +119,7 @@ private:
     MidiKeyboardDock midiKeyboardDock;
     ScriptPrompterComponent scriptPrompter;
     tcs::game::GameForgeComponent gameForgeComponent;
+    RpgSoundboardComponent rpgSoundboardComponent;
 
     juce::File currentEditFile;
     bool sessionUntitled = false;
@@ -161,7 +163,7 @@ private:
     juce::TextButton rackWorkspaceButton   { "Modular Rack" };
     juce::TextButton voWorkspaceButton     { "VO Booth Suite" };
     juce::TextButton gameForgePlaceholder  { "Game Forge" };
-    juce::TextButton rpgBoardPlaceholder   { "RPG Board (P9)" };
+    juce::TextButton rpgBoardPlaceholder   { "RPG Board" };
     WorkspaceMode workspaceMode = WorkspaceMode::studio;
     juce::TextButton audioSettingsButton { "Audio Settings" };
     juce::Slider bpmSlider;

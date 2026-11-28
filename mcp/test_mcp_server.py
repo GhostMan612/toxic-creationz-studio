@@ -21,6 +21,7 @@ from ai_audio_worker import (
     generate_stem,
     generate_vo_practice_script,
     parse_root_midi,
+    resolve_rpg_encounter_cue,
     separate_stems,
     transcribe_polyphonic_basic_pitch,
 )
@@ -1047,6 +1048,94 @@ class McpWorkerTests(unittest.TestCase):
             "scale": "hirajoshi", "seed": 123, "complexity": "dense",
             "time_signature": "6/8", "bpm": 151.0,
         })
+
+    def test_set_rpg_scene_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"active_biome": "boss_altar"})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.set_rpg_scene(" BOSS_ALTAR ", 99.0, 99.0))
+
+        self.assertEqual(res["active_biome"], "boss_altar")
+        mock_rpc.assert_awaited_once_with("rpg.set_scene", {
+            "biome": "boss_altar", "mood_intensity": 1.0, "crossfade_sec": 5.0,
+        })
+
+    def test_trigger_rpg_sfx_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"triggered": True})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.trigger_rpg_sfx(" Fireball_Cast ", -1.0))
+
+        self.assertTrue(res["triggered"])
+        mock_rpc.assert_awaited_once_with("rpg.trigger_sfx", {
+            "sfx_name": "fireball_cast", "velocity": 0.0,
+        })
+
+    def test_get_rpg_soundboard_state_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"available_biomes": ["drowned_stars"]})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.get_rpg_soundboard_state())
+
+        self.assertEqual(res["available_biomes"], ["drowned_stars"])
+        mock_rpc.assert_awaited_once_with("rpg.get_state", {})
+
+    def test_wo025_cpp_sources_declare_required_symbols(self) -> None:
+        root = _MCP_DIR.parent
+        plugin = (root / "src" / "RpgSoundboardPlugin.h").read_text(encoding="utf-8")
+        for marker in ("tcs_rpg_soundboard", "drowned_stars", "boss_altar",
+                       "sword_clash", "dice_roll", "triggerPad", "moodIntensity",
+                       "applyToBuffer", "std::atomic"):
+            self.assertIn(marker, plugin)
+        server = (root / "src" / "DawIpcServer.cpp").read_text(encoding="utf-8")
+        for method in ("rpg.set_scene", "rpg.trigger_sfx", "rpg.get_state"):
+            self.assertIn(method, server)
+
+    def test_apply_rpg_encounter_cue_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"event": "boss_reveal"})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.apply_rpg_encounter_cue(
+                " BOSS_REVEAL ", " BOSS_ALTAR ", " HEROIC_NARRATOR ", " DRAGON_ROAR "))
+
+        self.assertEqual(res["event"], "boss_reveal")
+        mock_rpc.assert_awaited_once_with("rpg.apply_encounter_cue", {
+            "event": "boss_reveal", "biome": "boss_altar",
+            "gm_voice": "heroic_narrator", "sfx_name": "dragon_roar",
+        })
+
+    def test_set_gm_voice_mode_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"preset": "ACX Audiobook"})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.set_gm_voice_mode(" ACX Audiobook ", -2))
+
+        self.assertEqual(res["preset"], "ACX Audiobook")
+        mock_rpc.assert_awaited_once_with("vo.apply_preset", {
+            "preset": "ACX Audiobook", "track_index": -2,
+        })
+
+    def test_resolve_rpg_encounter_cue_cosmic_and_fantasy(self) -> None:
+        cosmic = resolve_rpg_encounter_cue("party enters drowned vault", "cosmic_horror")
+        boss = resolve_rpg_encounter_cue("boss initiative", "fantasy")
+        crit = resolve_rpg_encounter_cue("critical hit", "fantasy")
+        self.assertEqual(cosmic["event"], "cosmic_dread")
+        self.assertEqual(cosmic["biome"], "drowned_stars")
+        self.assertEqual(boss["event"], "boss_reveal")
+        self.assertEqual(boss["biome"], "boss_altar")
+        self.assertEqual(crit["sfx_name"], "critical_hit")
+        self.assertEqual(resolve_rpg_encounter_cue("party enters drowned vault", "cosmic_horror"), cosmic)
+
+    def test_wo026_cpp_sources_declare_required_symbols(self) -> None:
+        root = _MCP_DIR.parent
+        server = (root / "src" / "DawIpcServer.cpp").read_text(encoding="utf-8")
+        for method in ("rpg.apply_encounter_cue", "vo.apply_preset"):
+            self.assertIn(method, server)
 
 
 if __name__ == "__main__":

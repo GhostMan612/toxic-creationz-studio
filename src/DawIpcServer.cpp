@@ -10,6 +10,7 @@
 #include "SidechainCompressorPlugin.h"
 #include "GameAssetExporter.h"
 #include "MusicTheoryEngine.h"
+#include "RpgSoundboardPlugin.h"
 #include "SfxForgeEngine.h"
 #include "VocalChannelPlugin.h"
 #include "WaveformEditorComponent.h"
@@ -17,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <utility>
 #include <vector>
 
 namespace
@@ -1636,6 +1638,7 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         else if (rawType == "4osc")                      xmlType = te::FourOscPlugin::xmlTypeName;
         else if (rawType == "sidechain_comp")            xmlType = SidechainCompressorPlugin::xmlTypeName;
         else if (rawType == "vocal_strip")               xmlType = VocalChannelPlugin::xmlTypeName;
+        else if (rawType == "rpg_soundboard" || rawType == "rpg") xmlType = RpgSoundboardPlugin::xmlTypeName;
         else
             return makeErrorResponse (id, -32602, "Unsupported module_type: " + rawType);
 
@@ -2952,6 +2955,198 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         res->setProperty ("sections", juce::var (plan.sections));
         res->setProperty ("tracks_created", juce::var (created));
         res->setProperty ("total_notes", totalNotes);
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-025: rpg.set_scene / rpg.trigger_sfx / rpg.get_state
+    if (method == "rpg.set_scene" || method == "rpg.trigger_sfx" || method == "rpg.get_state")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+
+        const auto findSoundboard = [this] () -> RpgSoundboardPlugin*
+        {
+            for (auto* track : te::getAudioTracks (*edit))
+                if (auto* p = track->pluginList.findFirstPluginOfType<RpgSoundboardPlugin>())
+                    return p;
+            return nullptr;
+        };
+
+        if (method == "rpg.get_state")
+        {
+            auto* board = findSoundboard();
+            juce::Array<juce::var> biomes, effects;
+            for (int i = 0; i < RpgSoundboardPlugin::numBiomes; ++i)
+                biomes.add (RpgSoundboardPlugin::biomeNames()[i]);
+            for (int i = 0; i < RpgSoundboardPlugin::numSfx; ++i)
+                effects.add (RpgSoundboardPlugin::sfxNames()[i]);
+            auto* res = new juce::DynamicObject();
+            res->setProperty ("active_biome", board != nullptr ? board->getActiveBiome() : "none");
+            res->setProperty ("mood_intensity", board != nullptr ? board->getMoodIntensity() : 0.0f);
+            res->setProperty ("ambient_level", static_cast<double> (params.getProperty ("ambient_level", 0.75)));
+            res->setProperty ("sfx_level", static_cast<double> (params.getProperty ("sfx_level", 0.85)));
+            res->setProperty ("available_biomes", juce::var (biomes));
+            res->setProperty ("available_sfx", juce::var (effects));
+            return makeResultResponse (id, juce::var (res));
+        }
+
+        auto* board = findSoundboard();
+        if (board == nullptr)
+        {
+            edit->ensureNumberOfAudioTracks (1);
+            auto tracks = te::getAudioTracks (*edit);
+            auto* track = tracks.getLast();
+            track->setName ("RPG Soundboard");
+            auto plugin = edit->getPluginCache().createNewPlugin (RpgSoundboardPlugin::xmlTypeName, {});
+            if (plugin == nullptr)
+                return makeErrorResponse (id, -32603, "Could not create RPG Soundboard plugin");
+            edit->getUndoManager().beginNewTransaction ("Create RPG Soundboard");
+            track->pluginList.insertPlugin (plugin, getInsertIndexBeforeTerminalPlugins (*track), nullptr);
+            board = dynamic_cast<RpgSoundboardPlugin*> (plugin.get());
+            if (onEditMutatedByRpc)
+                onEditMutatedByRpc ("Created RPG Soundboard track");
+        }
+        if (board == nullptr)
+            return makeErrorResponse (id, -32603, "RPG Soundboard plugin unavailable");
+
+        if (method == "rpg.set_scene")
+        {
+            const auto biome = params.getProperty ("biome", "drowned_stars").toString().trim().toLowerCase();
+            if (RpgSoundboardPlugin::parseBiome (biome) < 0)
+                return makeErrorResponse (id, -32602, "Unknown biome: " + biome);
+            board->setBiome (biome);
+            const float mood = juce::jlimit (0.0f, 1.0f,
+                static_cast<float> (params.getProperty ("mood_intensity", 0.35)));
+            if (auto p = board->getAutomatableParameterByID ("moodIntensity"))
+                p->setParameter (mood, juce::sendNotification);
+            const float crossfade = juce::jlimit (0.5f, 5.0f,
+                static_cast<float> (params.getProperty ("crossfade_sec", 2.0)));
+            if (auto p = board->getAutomatableParameterByID ("crossfadeSec"))
+                p->setParameter (crossfade, juce::sendNotification);
+            if (auto p = board->getAutomatableParameterByID ("ambientLevel"))
+                p->setParameter (juce::jlimit (0.0f, 1.0f,
+                    static_cast<float> (params.getProperty ("ambient_level", 0.75))), juce::sendNotification);
+            if (auto p = board->getAutomatableParameterByID ("sfxLevel"))
+                p->setParameter (juce::jlimit (0.0f, 1.0f,
+                    static_cast<float> (params.getProperty ("sfx_level", 0.85))), juce::sendNotification);
+
+            auto* res = new juce::DynamicObject();
+            res->setProperty ("active_biome", board->getActiveBiome());
+            res->setProperty ("mood_intensity", board->getMoodIntensity());
+            res->setProperty ("crossfade_sec", crossfade);
+            return makeResultResponse (id, juce::var (res));
+        }
+
+        const auto sfxName = params.getProperty ("sfx_name", "sword_clash").toString().trim().toLowerCase();
+        const int pad = RpgSoundboardPlugin::parseSfx (sfxName);
+        const float velocity = juce::jlimit (0.0f, 1.0f,
+            static_cast<float> (params.getProperty ("velocity", 0.9)));
+        board->triggerPad (pad, velocity);
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("sfx_name", RpgSoundboardPlugin::sfxNames()[pad]);
+        res->setProperty ("velocity", velocity);
+        res->setProperty ("triggered", true);
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-026: vo.apply_preset — instant GM character-voice swap
+    if (method == "vo.apply_preset")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+        const auto preset = params.getProperty ("preset", "ACX Audiobook").toString().trim();
+        int trackIdx = static_cast<int> (params.getProperty ("track_index", -1));
+        auto tracks = te::getAudioTracks (*edit);
+        if (trackIdx < 0)
+        {
+            for (int i = 0; i < tracks.size(); ++i)
+                if (tracks[i]->pluginList.findFirstPluginOfType<VocalChannelPlugin>() != nullptr)
+                {
+                    trackIdx = i;
+                    break;
+                }
+        }
+        if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "No VocalChannelPlugin track found");
+
+        auto* vocal = tracks[trackIdx]->pluginList.findFirstPluginOfType<VocalChannelPlugin>();
+        if (vocal == nullptr)
+            return makeErrorResponse (id, -32602, "No VocalChannelPlugin on track");
+        if (! PluginPresetManager::applyFactoryPreset (*vocal, preset))
+            return makeErrorResponse (id, -32602, "Unknown vocal preset: " + preset);
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("track_index", trackIdx);
+        res->setProperty ("preset", preset);
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-026: rpg.apply_encounter_cue — atomic tabletop encounter directive
+    if (method == "rpg.apply_encounter_cue")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+
+        const auto event = params.getProperty ("event", "exploration").toString().trim().toLowerCase();
+        juce::String biome = params.getProperty ("biome", "").toString().trim().toLowerCase();
+        juce::String sfxName = params.getProperty ("sfx_name", "").toString().trim().toLowerCase();
+        float mood = 0.35f;
+        juce::String gmVoice = params.getProperty ("gm_voice", "").toString().trim().toLowerCase();
+
+        if (event == "boss_reveal")       { biome = "boss_altar"; mood = 1.0f; sfxName = "dragon_roar"; gmVoice = "heroic_narrator"; }
+        else if (event == "cosmic_dread") { biome = "drowned_stars"; mood = 0.55f; sfxName = "eldritch_whisper"; gmVoice = "eldritch_monster"; }
+        else if (event == "roll_initiative") { biome = "haunted_crypt"; mood = 0.65f; sfxName = "dice_roll"; }
+        else if (event == "exploration")  { biome = "ancient_forest"; mood = 0.2f; }
+        else if (event == "tavern_rest")  { biome = "rainy_tavern"; mood = 0.15f; sfxName = "healing_chime"; }
+        else if (event == "critical_hit") { mood = 0.85f; sfxName = "critical_hit"; }
+        else if (event == "spell_cast")   { mood = 0.6f; sfxName = "fireball_cast"; }
+        else if (biome.isEmpty())         { biome = "stormy_sea"; }
+
+        auto* board = [&] () -> RpgSoundboardPlugin*
+        {
+            for (auto* track : te::getAudioTracks (*edit))
+                if (auto* p = track->pluginList.findFirstPluginOfType<RpgSoundboardPlugin>())
+                    return p;
+            return nullptr;
+        }();
+        if (board == nullptr)
+            return makeErrorResponse (id, -32002, "No RPG Soundboard on the Edit");
+
+        board->setBiome (biome);
+        if (auto p = board->getAutomatableParameterByID ("moodIntensity"))
+            p->setParameter (mood, juce::sendNotification);
+        if (sfxName.isNotEmpty())
+            board->triggerPad (RpgSoundboardPlugin::parseSfx (sfxName), 0.9f);
+
+        juce::String appliedVoice;
+        if (gmVoice.isNotEmpty())
+        {
+            static const std::pair<const char*, const char*> voiceModes[] {
+                { "normal_gm", "ACX Audiobook" },
+                { "eldritch_monster", "Deep Trailer / Villain" },
+                { "radio_telepathy", "Commercial Bright" },
+                { "heroic_narrator", "Anime / Cartoon Lead" }
+            };
+            for (const auto& mode : voiceModes)
+                if (gmVoice == mode.first)
+                {
+                    for (auto* track : te::getAudioTracks (*edit))
+                        if (auto* vocal = track->pluginList.findFirstPluginOfType<VocalChannelPlugin>())
+                            if (PluginPresetManager::applyFactoryPreset (*vocal, mode.second))
+                            {
+                                appliedVoice = mode.second;
+                                break;
+                            }
+                    break;
+                }
+        }
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("event", event);
+        res->setProperty ("biome", biome);
+        res->setProperty ("mood_intensity", mood);
+        res->setProperty ("sfx_name", sfxName);
+        res->setProperty ("gm_voice_preset", appliedVoice);
         return makeResultResponse (id, juce::var (res));
     }
 

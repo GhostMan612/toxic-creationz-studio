@@ -713,6 +713,58 @@ def generate_vo_practice_script(
     }
 
 
+def resolve_rpg_encounter_cue(event: str, setting: str = "cosmic_horror") -> dict[str, Any]:
+    """Turn a natural tabletop event into a deterministic soundboard directive."""
+    text = " ".join([event, setting]).strip().lower()
+    if "boss" in text or "initiative" in text or "dragon" in text:
+        return {
+            "event": "boss_reveal",
+            "biome": "boss_altar",
+            "mood_intensity": 1.0,
+            "sfx_name": "dragon_roar",
+            "gm_voice": "heroic_narrator",
+        }
+    if "critical" in text or "hit" in text or "damage" in text:
+        return {
+            "event": "critical_hit",
+            "biome": "haunted_crypt",
+            "mood_intensity": 0.85,
+            "sfx_name": "critical_hit",
+            "gm_voice": "normal_gm",
+        }
+    if "spell" in text or "fireball" in text or "cast" in text:
+        return {
+            "event": "spell_cast",
+            "biome": "ancient_forest",
+            "mood_intensity": 0.6,
+            "sfx_name": "fireball_cast",
+            "gm_voice": "normal_gm",
+        }
+    if "tavern" in text or "rest" in text or "heal" in text:
+        return {
+            "event": "tavern_rest",
+            "biome": "rainy_tavern",
+            "mood_intensity": 0.15,
+            "sfx_name": "healing_chime",
+            "gm_voice": "normal_gm",
+        }
+    if "drowned" in text or "vault" in text or "cosmic" in text or "eldritch" in text:
+        return {
+            "event": "cosmic_dread",
+            "biome": "drowned_stars",
+            "mood_intensity": 0.55,
+            "sfx_name": "eldritch_whisper",
+            "gm_voice": "eldritch_monster",
+        }
+    return {
+        "event": "exploration",
+        "biome": "ancient_forest",
+        "mood_intensity": 0.2,
+        "sfx_name": "",
+        "gm_voice": "normal_gm",
+    }
+
+
 def _main() -> int:
     parser = argparse.ArgumentParser(description="Toxic Creationz Studio AI audio stem worker")
     parser.add_argument("--action", default="generate", choices=["generate", "separate"])
