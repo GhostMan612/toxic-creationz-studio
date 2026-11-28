@@ -4631,6 +4631,126 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-025 procedural RPG soundboard & biome crossfade PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-026: Pathfinder God live encounter bridge & GM voice toggle
+    //===========================================================================
+    {
+        app.edit->ensureNumberOfAudioTracks (6);
+        auto tracks = te::getAudioTracks (*app.edit);
+        auto* gmTrack = tracks[tracks.size() - 2];
+        gmTrack->setName ("GM Voice");
+        auto vocalPtr = app.edit->getPluginCache().createNewPlugin (VocalChannelPlugin::xmlTypeName, {});
+        if (vocalPtr == nullptr)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-026 VocalChannelPlugin could not be created" << std::endl;
+            return 1;
+        }
+        gmTrack->pluginList.insertPlugin (vocalPtr, 0, nullptr);
+        vocalPtr = nullptr;
+
+        const auto cue = [] (const char* event) -> juce::var
+        {
+            auto* params = new juce::DynamicObject();
+            params->setProperty ("event", event);
+            auto* request = new juce::DynamicObject();
+            request->setProperty ("jsonrpc", "2.0");
+            request->setProperty ("id", 601);
+            request->setProperty ("method", "rpg.apply_encounter_cue");
+            request->setProperty ("params", juce::var (params));
+            return juce::var (request);
+        };
+
+        juce::var bossParsed;
+        const auto bossResponse = app.ipcServer.executeJsonRpcOnMessageThread (
+            juce::JSON::toString (cue ("boss_reveal"), true));
+        juce::var dreadParsed;
+        const auto dreadResponse = app.ipcServer.executeJsonRpcOnMessageThread (
+            juce::JSON::toString (cue ("cosmic_dread"), true));
+
+        if (! juce::JSON::parse (bossResponse, bossParsed).wasOk() || bossParsed.hasProperty ("error")
+            || bossParsed["result"]["biome"].toString() != "boss_altar"
+            || static_cast<double> (bossParsed["result"]["mood_intensity"]) < 0.99
+            || bossParsed["result"]["gm_voice_preset"].toString().isEmpty()
+            || ! juce::JSON::parse (dreadResponse, dreadParsed).wasOk() || dreadParsed.hasProperty ("error")
+            || dreadParsed["result"]["biome"].toString() != "drowned_stars"
+            || dreadParsed["result"]["sfx_name"].toString() != "eldritch_whisper")
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-026 encounter cue mapping failed" << std::endl;
+            return 1;
+        }
+
+        // Custom pad WAV + SourceFileReference must survive a session reload.
+        const auto padWav = tempDir.getChildFile ("wo026_custom_pad.wav");
+        const auto padBuffer = tcs::game::SfxForgeEngine::renderSfx (
+            tcs::game::SfxCategory::uiClick, tcs::game::SfxRenderParams {});
+        tcs::game::GameAssetExporter::writeWav (padBuffer, padWav, 44100.0, 1);
+        {
+            auto padsState = app.edit->state.getOrCreateChildWithName ("RPG_CUSTOM_PADS", nullptr);
+            auto slot = padsState.getOrCreateChildWithName ("PAD_1", nullptr);
+            te::SourceFileReference ref (*app.edit, slot, juce::Identifier ("source"));
+            ref.setToFile (padWav, te::SourceFileReference::PathStyle::alwaysAbsolute, false);
+        }
+
+        bool boardBeforeReload = false;
+        for (auto* track : te::getAudioTracks (*app.edit))
+            if (track->pluginList.findFirstPluginOfType<RpgSoundboardPlugin>() != nullptr)
+                boardBeforeReload = true;
+        if (! boardBeforeReload)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-026 soundboard missing before GM voice toggle" << std::endl;
+            return 1;
+        }
+
+        const auto voiceParams = new juce::DynamicObject();
+        voiceParams->setProperty ("preset", "Deep Trailer / Villain");
+        voiceParams->setProperty ("track_index", -1);
+        auto* voiceReq = new juce::DynamicObject();
+        voiceReq->setProperty ("jsonrpc", "2.0");
+        voiceReq->setProperty ("id", 602);
+        voiceReq->setProperty ("method", "vo.apply_preset");
+        voiceReq->setProperty ("params", juce::var (voiceParams));
+        juce::var voiceParsed;
+        if (! juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                juce::JSON::toString (juce::var (voiceReq), true)), voiceParsed).wasOk()
+            || voiceParsed.hasProperty ("error"))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-026 GM voice preset toggle failed" << std::endl;
+            return 1;
+        }
+
+        const auto rpg26Session = tempDir.getChildFile ("aidaw_wo026_rpg.tracktionedit");
+        app.currentEditFile = rpg26Session;
+        app.sessionUntitled = false;
+        app.saveSession();
+        if (! app.loadSessionFromFileSafely (rpg26Session))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-026 session round-trip failed" << std::endl;
+            return 1;
+        }
+
+        bool boardAfterReload = false;
+        bool padPathPersisted = false;
+        for (auto* track : te::getAudioTracks (*app.edit))
+            if (track->pluginList.findFirstPluginOfType<RpgSoundboardPlugin>() != nullptr)
+                boardAfterReload = true;
+        auto pads = app.edit->state.getChildWithName ("RPG_CUSTOM_PADS");
+        if (pads.isValid())
+        {
+            auto slot = pads.getChildWithName ("PAD_1");
+            if (slot.isValid())
+                padPathPersisted = slot.getProperty ("source").toString().contains ("wo026_custom_pad");
+        }
+        rpg26Session.deleteFile();
+        padWav.deleteFile();
+        if (! boardAfterReload || ! padPathPersisted)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-026 board or custom pad did not persist" << std::endl;
+            return 1;
+        }
+
+        std::cout << "[SMOKE_TEST] WO-026 live encounter cues, GM voice toggle & custom pad persistence PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -4678,7 +4798,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "and the WO-023 game SFX forge / seamless loop renderer, plus WO-024 adaptive "
                  "stems, VOX bark batching and the Godot 4 audio manifest, and the WO-024B music theory "
                  "catalog, scale-pure song forms, seed variation and arrangement persistence, "
-                 "and the WO-025 procedural RPG soundboard, biome crossfade and one-shot pool verified."
+                 "and the WO-025 procedural RPG soundboard, biome crossfade and one-shot pool, "
+                 "and the WO-026 encounter cues, GM voice toggle and custom pad persistence verified."
               << std::endl;
     return 0;
 }

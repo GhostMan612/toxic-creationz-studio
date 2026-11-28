@@ -156,6 +156,8 @@ if(TCS_BUILD_DESKTOP_APP)
         src/GameForgeComponent.cpp
         src/MusicTheoryEngine.h
         src/RpgSoundboardPlugin.h
+        src/RpgSoundboardComponent.h
+        src/RpgSoundboardComponent.cpp
         src/MidiKeyboardDock.h
         src/MidiKeyboardDock.cpp
         src/ScriptPrompterComponent.h

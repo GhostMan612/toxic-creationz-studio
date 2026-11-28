@@ -56,6 +56,8 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 | **WO-023 (Phase 8A)** | `SfxForgeEngine`: 8 zero-asset procedural game SFX categories with seeded variation batches and a phase-locked, click-free seamless loop renderer with BS.1770 LUFS normalization. |
 | **WO-024 (Phase 8B)** | Game Audio & Asset Forge Suite: `GameForgeComponent` dock, adaptive intensity BGM stems, VOX bark trimming/normalization and Godot 4 / asset-vault `audio_manifest.json` export. |
 | **WO-024B (Phase 8C)** | `MusicTheoryEngine`: 12 keys, 16 scales/modes, 14 genre DNA profiles, Euclidean rhythms, rich voicings and a seeded multi-section song-form/motif/counter-melody generator wired into the BGM UI, JSON-RPC and FastMCP. |
+| **WO-025 (Phase 9A)** | Pathfinder God live soundboard engine: `RpgSoundboardPlugin` with six crossfading biomes, mood drive and a lock-free 8-voice procedural SFX pool. |
+| **WO-026 (Phase 9B)** | `RpgSoundboardComponent` 4×4 live pad dock, GM character-voice toggle, encounter cue MCP bridge and persisted custom pad WAV paths. |
 
 ---
 

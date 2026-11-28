@@ -157,6 +157,8 @@ MainComponent::MainComponent()
     scriptPrompter.setVisible (false);
     addAndMakeVisible (gameForgeComponent);
     gameForgeComponent.setVisible (false);
+    addAndMakeVisible (rpgSoundboardComponent);
+    rpgSoundboardComponent.setVisible (false);
 
     mixerComponent.setRecordingManager (&recordingManager);
     arrangementView.setRecordingManager (&recordingManager);
@@ -576,6 +578,7 @@ MainComponent::MainComponent()
         scriptPrompter.setVisible (voBoothToggleButton.getToggleState());
         if (edit != nullptr)
             scriptPrompter.setEdit (edit.get());
+        rpgSoundboardComponent.setEdit (edit.get());
         resized();
     };
 
@@ -636,7 +639,29 @@ MainComponent::MainComponent()
             && bgmGeneratorComponent.onBgmGenerated)
             bgmGeneratorComponent.onBgmGenerated (static_cast<int> (parsed["result"]["total_notes"]));
     };
-    rpgBoardPlaceholder.setEnabled (false);
+    rpgBoardPlaceholder.setClickingTogglesState (true);
+    rpgBoardPlaceholder.setToggleState (false, juce::dontSendNotification);
+    rpgBoardPlaceholder.onClick = [this]
+    {
+        rpgSoundboardComponent.setVisible (rpgBoardPlaceholder.getToggleState());
+        rpgSoundboardComponent.setEdit (edit.get());
+        resized();
+    };
+    rpgSoundboardComponent.onAction = [this] (const juce::String& method, const juce::String& paramsJson)
+    {
+        juce::var parsedParams;
+        if (! juce::JSON::parse (paramsJson, parsedParams).wasOk())
+            return;
+        auto* request = new juce::DynamicObject();
+        request->setProperty ("jsonrpc", "2.0");
+        request->setProperty ("id", 144);
+        request->setProperty ("method", method);
+        request->setProperty ("params", parsedParams);
+        const auto response = ipcServer.executeJsonRpcOnMessageThread (
+            juce::JSON::toString (juce::var (request), true));
+        juce::var parsed;
+        juce::JSON::parse (response, parsed);
+    };
     addAndMakeVisible (gameForgePlaceholder);
     addAndMakeVisible (rpgBoardPlaceholder);
 
@@ -692,6 +717,7 @@ void MainComponent::setWorkspaceMode (WorkspaceMode mode)
 
     if (vo && edit != nullptr)
         scriptPrompter.setEdit (edit.get());
+        rpgSoundboardComponent.setEdit (edit.get());
 
     saveWorkspaceMode();
     resized();
@@ -761,6 +787,7 @@ MainComponent::~MainComponent()
         waveformEditorComponent.setTarget (nullptr, {});
         midiKeyboardDock.setEdit (nullptr);
         scriptPrompter.setEdit (nullptr);
+        rpgSoundboardComponent.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         te::PluginWindowState::hideAllWindowsTemporarily (*edit);
@@ -1051,6 +1078,7 @@ void MainComponent::attachEdit (te::Edit& editToAttach)
     waveformEditorComponent.setTarget (&editToAttach, arrangementView.getSelectedClipID());
     midiKeyboardDock.setEdit (&editToAttach);
     scriptPrompter.setEdit (&editToAttach);
+    rpgSoundboardComponent.setEdit (&editToAttach);
     bpmSlider.setValue (editToAttach.tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
     syncTransportControlsFromEdit();
 }
@@ -1240,6 +1268,7 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
         waveformEditorComponent.setTarget (nullptr, {});
         midiKeyboardDock.setEdit (nullptr);
         scriptPrompter.setEdit (nullptr);
+        rpgSoundboardComponent.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         te::PluginWindowState::hideAllWindowsTemporarily (*edit);
@@ -1629,6 +1658,12 @@ void MainComponent::resized()
     if (gameForgeComponent.isVisible())
     {
         gameForgeComponent.setBounds (area.removeFromBottom (162));
+        area.removeFromBottom (4);
+    }
+
+    if (rpgSoundboardComponent.isVisible())
+    {
+        rpgSoundboardComponent.setBounds (area.removeFromBottom (190));
         area.removeFromBottom (4);
     }
 

@@ -967,5 +967,33 @@ async def get_rpg_soundboard_state() -> dict[str, Any]:
     return await send_daw_rpc("rpg.get_state", {})
 
 
+@mcp.tool()
+async def apply_rpg_encounter_cue(
+    event: str = "exploration",
+    biome: str = "",
+    gm_voice: str = "",
+    sfx_name: str = "",
+) -> dict[str, Any]:
+    """Apply a tabletop encounter cue: biome, mood, SFX and GM voice atomically."""
+    params: dict[str, Any] = {
+        "event": event.strip().lower(),
+        "biome": biome.strip().lower(),
+        "gm_voice": gm_voice.strip().lower(),
+        "sfx_name": sfx_name.strip().lower(),
+    }
+    return await send_daw_rpc("rpg.apply_encounter_cue", params)
+
+
+@mcp.tool()
+async def set_gm_voice_mode(
+    preset: str = "ACX Audiobook",
+    track_index: int = -1,
+) -> dict[str, Any]:
+    """Instantly swap the GM VocalChannelPlugin preset without touching ambience."""
+    return await send_daw_rpc("vo.apply_preset", {
+        "preset": preset.strip(), "track_index": track_index,
+    })
+
+
 if __name__ == "__main__":
     mcp.run()
