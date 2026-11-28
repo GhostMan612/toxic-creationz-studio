@@ -995,5 +995,25 @@ async def set_gm_voice_mode(
     })
 
 
+@mcp.tool()
+async def ask_ghost_tutor(question: str, use_llm: bool = True) -> dict[str, Any]:
+    """Ask the in-app Ghost Tutor; answers are grounded in the local knowledge bundle."""
+    return await send_daw_rpc("ghost.ask", {
+        "question": question.strip(), "use_llm": bool(use_llm),
+    })
+
+
+@mcp.tool()
+async def get_ghost_state() -> dict[str, Any]:
+    """Read Ghost panel state, proactive setting, model and walkthrough progress."""
+    return await send_daw_rpc("ghost.get_state", {})
+
+
+@mcp.tool()
+async def set_ghost_proactive(enabled: bool = False) -> dict[str, Any]:
+    """Persist Ghost proactive mode (default off; never auto-acts)."""
+    return await send_daw_rpc("ghost.set_proactive", {"enabled": bool(enabled)})
+
+
 if __name__ == "__main__":
     mcp.run()

@@ -38,6 +38,9 @@ Copy-Item "mcp\requirements.txt"   (Join-Path $StageDir "mcp\requirements.txt")
 if (Test-Path "README.md") {
     Copy-Item "README.md" (Join-Path $StageDir "README.md")
 }
+if (Test-Path "docs\GHOST_KNOWLEDGE.md") {
+    Copy-Item "docs\GHOST_KNOWLEDGE.md" (Join-Path $StageDir "GHOST_KNOWLEDGE.md")
+}
 
 Compress-Archive -Path "$StageDir\*" -DestinationPath $ZipPath -Force
 

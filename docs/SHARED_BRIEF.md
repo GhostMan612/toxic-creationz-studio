@@ -37,6 +37,10 @@
 - Phase 9 Pathfinder God Live Soundboard Suite (WO-025–WO-026) is complete:
   `RpgSoundboardComponent` 4×4 pad dock, six biomes, GM voice toggle bar, encounter
   cue RPC/MCP bridge and persisted custom pad WAV paths; Python 60/60.
+- Phase 10 Ghost Tutor (WO-027) is complete on `dev/v1.4-ghost-tutor`:
+  `GhostTutorComponent` chat dock, compiled `GHOST_KNOWLEDGE.md` fallback, local
+  Ollama brain, guided walkthroughs, confirm-before-act chips and `ghost.*` RPCs;
+  Python 64/64.
 - Full repo sweep / reconciliation (local on `fix/repo-sweep-reconciliation`): verified
   WO-001..WO-020 against source; restored the two unimplemented briefing CV modules
   (`CvEnvelopeFollowerPlugin`, `CvStepModulatorPlugin`), fixed the unreachable Android

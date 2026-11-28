@@ -1137,6 +1137,50 @@ class McpWorkerTests(unittest.TestCase):
         for method in ("rpg.apply_encounter_cue", "vo.apply_preset"):
             self.assertIn(method, server)
 
+    def test_ask_ghost_tutor_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={
+            "source": "bundle",
+            "actions": [{"label": "Arm track 1", "method": "recording.arm_track", "params": {}}],
+        })
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.ask_ghost_tutor(" how do I record? ", False))
+
+        self.assertEqual(res["source"], "bundle")
+        self.assertEqual(res["actions"][0]["method"], "recording.arm_track")
+        mock_rpc.assert_awaited_once_with("ghost.ask", {
+            "question": "how do I record?", "use_llm": False,
+        })
+
+    def test_get_ghost_state_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"proactive_enabled": False})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.get_ghost_state())
+
+        self.assertFalse(res["proactive_enabled"])
+        mock_rpc.assert_awaited_once_with("ghost.get_state", {})
+
+    def test_set_ghost_proactive_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"proactive_enabled": True})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.set_ghost_proactive(True))
+
+        self.assertTrue(res["proactive_enabled"])
+        mock_rpc.assert_awaited_once_with("ghost.set_proactive", {"enabled": True})
+
+    def test_ghost_knowledge_bundle_sections(self) -> None:
+        bundle = (_MCP_DIR.parent / "docs" / "GHOST_KNOWLEDGE.md").read_text(encoding="utf-8")
+        sections = [line for line in bundle.splitlines() if line.startswith("## ")]
+        self.assertGreaterEqual(len(sections), 10)
+        for keyword in ("record-arming", "rack-patching-hardware", "voice-acting-booth",
+                        "game-audio-forge", "live-soundboard"):
+            self.assertIn("## " + keyword, bundle)
+
 
 if __name__ == "__main__":
     unittest.main()
