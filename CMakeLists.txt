@@ -165,6 +165,8 @@ if(TCS_BUILD_DESKTOP_APP)
         src/GhostWalkthroughs.h
         src/GhostTutorComponent.h
         src/GhostTutorComponent.cpp
+        src/UiSoundService.h
+        src/UiSoundService.cpp
         src/MidiKeyboardDock.h
         src/MidiKeyboardDock.cpp
         src/ScriptPrompterComponent.h

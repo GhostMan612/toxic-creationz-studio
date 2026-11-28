@@ -12,6 +12,7 @@
 #include "MusicTheoryEngine.h"
 #include "RpgSoundboardPlugin.h"
 #include "GhostTutorComponent.h"
+#include "UiSoundService.h"
 #include "SfxForgeEngine.h"
 #include "StudioPluginWindow.h"
 #include "VocalChannelPlugin.h"
@@ -30,6 +31,7 @@
 int MainComponent::runHeadlessSmokeTest()
 {
     GhostBrain::setHeadless (true);
+    tcs::ui::UiSoundService::setHeadless (true);
     std::cout << "[SMOKE_TEST] Initializing Tracktion Engine..." << std::endl;
 
     // MainComponent owns the Engine and exercises the real session/scanner code.
@@ -5041,6 +5043,94 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-029 true-to-hardware faceplates & display-only playhead sync PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-030: SFX Forge panel & UI touch sounds
+    //===========================================================================
+    {
+        tcs::game::SfxRenderParams uiParams;
+        uiParams.seed = 101;
+        uiParams.durationSec = 0.055;
+        const auto first = tcs::game::SfxForgeEngine::renderSfx (tcs::game::SfxCategory::uiClick, uiParams);
+        const auto second = tcs::game::SfxForgeEngine::renderSfx (tcs::game::SfxCategory::uiClick, uiParams);
+        bool deterministic = first.getNumSamples() == second.getNumSamples()
+                          && first.getNumSamples() > 0
+                          && static_cast<double> (first.getNumSamples()) / 44100.0 < 0.15;
+        for (int i = 0; deterministic && i < first.getNumSamples(); ++i)
+            if (first.getSample (0, i) != second.getSample (0, i))
+                deterministic = false;
+        if (! deterministic || first.getRMSLevel (0, 0, first.getNumSamples()) <= 1.0e-5f)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-030 UI click render was not deterministic/short" << std::endl;
+            return 1;
+        }
+
+        app.uiSoundService.renderBank (42);
+        for (const auto& name : tcs::ui::UiSoundService::soundNames())
+            if (tcs::ui::UiSoundService::durationMs (name) <= 0
+                || tcs::ui::UiSoundService::durationMs (name) >= 150)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-030 bank sound " << name
+                          << " was not under 150 ms" << std::endl;
+                return 1;
+            }
+
+        app.uiSoundService.setEnabled (true);
+        app.uiSoundService.play ("click");
+        juce::AudioBuffer<float> monitor (2, 512);
+        monitor.clear();
+        float* channels[2] { monitor.getWritePointer (0), monitor.getWritePointer (1) };
+        app.uiSoundService.renderCallbackBlock (channels, 2, 512);
+        const float monitorRms = monitor.getRMSLevel (0, 0, 512);
+        if (! std::isfinite (monitorRms) || monitorRms <= 1.0e-7f)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-030 UI sound monitor was silent" << std::endl;
+            return 1;
+        }
+
+        auto* setParams = new juce::DynamicObject();
+        setParams->setProperty ("enabled", false);
+        setParams->setProperty ("volume_db", -18.0);
+        auto* setReq = new juce::DynamicObject();
+        setReq->setProperty ("jsonrpc", "2.0");
+        setReq->setProperty ("id", 901);
+        setReq->setProperty ("method", "sfx.set_ui_sounds");
+        setReq->setProperty ("params", juce::var (setParams));
+        juce::var setParsed;
+        if (! juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                juce::JSON::toString (juce::var (setReq), true)), setParsed).wasOk()
+            || setParsed.hasProperty ("error") || app.uiSoundService.isEnabled())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-030 UI sound mute RPC failed" << std::endl;
+            return 1;
+        }
+        app.uiSoundService.play ("click");
+        monitor.clear();
+        app.uiSoundService.renderCallbackBlock (channels, 2, 512);
+        if (monitor.getMagnitude (0, 512) >= 1.0e-7f)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-030 muted UI sound was not silent" << std::endl;
+            return 1;
+        }
+        app.uiSoundService.setEnabled (true);
+
+        const auto forgeDir = tempDir.getChildFile ("tcs_wo030_smoke");
+        forgeDir.deleteRecursively();
+        const int written = tcs::game::SfxForgeEngine::generateSfxVariations (
+            tcs::game::SfxCategory::uiClick, forgeDir, "ui_click_42", 4, 42, 0.055, -1.0);
+        bool namesOk = written == 4;
+        for (int i = 1; i <= 4 && namesOk; ++i)
+            namesOk = forgeDir.getChildFile ("ui_click_42_" + juce::String (i).paddedLeft ('0', 2)
+                                             + ".wav").existsAsFile();
+        forgeDir.deleteRecursively();
+        if (! namesOk)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-030 variation naming failed" << std::endl;
+            return 1;
+        }
+
+        std::cout << "[SMOKE_TEST] WO-030 UI sound bank, monitor mute & forge panel PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -5092,7 +5182,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "and the WO-026 encounter cues, GM voice toggle and custom pad persistence, "
                  "and the WO-027 Ghost Tutor bundle answers, proposed actions and state persistence, "
                  "and the WO-028 one-undo multi-stem arrangement and clip-info resolution, "
-                 "and the WO-029 true-to-hardware faceplates and display-only playhead sync verified."
+                 "and the WO-029 true-to-hardware faceplates and display-only playhead sync, "
+                 "and the WO-030 UI sound bank, monitor mute and forge naming verified."
               << std::endl;
     return 0;
 }

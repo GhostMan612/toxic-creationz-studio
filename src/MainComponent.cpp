@@ -618,6 +618,10 @@ MainComponent::MainComponent()
                      && ! parsedResponse.hasProperty ("error");
         gameForgeComponent.setStatus (ok ? "OK: " + method : "Failed: " + method);
     };
+    gameForgeComponent.onUiSound = [this] (const juce::String& name)
+    {
+        uiSoundService.play (name);
+    };
     bgmGeneratorComponent.onGenerateAdvanced = [this]
     {
         const auto req = bgmGeneratorComponent.getAdvancedRequest();
@@ -1692,7 +1696,7 @@ void MainComponent::resized()
 
     if (gameForgeComponent.isVisible())
     {
-        gameForgeComponent.setBounds (area.removeFromBottom (162));
+        gameForgeComponent.setBounds (area.removeFromBottom (196));
         area.removeFromBottom (4);
     }
 

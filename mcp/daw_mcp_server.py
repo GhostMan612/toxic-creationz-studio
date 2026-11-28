@@ -1118,5 +1118,20 @@ async def generate_arrangement(
     return {"generated": result, "imported": imported}
 
 
+@mcp.tool()
+async def forge_ui_sound_bank(seed: int = 42) -> dict[str, Any]:
+    """Re-render the seven deterministic UI touch sounds at a given seed."""
+    return await send_daw_rpc("sfx.render_ui_bank", {"seed": max(0, int(seed))})
+
+
+@mcp.tool()
+async def set_ui_sounds(enabled: bool = True, volume_db: float = -18.0) -> dict[str, Any]:
+    """Enable/mute UI touch sounds and set their volume (app-level setting)."""
+    return await send_daw_rpc("sfx.set_ui_sounds", {
+        "enabled": bool(enabled),
+        "volume_db": min(0.0, max(-60.0, float(volume_db))),
+    })
+
+
 if __name__ == "__main__":
     mcp.run()

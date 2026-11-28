@@ -24,6 +24,7 @@ public:
     void setExportDirectory (const juce::File& dir);
 
     std::function<void (const juce::String&, const juce::String&)> onAction;
+    std::function<void (const juce::String&)> onUiSound;
 
 private:
     void forgeVariations();
@@ -51,6 +52,10 @@ private:
     juce::TextButton stemsButton { "Export Adaptive Stems" };
     juce::TextButton packButton  { "Export Godot Audio Pack" };
     juce::Label exportStatus      { {}, "Ready" };
+
+    juce::Label uiSoundLabel      { {}, "UI Sounds" };
+    juce::TextButton uiSoundButtons[7];
+    juce::TextButton uiMuteButton { "Mute UI Sounds" };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (GameForgeComponent)
 };

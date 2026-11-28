@@ -1265,6 +1265,53 @@ class McpWorkerTests(unittest.TestCase):
         self.assertEqual(method, "audio.import_arrangement")
         self.assertEqual([s["name"] for s in params["stems"]], ["drums", "bass", "lead"])
 
+    def test_forge_ui_sound_bank_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"seed": 42, "sounds": []})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.forge_ui_sound_bank(42))
+
+        self.assertEqual(res["seed"], 42)
+        mock_rpc.assert_awaited_once_with("sfx.render_ui_bank", {"seed": 42})
+
+    def test_set_ui_sounds_tool_clamps(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"enabled": True, "volume_db": 0.0})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.set_ui_sounds(True, 99.0))
+
+        self.assertEqual(res["volume_db"], 0.0)
+        mock_rpc.assert_awaited_once_with("sfx.set_ui_sounds", {
+            "enabled": True, "volume_db": 0.0,
+        })
+
+    def test_forge_game_sfx_batch_ui_click_params(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"count": 4})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            asyncio.run(srv.forge_game_sfx_batch(
+                "ui_click", count=4, seed=7, output_path="C:/sfx", prefix="ui_click"))
+
+        method, params = mock_rpc.await_args.args
+        self.assertEqual(method, "game.forge_sfx_batch")
+        self.assertEqual(params["category"], "ui_click")
+        self.assertEqual(params["prefix"], "ui_click")
+        self.assertIn("duration_sec", params)
+
+    def test_wo030_cpp_sources_declare_required_symbols(self) -> None:
+        root = _MCP_DIR.parent
+        service = (root / "src" / "UiSoundService.h").read_text(encoding="utf-8")
+        self.assertIn("renderCallbackBlock", service)
+        self.assertIn("numSounds = 7", service)
+        panel = (root / "src" / "GameForgeComponent.cpp").read_text(encoding="utf-8")
+        self.assertIn("onUiSound", panel)
+        server = (root / "src" / "DawIpcServer.cpp").read_text(encoding="utf-8")
+        for method in ("sfx.render_ui_bank", "sfx.set_ui_sounds"):
+            self.assertIn(method, server)
+
 
 if __name__ == "__main__":
     unittest.main()
