@@ -52,6 +52,10 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 | **Sweep Reconciliation** | Restored the missing briefing CV **Envelope Follower** and **8-Step Modulator** modules, fixed the unreachable Android Oboe define, hardened the portable zip against zero-filled executables, and made cross-platform CI run on pull requests. |
 | **WO-021 (Phase 7A)** | Voice Acting Studio Part 1: `VocalChannelPlugin` (HPF / hysteresis gate / split-band de-esser / limiter + 5 VO presets), punch-and-roll splice, slate-tagged takes, A/B/C audition export, and a BS.1770/ACX `VocalSpecAnalyzer`. |
 | **WO-022 (Phase 7B)** | Voice Acting Studio Part 2: `VO Booth` teleprompter dock with cue markers, monitor-only Anime ADR 3-beep cue + 4-2-15 warm-up pacer, 4 Character FX rack macros, and AI Voice Director RPC/MCP tools. |
+| **WO-022B (Phase 7C)** | Boutique hardware faceplates, `StudioLookAndFeel` knobs/faders/LEDs, catenary rack cables with right-click disconnect, and the Studio / Modular Rack / VO Booth workspace switcher. |
+| **WO-023 (Phase 8A)** | `SfxForgeEngine`: 8 zero-asset procedural game SFX categories with seeded variation batches and a phase-locked, click-free seamless loop renderer with BS.1770 LUFS normalization. |
+| **WO-024 (Phase 8B)** | Game Audio & Asset Forge Suite: `GameForgeComponent` dock, adaptive intensity BGM stems, VOX bark trimming/normalization and Godot 4 / asset-vault `audio_manifest.json` export. |
+| **WO-024B (Phase 8C)** | `MusicTheoryEngine`: 12 keys, 16 scales/modes, 14 genre DNA profiles, Euclidean rhythms, rich voicings and a seeded multi-section song-form/motif/counter-melody generator wired into the BGM UI, JSON-RPC and FastMCP. |
 
 ---
 

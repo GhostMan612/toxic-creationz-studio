@@ -872,6 +872,182 @@ class McpWorkerTests(unittest.TestCase):
             timeout=15.0,
         )
 
+    def test_forge_game_sfx_batch_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"count": 4})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.forge_game_sfx_batch(
+                "ui_click", count=99, seed=7, output_path="/tmp/sfx",
+                duration_sec=99.0, peak_db=99.0))
+
+        self.assertEqual(res["count"], 4)
+        mock_rpc.assert_awaited_once_with(
+            "game.forge_sfx_batch",
+            {"category": "ui_click", "count": 16, "seed": 7, "output_dir": "/tmp/sfx",
+             "prefix": "", "duration_sec": 10.0, "peak_db": 0.0,
+             "import_first_to_track": -1},
+            timeout=30.0,
+        )
+
+    def test_export_seamless_game_loop_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"output_file": "C:/tmp/loop.wav"})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.export_seamless_game_loop(
+                start_beat=1.0, end_beat=9.0, output_path="C:/tmp/loop.wav",
+                tail_seconds=99.0, target_lufs=-99.0))
+
+        self.assertEqual(res["output_file"], "C:/tmp/loop.wav")
+        mock_rpc.assert_awaited_once_with(
+            "audio.export_seamless_loop",
+            {"start_beat": 1.0, "end_beat": 9.0, "output_path": "C:/tmp/loop.wav",
+             "tail_seconds": 5.0, "target_lufs": -40.0},
+            timeout=30.0,
+        )
+
+    def test_wo023_engine_and_exporter_sources(self) -> None:
+        root = _MCP_DIR.parent
+        engine = (root / "src" / "SfxForgeEngine.h").read_text(encoding="utf-8")
+        for marker in ("gunshotTactical", "breachExplosion", "footstepSurface", "uiClick",
+                       "meleeImpact", "doorBreach", "sciFiPulse", "ambientDrone",
+                       "generateSfxVariations", "withBitsPerSample (16)"):
+            self.assertIn(marker, engine)
+        exporter = (root / "src" / "MixdownExporter.h").read_text(encoding="utf-8")
+        self.assertIn("exportSeamlessLoopWav", exporter)
+        self.assertIn("targetLufs", exporter)
+
+    def test_wo023_rpc_methods_registered(self) -> None:
+        server = (_MCP_DIR.parent / "src" / "DawIpcServer.cpp").read_text(encoding="utf-8")
+        for method in ("game.forge_sfx_batch", "audio.export_seamless_loop"):
+            self.assertIn(method, server)
+        self.assertIn("SfxForgeEngine.h", server)
+        isolation = (_MCP_DIR.parent / "src" / "CoreIsolationCheck.cpp").read_text(encoding="utf-8")
+        self.assertIn("SfxForgeEngine.h", isolation)
+
+    def test_export_adaptive_bgm_stems_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"count": 2})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.export_adaptive_bgm_stems(
+                0.0, 8.0, "C:/pack", {"calm": [0], "combat": [1, 2]}, -99.0))
+
+        self.assertEqual(res["count"], 2)
+        mock_rpc.assert_awaited_once_with(
+            "game.export_adaptive_stems",
+            {"start_beat": 0.0, "end_beat": 8.0, "output_dir": "C:/pack",
+             "layers": {"calm": [0], "combat": [1, 2]}, "target_lufs": -40.0},
+            timeout=30.0,
+        )
+
+    def test_process_vox_barks_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"count": 3})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.process_vox_barks(
+                [" C:/a.wav ", "C:/b.wav"], "C:/pack", " hero_attack ", 99.0))
+
+        self.assertEqual(res["count"], 3)
+        mock_rpc.assert_awaited_once_with(
+            "game.process_vox_barks",
+            {"input_files": ["C:/a.wav", "C:/b.wav"], "output_dir": "C:/pack",
+             "prefix": "hero_attack", "target_lufs": 0.0},
+            timeout=30.0,
+        )
+
+    def test_export_godot_audio_pack_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"asset_count": 12})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.export_godot_audio_pack("C:/pack", False, 128.0))
+
+        self.assertEqual(res["asset_count"], 12)
+        mock_rpc.assert_awaited_once_with(
+            "game.export_godot_pack",
+            {"output_dir": "C:/pack", "include_manifest": False, "bpm": 128.0},
+            timeout=30.0,
+        )
+
+    def test_wo024_cpp_sources_declare_required_symbols(self) -> None:
+        root = _MCP_DIR.parent
+        exporter = (root / "src" / "GameAssetExporter.h").read_text(encoding="utf-8")
+        for marker in ("exportAdaptiveBgmStems", "processVoxBarkBatch",
+                       "writeAudioManifestJson", "audio_manifest.json",
+                       "variation_group", "lufs"):
+            self.assertIn(marker, exporter)
+        dock = (root / "src" / "GameForgeComponent.cpp").read_text(encoding="utf-8")
+        for method in ("game.forge_sfx_batch", "audio.export_seamless_loop",
+                       "game.export_adaptive_stems", "game.export_godot_pack"):
+            self.assertIn(method, dock)
+        server = (root / "src" / "DawIpcServer.cpp").read_text(encoding="utf-8")
+        for method in ("game.export_adaptive_stems", "game.process_vox_barks",
+                       "game.export_godot_pack"):
+            self.assertIn(method, server)
+
+    def test_get_music_theory_catalog_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"keys": ["C"], "scales": [], "genres": []})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.get_music_theory_catalog())
+
+        self.assertEqual(res["keys"], ["C"])
+        mock_rpc.assert_awaited_once_with("theory.get_catalog", {})
+
+    def test_generate_song_arrangement_tool(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"tracks_created": ["Drums"], "total_notes": 12})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.generate_song_arrangement(
+                "metal_heavy", "D", "phrygian", 99, 0.0, -1, "DENSE", False))
+
+        self.assertEqual(res["total_notes"], 12)
+        mock_rpc.assert_awaited_once_with(
+            "midi.generate_song_arrangement",
+            {"genre": "metal_heavy", "key": "D", "scale": "phrygian", "bars": 64,
+             "bpm": 0.0, "seed": 0, "complexity": "dense",
+             "include_counter_melody": False},
+            timeout=30.0,
+        )
+
+    def test_generate_chord_progression_expanded_modes(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"notes_written": 9})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            asyncio.run(srv.generate_chord_progression(
+                key="F#", scale="HIRAJOSHI", seed=7, bars=32,
+                complexity="sparse", time_signature="7/8"))
+
+        _, kwargs = mock_rpc.await_args
+        params = mock_rpc.await_args.args[1]
+        self.assertEqual(params["scale"], "hirajoshi")
+        self.assertEqual(params["seed"], 7)
+        self.assertEqual(params["bars"], 32)
+        self.assertEqual(params["complexity"], "sparse")
+        self.assertEqual(params["time_signature"], "7/8")
+
+    def test_generate_bgm_forwarding_expanded_params(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"clips_created": 4})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            res = asyncio.run(srv.generate_bgm_arrangement(
+                "anime_action", "F#", energy=5, bars=32, scale="HIRAJOSHI",
+                seed=123, complexity="dense", time_signature="6/8", bpm=151.0))
+
+        self.assertEqual(res["clips_created"], 4)
+        mock_rpc.assert_awaited_once_with("bgm.generate", {
+            "genre": "anime_action", "key": "F#", "energy": 5, "bars": 32,
+            "scale": "hirajoshi", "seed": 123, "complexity": "dense",
+            "time_signature": "6/8", "bpm": 151.0,
+        })
+
 
 if __name__ == "__main__":
     unittest.main()

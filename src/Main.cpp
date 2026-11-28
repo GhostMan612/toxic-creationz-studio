@@ -8,6 +8,9 @@
 #include "PlatformConfig.h"
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
+#include "GameAssetExporter.h"
+#include "MusicTheoryEngine.h"
+#include "SfxForgeEngine.h"
 #include "StudioPluginWindow.h"
 #include "VocalChannelPlugin.h"
 #include "VocalSpecAnalyzer.h"
@@ -4100,6 +4103,425 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-022B bespoke faceplates & workspace suite switcher PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-023: Game Audio Forge & seamless loop renderer
+    //===========================================================================
+    {
+        const auto forgeDir = tempDir.getChildFile ("tcs_wo023_smoke");
+        forgeDir.deleteRecursively();
+        forgeDir.createDirectory();
+
+        const auto checkBatch = [&] (tcs::game::SfxCategory category, const juce::String& prefix) -> bool
+        {
+            juce::Array<juce::File> files;
+            const int written = tcs::game::SfxForgeEngine::generateSfxVariations (
+                category, forgeDir, prefix, 4, 42, 0.25, -1.0, &files);
+            if (written != 4 || files.size() != 4)
+                return false;
+
+            juce::AudioFormatManager fm;
+            fm.registerBasicFormats();
+            juce::AudioBuffer<float> first, second;
+            for (int i = 0; i < files.size(); ++i)
+            {
+                std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (files[i]));
+                if (reader == nullptr || reader->lengthInSamples <= 0)
+                    return false;
+                juce::AudioBuffer<float> buf (1, static_cast<int> (reader->lengthInSamples));
+                buf.clear();
+                reader->read (&buf, 0, buf.getNumSamples(), 0, true, false);
+                const float peak = buf.getMagnitude (0, buf.getNumSamples());
+                const float limit = std::pow (10.0f, -0.9f / 20.0f);
+                if (! std::isfinite (peak) || peak <= 1.0e-5f || peak > limit)
+                    return false;
+                if (i == 0) first = buf;
+                if (i == 1) second = buf;
+            }
+
+            float difference = 0.0f;
+            for (int i = 0; i < juce::jmin (first.getNumSamples(), second.getNumSamples()); i += 8)
+                difference += std::abs (first.getSample (0, i) - second.getSample (0, i));
+            return difference > 1.0e-4f;
+        };
+
+        if (! checkBatch (tcs::game::SfxCategory::gunshotTactical, "gun")
+            || ! checkBatch (tcs::game::SfxCategory::uiClick, "click"))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-023 SFX variation batch was silent or not diverse" << std::endl;
+            return 1;
+        }
+
+        // A quiet drone clip gives the seamless-loop renderer real audio to wrap.
+        juce::Array<juce::File> droneFiles;
+        tcs::game::SfxForgeEngine::generateSfxVariations (
+            tcs::game::SfxCategory::ambientDrone, forgeDir, "loopbed", 1, 7, 4.0, -6.0, &droneFiles);
+        if (droneFiles.isEmpty())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-023 loop bed was not rendered" << std::endl;
+            return 1;
+        }
+
+        app.edit->ensureNumberOfAudioTracks (1);
+        auto* loopTrack = te::getAudioTracks (*app.edit).getFirst();
+        const tracktion::TimeRange loopRange {
+            tracktion::TimePosition::fromSeconds (0.0),
+            tracktion::TimePosition::fromSeconds (4.0)
+        };
+        const te::ClipPosition clipPos { loopRange, tracktion::TimeDuration::fromSeconds (0.0) };
+        bool clipInserted = false;
+        {
+            auto clip = loopTrack->insertWaveClip ("WO-023 Loop Bed", droneFiles.getFirst(), clipPos, false);
+            if (clip != nullptr)
+            {
+                clip->getSourceFileReference().setToFile (
+                    droneFiles.getFirst(), te::SourceFileReference::PathStyle::alwaysAbsolute, false);
+                clipInserted = true;
+            }
+        }
+        if (! clipInserted)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-023 loop bed clip was not inserted" << std::endl;
+            return 1;
+        }
+
+        const auto loopWav = forgeDir.getChildFile ("seamless_loop.wav");
+        if (! MixdownExporter::exportSeamlessLoopWav (*app.edit, 0.0, 8.0, loopWav, -14.0, 2.0))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-023 seamless loop render failed" << std::endl;
+            return 1;
+        }
+
+        juce::AudioFormatManager loopFm;
+        loopFm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> loopReader (loopFm.createReaderFor (loopWav));
+        if (loopReader == nullptr || loopReader->lengthInSamples < 512)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-023 loop WAV is unreadable" << std::endl;
+            return 1;
+        }
+        juce::AudioBuffer<float> loopBuf (2, static_cast<int> (loopReader->lengthInSamples));
+        loopBuf.clear();
+        loopReader->read (&loopBuf, 0, loopBuf.getNumSamples(), 0, true, true);
+
+        const float boundary = std::abs (loopBuf.getSample (0, 0)
+                                        - loopBuf.getSample (0, loopBuf.getNumSamples() - 1));
+        tcs::loudness::KWeightedLoudnessMeter checkMeter (loopReader->sampleRate, 2);
+        for (int i = 0; i < loopBuf.getNumSamples(); ++i)
+            checkMeter.processFrame (loopBuf.getSample (0, i), loopBuf.getSample (1, i));
+        const double lufs = checkMeter.getLoudnessLufs();
+
+        if (loopBuf.getMagnitude (0, loopBuf.getNumSamples()) <= 1.0e-5f
+            || boundary >= 0.05f || std::abs (lufs + 14.0) > 1.5)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-023 loop boundary=" << boundary
+                      << " lufs=" << lufs << std::endl;
+            return 1;
+        }
+
+        // RPC round-trip for the forge batch.
+        auto* forgeParams = new juce::DynamicObject();
+        forgeParams->setProperty ("category", "ui_click");
+        forgeParams->setProperty ("count", 2);
+        forgeParams->setProperty ("seed", 99);
+        forgeParams->setProperty ("output_dir", forgeDir.getChildFile ("rpc").getFullPathName());
+        forgeParams->setProperty ("prefix", "rpc_click");
+        forgeParams->setProperty ("duration_sec", 0.2);
+        forgeParams->setProperty ("peak_db", -1.0);
+        forgeParams->setProperty ("import_first_to_track", -1);
+        auto* rpcRequest = new juce::DynamicObject();
+        rpcRequest->setProperty ("jsonrpc", "2.0");
+        rpcRequest->setProperty ("id", 1);
+        rpcRequest->setProperty ("method", "game.forge_sfx_batch");
+        rpcRequest->setProperty ("params", juce::var (forgeParams));
+        const auto rpcResponse = app.ipcServer.executeJsonRpcOnMessageThread (
+            juce::JSON::toString (juce::var (rpcRequest), true));
+        juce::var rpcParsed;
+        if (! juce::JSON::parse (rpcResponse, rpcParsed).wasOk()
+            || rpcParsed.hasProperty ("error")
+            || ! rpcParsed["result"].isObject()
+            || static_cast<int> (rpcParsed["result"]["count"]) != 2)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-023 game.forge_sfx_batch RPC round-trip failed" << std::endl;
+            return 1;
+        }
+
+        forgeDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-023 procedural SFX forge & seamless loop renderer PASS" << std::endl;
+    }
+
+    //===========================================================================
+    // WO-024: Game Audio & Asset Forge Suite
+    //===========================================================================
+    {
+        const auto packDir = tempDir.getChildFile ("tcs_wo024_smoke");
+        packDir.deleteRecursively();
+        packDir.createDirectory();
+        app.edit->ensureNumberOfAudioTracks (3);
+        for (int i = 0; i < 3; ++i)
+            te::getAudioTracks (*app.edit)[i]->setName ("layer" + juce::String (i));
+
+        juce::Array<tcs::game::StemLayer> layers;
+        for (int i = 0; i < 2; ++i)
+        {
+            tcs::game::StemLayer layer;
+            layer.name = i == 0 ? "calm" : "combat";
+            layer.trackIndices.add (i);
+            layers.add (layer);
+        }
+        juce::Array<juce::File> stemFiles;
+        const int stems = tcs::game::GameAssetExporter::exportAdaptiveBgmStems (
+            *app.edit, 0.0, 8.0, packDir, layers, -14.0, &stemFiles);
+
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        int stemFrames = -1;
+        bool stemsOk = stems == 2 && stemFiles.size() == 2;
+        for (const auto& file : stemFiles)
+        {
+            std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (file));
+            if (reader == nullptr || reader->lengthInSamples <= 0)
+            {
+                stemsOk = false;
+                break;
+            }
+            if (stemFrames < 0)
+                stemFrames = static_cast<int> (reader->lengthInSamples);
+            else if (stemFrames != static_cast<int> (reader->lengthInSamples))
+                stemsOk = false;
+        }
+        if (! stemsOk)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024 adaptive stems were not phase-locked" << std::endl;
+            return 1;
+        }
+
+        // Bark fixture: 0.2 s silence + a click + 0.2 s silence.
+        auto barkBuffer = tcs::game::SfxForgeEngine::renderSfx (
+            tcs::game::SfxCategory::uiClick, tcs::game::SfxRenderParams {});
+        const int silentFrames = static_cast<int> (barkBuffer.getNumSamples() * 0.8);
+        juce::AudioBuffer<float> padded (1, barkBuffer.getNumSamples() + silentFrames * 2);
+        padded.clear();
+        for (int i = 0; i < barkBuffer.getNumSamples(); ++i)
+            padded.setSample (0, silentFrames + i, barkBuffer.getSample (0, i));
+        const auto barkInput = packDir.getChildFile ("raw_bark.wav");
+        if (! tcs::game::GameAssetExporter::writeWav (padded, barkInput, 44100.0, 1))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024 bark fixture could not be written" << std::endl;
+            return 1;
+        }
+
+        juce::Array<juce::File> barkInputs { barkInput };
+        juce::Array<juce::File> barkOutputs;
+        const int barks = tcs::game::GameAssetExporter::processVoxBarkBatch (
+            barkInputs, packDir, "hero", "attack", -16.0, &barkOutputs);
+        bool barkOk = barks == 1 && barkOutputs.size() == 1;
+        if (barkOk)
+        {
+            std::unique_ptr<juce::AudioFormatReader> barkReader (fm.createReaderFor (barkOutputs.getFirst()));
+            barkOk = barkReader != nullptr
+                  && barkReader->lengthInSamples < static_cast<juce::int64> (padded.getNumSamples());
+            if (barkOk)
+            {
+                juce::AudioBuffer<float> barkOut (1, static_cast<int> (barkReader->lengthInSamples));
+                barkOut.clear();
+                barkReader->read (&barkOut, 0, barkOut.getNumSamples(), 0, true, false);
+                const float peak = barkOut.getMagnitude (0, barkOut.getNumSamples());
+                barkOk = peak > 1.0e-5f && peak <= std::pow (10.0f, -0.9f / 20.0f);
+            }
+        }
+        if (! barkOk)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024 bark trim/normalize failed" << std::endl;
+            return 1;
+        }
+
+        auto* packParams = new juce::DynamicObject();
+        packParams->setProperty ("output_dir", packDir.getFullPathName());
+        packParams->setProperty ("include_manifest", true);
+        packParams->setProperty ("bpm", 120.0);
+        auto* packReq = new juce::DynamicObject();
+        packReq->setProperty ("jsonrpc", "2.0");
+        packReq->setProperty ("id", 301);
+        packReq->setProperty ("method", "game.export_godot_pack");
+        packReq->setProperty ("params", juce::var (packParams));
+        const auto packResponse = app.ipcServer.executeJsonRpcOnMessageThread (
+            juce::JSON::toString (juce::var (packReq), true));
+        juce::var packParsed;
+        bool manifestOk = juce::JSON::parse (packResponse, packParsed).wasOk()
+                       && ! packParsed.hasProperty ("error")
+                       && static_cast<int> (packParsed["result"]["asset_count"]) >= 3;
+        const auto manifestText = packDir.getChildFile ("audio_manifest.json").loadFileAsString();
+        juce::var manifestVar;
+        manifestOk = manifestOk && juce::JSON::parse (manifestText, manifestVar).wasOk()
+                  && manifestVar.hasProperty ("schema_version")
+                  && manifestVar.hasProperty ("bpm")
+                  && manifestVar["assets"].isArray();
+        if (manifestOk)
+        {
+            for (const auto& asset : *manifestVar["assets"].getArray())
+            {
+                if (! asset.isObject() || ! asset.hasProperty ("path")
+                    || ! asset.hasProperty ("category") || ! asset.hasProperty ("lufs")
+                    || ! asset.hasProperty ("peak_db") || ! asset.hasProperty ("variation_group"))
+                {
+                    manifestOk = false;
+                    break;
+                }
+            }
+        }
+        if (! manifestOk)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024 Godot manifest was incomplete" << std::endl;
+            return 1;
+        }
+
+        packDir.deleteRecursively();
+        std::cout << "[SMOKE_TEST] WO-024 adaptive stems, VOX barks & Godot manifest PASS" << std::endl;
+    }
+
+    //===========================================================================
+    // WO-024B: Deep music theory & multi-section song-form engine
+    //===========================================================================
+    {
+        namespace theory = tcs::theory;
+        const auto catalogReq = juce::String (R"({"jsonrpc":"2.0","id":401,"method":"theory.get_catalog","params":{}})");
+        juce::var catalogParsed;
+        const auto catalogResponse = app.ipcServer.executeJsonRpcOnMessageThread (catalogReq);
+        bool catalogOk = juce::JSON::parse (catalogResponse, catalogParsed).wasOk()
+                      && ! catalogParsed.hasProperty ("error")
+                      && catalogParsed["result"]["keys"].isArray()
+                      && catalogParsed["result"]["scales"].isArray()
+                      && catalogParsed["result"]["genres"].isArray()
+                      && catalogParsed["result"]["keys"].getArray()->size() == 12
+                      && catalogParsed["result"]["scales"].getArray()->size() == 16
+                      && catalogParsed["result"]["genres"].getArray()->size() == 14;
+        if (! catalogOk)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024B theory catalog counts were wrong" << std::endl;
+            return 1;
+        }
+
+        int euclidPulses = 0;
+        for (int hit : theory::MusicTheoryEngine::generateEuclideanPattern (16, 5, 0))
+            euclidPulses += hit;
+        if (euclidPulses != 5)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024B Euclidean(16,5) pulses=" << euclidPulses << std::endl;
+            return 1;
+        }
+
+        struct TheoryCase { const char* genre; const char* key; const char* scale; };
+        const TheoryCase cases[] {
+            { "metal_heavy", "D", "phrygian" },
+            { "anime_action", "F#", "hirajoshi" },
+            { "cosmic_horror", "C", "locrian" }
+        };
+
+        juce::String firstSignature;
+        juce::String secondSignature;
+        for (const auto& testCase : cases)
+        {
+            const auto keyPc = theory::MusicTheoryEngine::parseKey (testCase.key);
+            const auto intervals = theory::MusicTheoryEngine::scaleIntervals (testCase.scale);
+            const auto plan = theory::MusicTheoryEngine::generateStructuredArrangement (
+                testCase.genre, testCase.key, testCase.scale, 16, 0.0, 42, "standard", true);
+            if (plan.notes.empty() || plan.sections.size() != 5 || plan.trackNames.size() < 5)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-024B arrangement for " << testCase.genre
+                          << " was incomplete" << std::endl;
+                return 1;
+            }
+
+            int melodicNotes = 0;
+            juce::String signature;
+            for (const auto& note : plan.notes)
+            {
+                if (note.track < 1 || note.midi < 48 || note.midi > 76)
+                    continue;
+                ++melodicNotes;
+                signature += juce::String (note.midi) + ",";
+                if (! theory::MusicTheoryEngine::isInScale (note.midi, keyPc, intervals))
+                {
+                    std::cerr << "[SMOKE_TEST] FAIL: WO-024B note " << note.midi
+                              << " outside " << testCase.scale << std::endl;
+                    return 1;
+                }
+            }
+            if (melodicNotes < 8)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-024B no melodic notes for " << testCase.genre << std::endl;
+                return 1;
+            }
+            if (firstSignature.isEmpty()) firstSignature = signature;
+            else if (secondSignature.isEmpty()) secondSignature = signature;
+
+            auto* params = new juce::DynamicObject();
+            params->setProperty ("genre", testCase.genre);
+            params->setProperty ("key", testCase.key);
+            params->setProperty ("scale", testCase.scale);
+            params->setProperty ("bars", 16);
+            params->setProperty ("bpm", 0.0);
+            params->setProperty ("seed", 42);
+            params->setProperty ("complexity", "standard");
+            params->setProperty ("include_counter_melody", true);
+            auto* request = new juce::DynamicObject();
+            request->setProperty ("jsonrpc", "2.0");
+            request->setProperty ("id", 402);
+            request->setProperty ("method", "midi.generate_song_arrangement");
+            request->setProperty ("params", juce::var (params));
+            const auto response = app.ipcServer.executeJsonRpcOnMessageThread (
+                juce::JSON::toString (juce::var (request), true));
+            juce::var parsed;
+            if (! juce::JSON::parse (response, parsed).wasOk() || parsed.hasProperty ("error")
+                || ! parsed["result"].isObject()
+                || static_cast<int> (parsed["result"]["total_notes"]) < 8
+                || parsed["result"]["tracks_created"].getArray() == nullptr
+                || parsed["result"]["tracks_created"].getArray()->size() < 5
+                || parsed["result"]["sections"].getArray() == nullptr
+                || parsed["result"]["sections"].getArray()->size() != 5)
+            {
+                std::cerr << "[SMOKE_TEST] FAIL: WO-024B song arrangement RPC failed for "
+                          << testCase.genre << std::endl;
+                return 1;
+            }
+        }
+
+        const auto other = theory::MusicTheoryEngine::generateStructuredArrangement (
+            "anime_action", "F#", "hirajoshi", 16, 0.0, 1337, "standard", true);
+        juce::String otherSignature;
+        for (const auto& note : other.notes)
+            if (note.track >= 1 && note.midi >= 48 && note.midi <= 76)
+                otherSignature += juce::String (note.midi) + ",";
+        if (firstSignature == secondSignature || secondSignature == otherSignature)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024B genres/seeds produced identical motifs" << std::endl;
+            return 1;
+        }
+
+        const auto theorySessionFile = tempDir.getChildFile ("aidaw_wo024b_theory.tracktionedit");
+        app.currentEditFile = theorySessionFile;
+        app.sessionUntitled = false;
+        app.saveSession();
+        if (! theorySessionFile.existsAsFile() || ! app.loadSessionFromFileSafely (theorySessionFile))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024B arrangement session round-trip failed" << std::endl;
+            return 1;
+        }
+        int reloadedMidiClips = 0;
+        for (auto* track : te::getAudioTracks (*app.edit))
+            for (auto* clip : track->getClips())
+                if (dynamic_cast<te::MidiClip*> (clip) != nullptr)
+                    ++reloadedMidiClips;
+        theorySessionFile.deleteFile();
+        if (reloadedMidiClips < 5)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-024B arrangement MIDI clips did not persist" << std::endl;
+            return 1;
+        }
+
+        std::cout << "[SMOKE_TEST] WO-024B music theory catalog, scales, song forms & persistence PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -4143,7 +4565,10 @@ int MainComponent::runHeadlessSmokeTest()
                  "sidechain Pin 3/4 ducking, multi-take comping, polyphonic audio-to-MIDI, "
                  "cross-platform core isolation, VST3 scanner lifecycle, the original CV envelope/step "
                  "blueprint modules, the WO-021 voice acting suite, and WO-022 booth teleprompter "
-                 "and ADR/demo-reel workflow, and WO-022B hardware faceplates and workspace suites verified."
+                 "and ADR/demo-reel workflow, WO-022B hardware faceplates and workspace suites, "
+                 "and the WO-023 game SFX forge / seamless loop renderer, plus WO-024 adaptive "
+                 "stems, VOX bark batching and the Godot 4 audio manifest, and the WO-024B music theory "
+                 "catalog, scale-pure song forms, seed variation and arrangement persistence verified."
               << std::endl;
     return 0;
 }

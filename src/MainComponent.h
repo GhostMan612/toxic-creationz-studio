@@ -14,6 +14,7 @@
 #include "MixdownExporter.h"
 #include "MidiKeyboardDock.h"
 #include "RecordingManager.h"
+#include "GameForgeComponent.h"
 #include "ScriptPrompterComponent.h"
 #include "StudioLookAndFeel.h"
 #include "StudioPluginWindow.h"
@@ -116,6 +117,7 @@ private:
     WaveformEditorComponent waveformEditorComponent;
     MidiKeyboardDock midiKeyboardDock;
     ScriptPrompterComponent scriptPrompter;
+    tcs::game::GameForgeComponent gameForgeComponent;
 
     juce::File currentEditFile;
     bool sessionUntitled = false;
@@ -158,7 +160,7 @@ private:
     juce::TextButton studioWorkspaceButton { "Studio" };
     juce::TextButton rackWorkspaceButton   { "Modular Rack" };
     juce::TextButton voWorkspaceButton     { "VO Booth Suite" };
-    juce::TextButton gameForgePlaceholder  { "Game Forge (P8)" };
+    juce::TextButton gameForgePlaceholder  { "Game Forge" };
     juce::TextButton rpgBoardPlaceholder   { "RPG Board (P9)" };
     WorkspaceMode workspaceMode = WorkspaceMode::studio;
     juce::TextButton audioSettingsButton { "Audio Settings" };

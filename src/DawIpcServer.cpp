@@ -8,6 +8,9 @@
 #include "MixdownExporter.h"
 #include "PluginPresetManager.h"
 #include "SidechainCompressorPlugin.h"
+#include "GameAssetExporter.h"
+#include "MusicTheoryEngine.h"
+#include "SfxForgeEngine.h"
 #include "VocalChannelPlugin.h"
 #include "WaveformEditorComponent.h"
 
@@ -393,6 +396,10 @@ juce::String DawIpcServer::enqueueAndWaitForMessageThread (const juce::String& r
                 timeoutMs = 15000;
             else if (reqMethod == "recording.punch_and_roll" || reqMethod == "recording.export_abc_audition")
                 timeoutMs = 15000;
+            else if (reqMethod == "game.forge_sfx_batch" || reqMethod == "audio.export_seamless_loop"
+                     || reqMethod == "game.export_adaptive_stems" || reqMethod == "game.process_vox_barks"
+                     || reqMethod == "game.export_godot_pack" || reqMethod == "midi.generate_song_arrangement")
+                timeoutMs = 30000;
         }
     }
 
@@ -873,6 +880,12 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         req.targetPitchClass = RiffLibrary::parseKeyPitchClass (req.targetKeyLabel);
         req.targetEnergy     = juce::jlimit (1, 5, static_cast<int> (params.getProperty ("energy", 4)));
         req.totalBars        = juce::jlimit (4, 32, static_cast<int> (params.getProperty ("bars", 8)));
+        req.scale            = params.getProperty ("scale", "").toString().trim().toLowerCase();
+        req.seed             = static_cast<std::uint64_t> (juce::jmax (0,
+            static_cast<int> (params.getProperty ("seed", 42))));
+        req.complexity       = params.getProperty ("complexity", "standard").toString().trim().toLowerCase();
+        req.timeSignature    = params.getProperty ("time_signature", "4/4").toString().trim();
+        req.bpm              = static_cast<double> (params.getProperty ("bpm", 0.0));
 
         edit->getUndoManager().beginNewTransaction ("MCP Generate BGM");
 
@@ -886,6 +899,11 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         res->setProperty ("clips_created", clipsCreated);
         res->setProperty ("genre", req.genre);
         res->setProperty ("key", req.targetKeyLabel);
+        res->setProperty ("scale", req.scale);
+        res->setProperty ("seed", static_cast<juce::int64> (req.seed));
+        res->setProperty ("bars", req.totalBars);
+        res->setProperty ("complexity", req.complexity);
+        res->setProperty ("time_signature", req.timeSignature);
 
         return makeResultResponse (id, juce::var (res));
     }
@@ -1667,11 +1685,13 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
 
         const juce::String keyName   = params.getProperty ("key", "C").toString().trim();
         const juce::String scaleName = params.getProperty ("scale", "minor").toString().trim().toLowerCase();
-        const auto scale = getScaleIntervals (scaleName, false);
-        if (scale.size() < 7)
+        auto scale = tcs::theory::MusicTheoryEngine::scaleIntervals (scaleName);
+        if (scale.size() < 5)
+            scale = getScaleIntervals (scaleName, false);
+        if (scale.size() < 5)
             return makeErrorResponse (id, -32602, "Unsupported scale for chord generation: " + scaleName);
 
-        const int keyPc = RiffLibrary::parseKeyPitchClass (keyName);
+        const int keyPc = tcs::theory::MusicTheoryEngine::parseKey (keyName);
         const double startBeat     = std::max (0.0, static_cast<double> (params.getProperty ("start_beat", 0.0)));
         const double beatsPerChord = std::clamp (static_cast<double> (params.getProperty ("beats_per_chord", 4.0)), 0.25, 32.0);
         const int octave           = juce::jlimit (1, 7, static_cast<int> (params.getProperty ("octave", 4)));
@@ -1775,6 +1795,10 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         out->setProperty ("notes_written", notesWritten);
         out->setProperty ("start_beat", startBeat);
         out->setProperty ("end_beat", endBeat);
+        out->setProperty ("scale", scaleName);
+        out->setProperty ("seed", static_cast<juce::int64> (static_cast<int> (params.getProperty ("seed", 42))));
+        out->setProperty ("bar_count", juce::jlimit (8, 64, static_cast<int> (params.getProperty ("bars", 8))));
+
         return makeResultResponse (id, juce::var (out));
     }
 
@@ -2592,6 +2616,342 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         res->setProperty ("duck_plugin", SidechainCompressorPlugin::xmlTypeName);
         res->setProperty ("vocal_preset", "ACX Audiobook");
         res->setProperty ("duck_preset", "Vocal Duck");
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-023: game.forge_sfx_batch — deterministic procedural SFX variations
+    if (method == "game.forge_sfx_batch")
+    {
+        const auto category = tcs::game::SfxForgeEngine::parseCategory (
+            params.getProperty ("category", "gunshot_tactical").toString());
+        const int count = juce::jlimit (1, 16, static_cast<int> (params.getProperty ("count", 6)));
+        const std::uint64_t seed = static_cast<std::uint64_t> (
+            juce::jlimit (0.0, 1.0e9, static_cast<double> (params.getProperty ("seed", 42))));
+        const double durationSec = juce::jlimit (0.05, 10.0,
+            static_cast<double> (params.getProperty ("duration_sec", 0.5)));
+        const double peakDb = juce::jlimit (-60.0, 0.0,
+            static_cast<double> (params.getProperty ("peak_db", -1.0)));
+        const juce::String prefixRaw = params.getProperty ("prefix", "").toString().trim();
+        const juce::String prefix = prefixRaw.isNotEmpty()
+            ? prefixRaw : tcs::game::SfxForgeEngine::categoryName (category);
+
+        juce::File outDir;
+        const juce::String rawDir = params.getProperty ("output_dir", "").toString().trim();
+        if (rawDir.isNotEmpty())
+            outDir = juce::File::isAbsolutePath (rawDir) ? juce::File (rawDir)
+                                                        : juce::File::getCurrentWorkingDirectory().getChildFile (rawDir);
+        else
+            outDir = (getTakesDirectoryCallback ? getTakesDirectoryCallback() : juce::File::getSpecialLocation (juce::File::tempDirectory))
+                         .getChildFile ("SfxForge");
+
+        juce::Array<juce::File> files;
+        const int written = tcs::game::SfxForgeEngine::generateSfxVariations (
+            category, outDir, prefix, count, seed, durationSec, peakDb, &files);
+        if (written <= 0)
+            return makeErrorResponse (id, -32603, "SFX batch produced no WAV files");
+
+        juce::Array<juce::var> paths;
+        for (const auto& file : files)
+            paths.add (file.getFullPathName());
+
+        const int importTrack = static_cast<int> (params.getProperty ("import_first_to_track", -1));
+        if (importTrack >= 0 && edit != nullptr)
+        {
+            auto tracks = te::getAudioTracks (*edit);
+            if (juce::isPositiveAndBelow (importTrack, tracks.size()))
+            {
+                const double endBeat = edit->tempoSequence
+                    .toBeats (tracktion::TimePosition::fromSeconds (durationSec)).inBeats();
+                RecordingManager::addRecordedTake (*edit, *tracks[importTrack], files.getFirst(),
+                                                   0.0, endBeat);
+                if (onEditMutatedByRpc)
+                    onEditMutatedByRpc ("Imported forged SFX take onto track " + juce::String (importTrack));
+            }
+        }
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("category", tcs::game::SfxForgeEngine::categoryName (category));
+        res->setProperty ("count", written);
+        res->setProperty ("seed", static_cast<juce::int64> (seed));
+        res->setProperty ("output_dir", outDir.getFullPathName());
+        res->setProperty ("files", juce::var (paths));
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-023: audio.export_seamless_loop — click-free tail-wrapped game loop
+    if (method == "audio.export_seamless_loop")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+
+        const double startBeat = static_cast<double> (params.getProperty ("start_beat", 0.0));
+        const double endBeat = static_cast<double> (params.getProperty ("end_beat", 8.0));
+        if (! std::isfinite (startBeat) || ! std::isfinite (endBeat) || endBeat <= startBeat)
+            return makeErrorResponse (id, -32602, "Invalid start_beat / end_beat");
+
+        const juce::String rawOut = params.getProperty ("output_path", "").toString().trim();
+        if (rawOut.isEmpty())
+            return makeErrorResponse (id, -32602, "Missing output_path");
+        const juce::File outWav = juce::File::isAbsolutePath (rawOut) ? juce::File (rawOut)
+            : juce::File::getCurrentWorkingDirectory().getChildFile (rawOut);
+
+        const double tailSeconds = juce::jlimit (0.1, 5.0,
+            static_cast<double> (params.getProperty ("tail_seconds", 2.0)));
+        const double targetLufs = juce::jlimit (-40.0, -3.0,
+            static_cast<double> (params.getProperty ("target_lufs", -14.0)));
+
+        if (! MixdownExporter::exportSeamlessLoopWav (*edit, startBeat, endBeat, outWav, targetLufs, tailSeconds))
+            return makeErrorResponse (id, -32603, "Seamless loop render failed");
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("output_file", outWav.getFullPathName());
+        res->setProperty ("start_beat", startBeat);
+        res->setProperty ("end_beat", endBeat);
+        res->setProperty ("tail_seconds", tailSeconds);
+        res->setProperty ("target_lufs", targetLufs);
+        res->setProperty ("measurement", "bs1770_k_weighted_gated");
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-024: game.export_adaptive_stems — phase-locked intensity layers
+    if (method == "game.export_adaptive_stems")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+        const double startBeat = static_cast<double> (params.getProperty ("start_beat", 0.0));
+        const double endBeat = static_cast<double> (params.getProperty ("end_beat", 8.0));
+        if (! std::isfinite (startBeat) || ! std::isfinite (endBeat) || endBeat <= startBeat)
+            return makeErrorResponse (id, -32602, "Invalid start_beat / end_beat");
+
+        const juce::String rawDir = params.getProperty ("output_dir", "").toString().trim();
+        if (rawDir.isEmpty())
+            return makeErrorResponse (id, -32602, "Missing output_dir");
+        const juce::File outDir = juce::File::isAbsolutePath (rawDir) ? juce::File (rawDir)
+            : juce::File::getCurrentWorkingDirectory().getChildFile (rawDir);
+        const double targetLufs = juce::jlimit (-40.0, -3.0,
+            static_cast<double> (params.getProperty ("target_lufs", -14.0)));
+
+        juce::Array<tcs::game::StemLayer> layers;
+        const auto layersVar = params.getProperty ("layers", juce::var());
+        if (auto* object = layersVar.getDynamicObject())
+        {
+            for (const auto& prop : object->getProperties())
+            {
+                tcs::game::StemLayer layer;
+                layer.name = prop.name.toString().trim();
+                if (layer.name.isEmpty())
+                    continue;
+                if (auto* array = prop.value.getArray())
+                {
+                    for (const auto& v : *array)
+                        layer.trackIndices.add (static_cast<int> (v));
+                }
+                else if (prop.value.isInt() || prop.value.isInt64() || prop.value.isDouble())
+                    layer.trackIndices.add (static_cast<int> (prop.value));
+                layers.add (layer);
+            }
+        }
+        if (layers.isEmpty())
+            return makeErrorResponse (id, -32602, "Missing layers map");
+
+        juce::Array<juce::File> files;
+        const int written = tcs::game::GameAssetExporter::exportAdaptiveBgmStems (
+            *edit, startBeat, endBeat, outDir, layers, targetLufs, &files);
+        if (written <= 0)
+            return makeErrorResponse (id, -32603, "No adaptive stems were rendered");
+
+        juce::Array<juce::var> paths;
+        for (const auto& file : files)
+            paths.add (file.getFullPathName());
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("count", written);
+        res->setProperty ("output_dir", outDir.getFullPathName());
+        res->setProperty ("start_beat", startBeat);
+        res->setProperty ("end_beat", endBeat);
+        res->setProperty ("target_lufs", targetLufs);
+        res->setProperty ("files", juce::var (paths));
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-024: game.process_vox_barks — trim, fade and normalize VOX barks
+    if (method == "game.process_vox_barks")
+    {
+        const juce::String rawDir = params.getProperty ("output_dir", "").toString().trim();
+        if (rawDir.isEmpty())
+            return makeErrorResponse (id, -32602, "Missing output_dir");
+        const juce::File outDir = juce::File::isAbsolutePath (rawDir) ? juce::File (rawDir)
+            : juce::File::getCurrentWorkingDirectory().getChildFile (rawDir);
+
+        const juce::String prefix = params.getProperty ("prefix", "actor_bark").toString().trim();
+        const auto split = prefix.indexOfChar ('_');
+        const juce::String actor = split > 0 ? prefix.substring (0, split) : prefix;
+        const juce::String action = split > 0 ? prefix.substring (split + 1) : "bark";
+        const double targetLufs = juce::jlimit (-60.0, 0.0,
+            static_cast<double> (params.getProperty ("target_lufs", -16.0)));
+
+        juce::Array<juce::File> inputs;
+        if (auto* array = params.getProperty ("input_files", juce::var()).getArray())
+        {
+            for (const auto& v : *array)
+            {
+                const auto path = v.toString().trim();
+                if (path.isNotEmpty())
+                    inputs.add (juce::File (path));
+            }
+        }
+        if (inputs.isEmpty())
+            return makeErrorResponse (id, -32602, "Missing input_files");
+
+        juce::Array<juce::File> files;
+        const int written = tcs::game::GameAssetExporter::processVoxBarkBatch (
+            inputs, outDir, actor, action, targetLufs, &files);
+        if (written <= 0)
+            return makeErrorResponse (id, -32603, "No VOX barks were processed");
+
+        juce::Array<juce::var> paths;
+        for (const auto& file : files)
+            paths.add (file.getFullPathName());
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("count", written);
+        res->setProperty ("output_dir", outDir.getFullPathName());
+        res->setProperty ("target_lufs", targetLufs);
+        res->setProperty ("files", juce::var (paths));
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-024: game.export_godot_pack — gather all WAVs and write audio_manifest.json
+    if (method == "game.export_godot_pack")
+    {
+        const juce::String rawDir = params.getProperty ("output_dir", "").toString().trim();
+        if (rawDir.isEmpty())
+            return makeErrorResponse (id, -32602, "Missing output_dir");
+        const juce::File rootDir = juce::File::isAbsolutePath (rawDir) ? juce::File (rawDir)
+            : juce::File::getCurrentWorkingDirectory().getChildFile (rawDir);
+        rootDir.createDirectory();
+
+        juce::Array<tcs::game::ManifestAsset> assets;
+        for (const auto* category : { "bgm", "sfx", "ambient", "vox" })
+        {
+            const auto dir = rootDir.getChildFile (category);
+            if (! dir.isDirectory())
+                continue;
+            const auto wavs = dir.findChildFiles (juce::File::findFiles, false, "*.wav");
+            for (const auto& wav : wavs)
+            {
+                const auto relative = juce::String (category) + "/" + wav.getFileName();
+                auto asset = tcs::game::GameAssetExporter::analyseAsset (
+                    wav, relative, category, juce::String (category) == "bgm", category);
+                assets.add (asset);
+            }
+        }
+
+        if (params.getProperty ("include_manifest", true))
+            if (! tcs::game::GameAssetExporter::writeAudioManifestJson (
+                    rootDir, static_cast<double> (params.getProperty ("bpm", 120.0)), assets))
+                return makeErrorResponse (id, -32603, "Could not write audio_manifest.json");
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("output_dir", rootDir.getFullPathName());
+        res->setProperty ("asset_count", assets.size());
+        res->setProperty ("manifest", rootDir.getChildFile ("audio_manifest.json").getFullPathName());
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-024B: theory.get_catalog — 12 keys, 16 scales, 14 genres, 5 time signatures
+    if (method == "theory.get_catalog")
+    {
+        auto* res = new juce::DynamicObject();
+        const auto toVarArray = [] (const juce::StringArray& source)
+        {
+            juce::Array<juce::var> out;
+            for (const auto& item : source)
+                out.add (item);
+            return juce::var (out);
+        };
+        res->setProperty ("keys", toVarArray (tcs::theory::MusicTheoryEngine::keys()));
+        res->setProperty ("scales", toVarArray (tcs::theory::MusicTheoryEngine::scales()));
+        res->setProperty ("genres", toVarArray (tcs::theory::MusicTheoryEngine::genres()));
+        res->setProperty ("time_signatures", toVarArray (tcs::theory::MusicTheoryEngine::timeSignatures()));
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-024B: midi.generate_song_arrangement — multi-section song-form builder
+    if (method == "midi.generate_song_arrangement")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+
+        const auto genre = params.getProperty ("genre", "ambient_cinematic").toString().trim().toLowerCase();
+        auto profile = tcs::theory::MusicTheoryEngine::genreProfile (genre);
+        const auto key = params.getProperty ("key", "C").toString().trim();
+        auto scale = params.getProperty ("scale", "").toString().trim().toLowerCase();
+        if (scale.isEmpty())
+            scale = profile.signatureScale;
+        const int bars = juce::jlimit (8, 64, static_cast<int> (params.getProperty ("bars", 16)));
+        const double bpm = static_cast<double> (params.getProperty ("bpm", 0.0));
+        const int seed = juce::jmax (0, static_cast<int> (params.getProperty ("seed", 42)));
+        const auto complexity = params.getProperty ("complexity", "standard").toString().trim().toLowerCase();
+        const bool withCounter = static_cast<bool> (params.getProperty ("include_counter_melody", true));
+
+        auto plan = tcs::theory::MusicTheoryEngine::generateStructuredArrangement (
+            genre, key, scale, bars, bpm, static_cast<std::uint64_t> (seed), complexity, withCounter);
+
+        edit->ensureNumberOfAudioTracks (plan.trackNames.size());
+        auto tracks = te::getAudioTracks (*edit);
+        const double endBeat = static_cast<double> (plan.bars) * 4.0;
+        const tracktion::TimeRange fullRange {
+            edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (0.0)),
+            edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (endBeat))
+        };
+
+        auto& um = edit->getUndoManager();
+        um.beginNewTransaction ("MCP Generate Song Arrangement");
+
+        juce::StringArray created;
+        int totalNotes = 0;
+        for (int ti = 0; ti < plan.trackNames.size() && ti < tracks.size(); ++ti)
+        {
+            auto* track = tracks[ti];
+            track->setName (plan.trackNames[ti]);
+            auto* clip = dynamic_cast<te::MidiClip*> (track->insertNewClip (
+                te::TrackItem::Type::midi, plan.trackNames[ti], fullRange, nullptr));
+            if (clip == nullptr)
+                continue;
+
+            auto& seq = clip->getSequence();
+            int written = 0;
+            for (const auto& note : plan.notes)
+            {
+                if (note.track != ti)
+                    continue;
+                seq.addNote (note.midi,
+                             tracktion::BeatPosition::fromBeats (note.startBeat),
+                             tracktion::BeatDuration::fromBeats (note.lengthBeats),
+                             note.velocity, 0, &um);
+                ++written;
+            }
+            totalNotes += written;
+            created.add (plan.trackNames[ti]);
+        }
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP generated " + juce::String (totalNotes) + " notes across "
+                                + juce::String (created.size()) + " arrangement tracks");
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("genre", plan.genre);
+        res->setProperty ("key", plan.key);
+        res->setProperty ("scale", plan.scale);
+        res->setProperty ("bpm", plan.bpm);
+        res->setProperty ("bars", plan.bars);
+        res->setProperty ("seed", plan.seed);
+        res->setProperty ("complexity", plan.complexity);
+        res->setProperty ("time_signature", plan.timeSignature);
+        res->setProperty ("sections", juce::var (plan.sections));
+        res->setProperty ("tracks_created", juce::var (created));
+        res->setProperty ("total_notes", totalNotes);
         return makeResultResponse (id, juce::var (res));
     }
 

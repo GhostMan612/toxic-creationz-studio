@@ -17,10 +17,21 @@ class BgmGeneratorComponent : public juce::Component
 {
 public:
     explicit BgmGeneratorComponent (RiffLibrary& targetLibrary);
+    ~BgmGeneratorComponent() override;
 
     void setEdit (te::Edit* newEdit) noexcept { edit = newEdit; }
 
     std::function<void (int /*clipsCreated*/)> onBgmGenerated;
+    std::function<void()> onGenerateAdvanced;
+
+    struct AdvancedRequest
+    {
+        juce::String genre, key, scale, complexity;
+        int bars = 16;
+        int seed = 42;
+        bool includeCounterMelody = true;
+    };
+    AdvancedRequest getAdvancedRequest() const;
 
     void paint (juce::Graphics& g) override;
     void resized() override;
@@ -36,6 +47,10 @@ private:
     juce::ComboBox keyBox;
     juce::ComboBox energyBox;
     juce::ComboBox barsBox;
+    juce::ComboBox scaleBox;
+    juce::TextEditor seedBox;
+    juce::ComboBox complexityBox;
+    juce::TextButton randomizeButton { "Randomize" };
     juce::TextButton generateButton { "Generate BGM" };
     juce::TextButton rescanButton   { "Rescan Riffs" };
 
