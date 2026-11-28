@@ -35,6 +35,8 @@ Copy-Item $ExePath (Join-Path $StageDir "Toxic Creationz Studio.exe")
 Copy-Item "mcp\daw_mcp_server.py"  (Join-Path $StageDir "mcp\daw_mcp_server.py")
 Copy-Item "mcp\ai_audio_worker.py" (Join-Path $StageDir "mcp\ai_audio_worker.py")
 Copy-Item "mcp\requirements.txt"   (Join-Path $StageDir "mcp\requirements.txt")
+Copy-Item "mcp\audio_identify_worker.py" (Join-Path $StageDir "mcp\audio_identify_worker.py")
+Copy-Item "mcp\voice_clone_worker.py"    (Join-Path $StageDir "mcp\voice_clone_worker.py")
 if (Test-Path "README.md") {
     Copy-Item "README.md" (Join-Path $StageDir "README.md")
 }

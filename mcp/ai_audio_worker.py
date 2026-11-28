@@ -283,11 +283,24 @@ def generate_stem(
     backend: str = "auto",
     key: str = "Am",
     bpm: float = 124.0,
+    reference_wav: str | Path | None = None,
 ) -> dict[str, Any]:
     """Generate a stereo AI stem WAV file via optional cloud/local backends or deterministic synth fallback."""
     out_path = Path(output_path)
     norm_backend = backend.lower().strip()
     reasons: list[str] = []
+
+    if reference_wav is not None:
+        from audio_identify_worker import identify_clip
+
+        info = identify_clip(reference_wav)
+        if info.get("bpm"):
+            bpm = float(info["bpm"])
+        if info.get("key"):
+            key = str(info["key"])
+        family = (info.get("instruments") or [{}])[0].get("family", "unknown")
+        prompt = f"{prompt} (conditioned by {family})"
+        reasons.append(f"reference_wav={family}")
 
     if norm_backend in ("auto", "arioso"):
         res, reason = _try_arioso_generate(prompt, duration_sec, out_path)
@@ -325,6 +338,34 @@ def generate_stem(
         bpm=bpm,
         fallback_reason="; ".join(reasons),
     )
+
+
+def generate_arrangement(
+    prompt: str,
+    output_dir: str | Path,
+    key: str = "Am",
+    bpm: float = 124.0,
+    style: str = "trap",
+    stems: tuple[str, ...] = ("drums", "bass", "lead", "pad"),
+    reference_wav: str | Path | None = None,
+) -> dict[str, Any]:
+    """Generate one deterministic offline WAV per requested stem."""
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    generated: list[dict[str, Any]] = []
+    for stem in stems:
+        out = root / f"{stem}.wav"
+        result = generate_stem(
+            prompt=f"{style} {stem}: {prompt}",
+            duration_sec=4.0,
+            output_path=out,
+            backend="fallback",
+            key=key,
+            bpm=bpm,
+            reference_wav=reference_wav,
+        )
+        generated.append({"stem": stem, "file_path": str(out), "result": result})
+    return {"output_dir": str(root), "stems": generated}
 
 
 def _read_stereo_wav(wav_path: Path) -> tuple[list[float], list[float], int]:

@@ -1015,5 +1015,108 @@ async def set_ghost_proactive(enabled: bool = False) -> dict[str, Any]:
     return await send_daw_rpc("ghost.set_proactive", {"enabled": bool(enabled)})
 
 
+@mcp.tool()
+async def identify_audio_clip(
+    file_path: str = "",
+    track_index: int | None = None,
+    clip_index: int = 0,
+    clip_name: str = "",
+) -> dict[str, Any]:
+    """Identify instrument family, key/BPM hints and a fingerprint for a WAV clip."""
+    from audio_identify_worker import identify_clip
+
+    resolved = file_path.strip()
+    if not resolved and track_index is not None:
+        info = await send_daw_rpc("audio.get_clip_info", {
+            "track_index": max(0, int(track_index)),
+            "clip_index": max(0, int(clip_index)),
+            "clip_name": clip_name.strip(),
+        })
+        resolved = info.get("file_path", "")
+    if not resolved:
+        raise ValueError("file_path or track_index is required")
+    return await asyncio.to_thread(identify_clip, resolved)
+
+
+@mcp.tool()
+async def enroll_voice(
+    voice_id: str,
+    name: str,
+    reference_wav: str,
+    consent: bool = False,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Enroll a local-only voice print with explicit consent."""
+    from voice_clone_worker import enroll_voice as _enroll
+
+    return await asyncio.to_thread(
+        _enroll, voice_id, name, reference_wav, consent, overwrite)
+
+
+@mcp.tool()
+async def list_voices() -> list[dict[str, Any]]:
+    """List locally enrolled voice print metadata (never raw audio)."""
+    from voice_clone_worker import list_voices as _list
+
+    return await asyncio.to_thread(_list)
+
+
+@mcp.tool()
+async def forget_voice(voice_id: str = "", delete_all: bool = False) -> dict[str, Any]:
+    """Delete one local voice print, or all prints with delete_all=True."""
+    from voice_clone_worker import forget_voice as _forget
+
+    removed = await asyncio.to_thread(_forget, voice_id or None, delete_all)
+    return {"removed": removed}
+
+
+@mcp.tool()
+async def generate_vo_line(
+    voice_id: str,
+    text: str,
+    track_index: int = -1,
+    emotion: str = "neutral",
+) -> dict[str, Any]:
+    """Generate a line with a local clone model and import the WAV into the DAW."""
+    from voice_clone_worker import generate_voice_line
+
+    output = f"vo_{voice_id}_{abs(hash(text)) % 100000}.wav"
+    result = await asyncio.to_thread(
+        generate_voice_line, voice_id, text, output, emotion)
+    if result.get("status") != "ok":
+        return result
+    if track_index >= 0:
+        await send_daw_rpc("audio.import_file", {
+            "file_path": output, "track_index": track_index,
+        })
+    return result
+
+
+@mcp.tool()
+async def generate_arrangement(
+    prompt: str,
+    output_path: str = "",
+    key: str = "Am",
+    bpm: float = 124.0,
+    style: str = "trap",
+    stems: list[str] | None = None,
+    reference_wav: str = "",
+) -> dict[str, Any]:
+    """Generate stems offline, then import them into one undoable arrangement."""
+    from ai_audio_worker import generate_arrangement as _generate
+
+    result = await asyncio.to_thread(
+        _generate, prompt, output_path, key, bpm, style,
+        tuple(stems) if stems else ("drums", "bass", "lead", "pad"),
+        reference_wav or None,
+    )
+    payload = {"stems": [
+        {"name": item["stem"], "file_path": item["file_path"]}
+        for item in result["stems"]
+    ]}
+    imported = await send_daw_rpc("audio.import_arrangement", payload)
+    return {"generated": result, "imported": imported}
+
+
 if __name__ == "__main__":
     mcp.run()

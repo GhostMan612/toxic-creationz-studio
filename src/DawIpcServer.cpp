@@ -3210,6 +3210,124 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         return makeResultResponse (id, juce::var (res));
     }
 
+    // WO-028: audio.get_clip_info — resolve a WaveAudioClip to its source file
+    if (method == "audio.get_clip_info")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+        const int trackIdx = static_cast<int> (params.getProperty ("track_index", 0));
+        auto tracks = te::getAudioTracks (*edit);
+        if (! juce::isPositiveAndBelow (trackIdx, tracks.size()))
+            return makeErrorResponse (id, -32602, "Invalid track_index");
+
+        const juce::String clipName = params.getProperty ("clip_name", "").toString().trim();
+        const int wantedIndex = static_cast<int> (params.getProperty ("clip_index", 0));
+        int waveSeen = -1;
+        te::WaveAudioClip* found = nullptr;
+        for (auto* clip : tracks[trackIdx]->getClips())
+        {
+            auto* wave = dynamic_cast<te::WaveAudioClip*> (clip);
+            if (wave == nullptr)
+                continue;
+            ++waveSeen;
+            if (clipName.isNotEmpty())
+            {
+                if (clip->getName() == clipName)
+                {
+                    found = wave;
+                    break;
+                }
+            }
+            else if (waveSeen == wantedIndex)
+            {
+                found = wave;
+                break;
+            }
+        }
+        if (found == nullptr)
+            return makeErrorResponse (id, -32602, "WaveAudioClip not found");
+
+        const auto pos = found->getPosition();
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("track_index", trackIdx);
+        res->setProperty ("clip_name", found->getName());
+        res->setProperty ("file_path", found->getSourceFileReference().getFile().getFullPathName());
+        res->setProperty ("start_beat", edit->tempoSequence.toBeats (pos.getStart()).inBeats());
+        res->setProperty ("duration_sec", pos.time.getLength().inSeconds());
+        res->setProperty ("bpm", edit->tempoSequence.getTempo (0)->getBpm());
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-028: audio.import_arrangement — one undo for all imported stems
+    if (method == "audio.import_arrangement")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+        const auto* stems = params.getProperty ("stems", juce::var()).getArray();
+        if (stems == nullptr || stems->isEmpty())
+            return makeErrorResponse (id, -32602, "Missing stems array");
+
+        auto& um = edit->getUndoManager();
+        um.beginNewTransaction ("MCP Import Arrangement");
+        const int baseTrackCount = te::getAudioTracks (*edit).size();
+        edit->ensureNumberOfAudioTracks (baseTrackCount + stems->size());
+        auto tracks = te::getAudioTracks (*edit);
+
+        juce::Array<int> createdIndices;
+        int clipsImported = 0;
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+
+        for (int i = 0; i < stems->size() && i < tracks.size(); ++i)
+        {
+            const auto& item = stems->getReference (static_cast<size_t> (i));
+            if (! item.isObject())
+                continue;
+            const auto name = item.getProperty ("name", "Stem " + juce::String (i + 1)).toString();
+            const auto path = item.getProperty ("file_path", "").toString();
+            const auto file = juce::File (path);
+            if (! file.existsAsFile())
+                continue;
+
+            double duration = 4.0;
+            std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (file));
+            if (reader != nullptr && reader->sampleRate > 0.0)
+                duration = reader->lengthInSamples / reader->sampleRate;
+
+            const double startBeat = juce::jmax (0.0, static_cast<double> (item.getProperty ("start_beat", 0.0)));
+            const auto start = edit->tempoSequence.toTime (tracktion::BeatPosition::fromBeats (startBeat));
+            const auto end = tracktion::TimePosition::fromSeconds (start.inSeconds() + duration);
+            const tracktion::TimeRange range { start, end };
+            const te::ClipPosition clipPos { range, tracktion::TimeDuration::fromSeconds (0.0) };
+
+            auto* track = tracks[baseTrackCount + i];
+            track->setName (name);
+            auto clip = track->insertWaveClip (name, file, clipPos, false);
+            if (clip != nullptr)
+            {
+                clip->getSourceFileReference().setToFile (
+                    file, te::SourceFileReference::PathStyle::alwaysAbsolute, false);
+                ++clipsImported;
+            }
+            createdIndices.add (baseTrackCount + i);
+        }
+
+        if (clipsImported == 0)
+            return makeErrorResponse (id, -32603, "No arrangement clips were imported");
+
+        if (onEditMutatedByRpc)
+            onEditMutatedByRpc ("MCP imported " + juce::String (clipsImported) + " arrangement stems");
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("tracks_created", createdIndices.size());
+        res->setProperty ("clips_imported", clipsImported);
+        juce::Array<juce::var> indexVars;
+        for (int index : createdIndices)
+            indexVars.add (index);
+        res->setProperty ("track_indices", juce::var (indexVars));
+        return makeResultResponse (id, juce::var (res));
+    }
+
     return makeErrorResponse (id, -32601, "Method not found: " + method);
 }
 

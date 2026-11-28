@@ -47,6 +47,11 @@ private:
     juce::TextButton walkthroughButton { "Guided Walkthrough" };
     juce::TextButton forgetButton { "Forget what you've learned" };
     juce::ToggleButton proactiveToggle { "Proactive (off by default)" };
+    juce::TextButton copilotChips[3] {
+        juce::TextButton ("Identify this clip"),
+        juce::TextButton ("Clone this voice"),
+        juce::TextButton ("Generate like this")
+    };
     juce::String pendingMethod;
     juce::String pendingParams;
     int walkthroughIndex = -1;
