@@ -17,6 +17,7 @@
 #include "GameForgeComponent.h"
 #include "RpgSoundboardComponent.h"
 #include "GhostTutorComponent.h"
+#include "UiSoundService.h"
 #include "ScriptPrompterComponent.h"
 #include "StudioLookAndFeel.h"
 #include "StudioPluginWindow.h"
@@ -122,6 +123,7 @@ private:
     tcs::game::GameForgeComponent gameForgeComponent;
     RpgSoundboardComponent rpgSoundboardComponent;
     GhostTutorComponent ghostTutorComponent;
+    tcs::ui::UiSoundService uiSoundService;
 
     juce::File currentEditFile;
     bool sessionUntitled = false;

@@ -1,11 +1,14 @@
 #include "GameForgeComponent.h"
 
 #include "SfxForgeEngine.h"
+#include "UiSoundService.h"
 
 namespace tcs
 {
 namespace game
 {
+static juce::String makeParams (const std::initializer_list<std::pair<juce::String, juce::var>>& entries);
+
 GameForgeComponent::GameForgeComponent()
 {
     const auto bold = juce::Font (juce::FontOptions (13.0f).withStyle ("Bold"));
@@ -66,6 +69,26 @@ GameForgeComponent::GameForgeComponent()
     loopButton.onClick      = [this] { exportLoop(); };
     stemsButton.onClick     = [this] { exportStems(); };
     packButton.onClick      = [this] { exportPack(); };
+
+    const auto uiNames = tcs::ui::UiSoundService::soundNames();
+    uiSoundLabel.setFont (juce::Font (juce::FontOptions (12.0f)));
+    addAndMakeVisible (uiSoundLabel);
+    for (int i = 0; i < 7; ++i)
+    {
+        uiSoundButtons[i].setButtonText (uiNames[i]);
+        uiSoundButtons[i].onClick = [this, name = uiNames[i]] { if (onUiSound) onUiSound (name); };
+        addAndMakeVisible (uiSoundButtons[i]);
+    }
+    uiMuteButton.setClickingTogglesState (true);
+    uiMuteButton.onClick = [this]
+    {
+        if (onAction != nullptr)
+            onAction ("sfx.set_ui_sounds", makeParams ({
+                { "enabled", ! uiMuteButton.getToggleState() },
+                { "volume_db", -18.0 },
+            }));
+    };
+    addAndMakeVisible (uiMuteButton);
 }
 
 GameForgeComponent::~GameForgeComponent()
@@ -75,6 +98,9 @@ GameForgeComponent::~GameForgeComponent()
     loopButton.onClick      = nullptr;
     stemsButton.onClick     = nullptr;
     packButton.onClick      = nullptr;
+    for (auto& button : uiSoundButtons) button.onClick = nullptr;
+    uiMuteButton.onClick = nullptr;
+    onUiSound = nullptr;
 }
 
 void GameForgeComponent::resized()
@@ -112,6 +138,13 @@ void GameForgeComponent::resized()
     buttonRow.removeFromLeft (6);
     packButton.setBounds (buttonRow.removeFromLeft (176));
     exportStatus.setBounds (buttonRow);
+    row.removeFromTop (4);
+
+    auto uiRow = row.removeFromTop (24);
+    uiSoundLabel.setBounds (uiRow.removeFromLeft (70));
+    for (auto& button : uiSoundButtons)
+        button.setBounds (uiRow.removeFromLeft (64).reduced (2));
+    uiMuteButton.setBounds (uiRow.removeFromLeft (110).reduced (2));
 }
 
 void GameForgeComponent::setStatus (const juce::String& text)

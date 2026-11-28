@@ -12,6 +12,7 @@
 #include "MusicTheoryEngine.h"
 #include "GhostKnowledge.h"
 #include "RpgSoundboardPlugin.h"
+#include "UiSoundService.h"
 #include "SfxForgeEngine.h"
 #include "VocalChannelPlugin.h"
 #include "WaveformEditorComponent.h"
@@ -3325,6 +3326,42 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         for (int index : createdIndices)
             indexVars.add (index);
         res->setProperty ("track_indices", juce::var (indexVars));
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-030: sfx.render_ui_bank / sfx.set_ui_sounds
+    if (method == "sfx.render_ui_bank" || method == "sfx.set_ui_sounds")
+    {
+        auto* service = tcs::ui::UiSoundService::instance();
+        if (service == nullptr)
+            return makeErrorResponse (id, -32002, "UI sound service unavailable");
+
+        if (method == "sfx.set_ui_sounds")
+        {
+            const bool enabled = static_cast<bool> (params.getProperty ("enabled", true));
+            const double volumeDb = juce::jlimit (-60.0, 0.0,
+                static_cast<double> (params.getProperty ("volume_db", -18.0)));
+            service->setEnabled (enabled);
+            service->setVolumeDb (volumeDb);
+            auto* res = new juce::DynamicObject();
+            res->setProperty ("enabled", enabled);
+            res->setProperty ("volume_db", volumeDb);
+            return makeResultResponse (id, juce::var (res));
+        }
+
+        const int seed = juce::jmax (0, static_cast<int> (params.getProperty ("seed", 42)));
+        service->renderBank (seed);
+        juce::Array<juce::var> sounds;
+        for (const auto& name : tcs::ui::UiSoundService::soundNames())
+        {
+            auto* item = new juce::DynamicObject();
+            item->setProperty ("name", name);
+            item->setProperty ("duration_ms", tcs::ui::UiSoundService::durationMs (name));
+            sounds.add (juce::var (item));
+        }
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("seed", seed);
+        res->setProperty ("sounds", juce::var (sounds));
         return makeResultResponse (id, juce::var (res));
     }
 

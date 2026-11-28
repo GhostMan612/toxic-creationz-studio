@@ -50,6 +50,10 @@
   and a display-only 16-step LED row, SP-1200 4×4 pad grid and LCD, rotating tape
   reels, hardware bus-comp and vocal channel strips, all vector-drawn and
   image-free.
+- Phase 13 SFX Forge Panel & UI Touch Sounds (WO-030) extends `GameForgeComponent`
+  with seven deterministic touch-sound presets and `UiSoundService` lock-free
+  one-shot monitoring, app-level mute/volume settings and `sfx.*` RPCs; Python
+  73/73.
 - Full repo sweep / reconciliation (local on `fix/repo-sweep-reconciliation`): verified
   WO-001..WO-020 against source; restored the two unimplemented briefing CV modules
   (`CvEnvelopeFollowerPlugin`, `CvStepModulatorPlugin`), fixed the unreachable Android
