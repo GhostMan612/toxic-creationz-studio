@@ -41,6 +41,10 @@
   `GhostTutorComponent` chat dock, compiled `GHOST_KNOWLEDGE.md` fallback, local
   Ollama brain, guided walkthroughs, confirm-before-act chips and `ghost.*` RPCs;
   Python 64/64.
+- Phase 11 GhostBrain Co-Producer (WO-028) is complete on `dev/v1.4b-ghostbrain`:
+  local-only voice prints with explicit consent, deterministic audio identification,
+  reference-conditioned multi-stem generation and one-undo arrangement import;
+  Python 69/69.
 - Full repo sweep / reconciliation (local on `fix/repo-sweep-reconciliation`): verified
   WO-001..WO-020 against source; restored the two unimplemented briefing CV modules
   (`CvEnvelopeFollowerPlugin`, `CvStepModulatorPlugin`), fixed the unreachable Android

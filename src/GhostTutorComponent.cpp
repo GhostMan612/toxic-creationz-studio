@@ -46,6 +46,15 @@ GhostTutorComponent::GhostTutorComponent()
         actionChip.setVisible (false);
     };
 
+    const char* copilotQuestions[3] = {
+        "Identify the selected clip", "Clone this voice locally", "Generate like this clip"
+    };
+    for (int i = 0; i < 3; ++i)
+    {
+        copilotChips[i].onClick = [this, copilotQuestions, i] { ask (copilotQuestions[i], false); };
+        addAndMakeVisible (copilotChips[i]);
+    }
+
     addAndMakeVisible (transcript);
     addAndMakeVisible (input);
     addAndMakeVisible (sendButton);
@@ -65,6 +74,7 @@ GhostTutorComponent::~GhostTutorComponent()
     forgetButton.onClick = nullptr;
     proactiveToggle.onClick = nullptr;
     actionChip.onClick = nullptr;
+    for (auto& chip : copilotChips) chip.onClick = nullptr;
     onAction = nullptr;
 }
 
@@ -112,6 +122,9 @@ void GhostTutorComponent::resized()
     walkthroughButton.setBounds (bottom.removeFromLeft (150));
     forgetButton.setBounds (bottom.removeFromLeft (180));
     proactiveToggle.setBounds (bottom.removeFromLeft (170));
+    auto chips = area.removeFromTop (22);
+    for (auto& chip : copilotChips)
+        chip.setBounds (chips.removeFromLeft (140).reduced (2));
 }
 
 void GhostTutorComponent::appendMessage (const juce::String& speaker, const juce::String& text)

@@ -18,12 +18,20 @@ if str(_MCP_DIR) not in sys.path:
     sys.path.insert(0, str(_MCP_DIR))
 
 from ai_audio_worker import (
+    generate_arrangement,
     generate_stem,
     generate_vo_practice_script,
     parse_root_midi,
     resolve_rpg_encounter_cue,
     separate_stems,
     transcribe_polyphonic_basic_pitch,
+)
+from audio_identify_worker import identify_clip
+from voice_clone_worker import (
+    enroll_voice,
+    forget_voice,
+    generate_voice_line,
+    list_voices,
 )
 
 
@@ -1180,6 +1188,82 @@ class McpWorkerTests(unittest.TestCase):
         for keyword in ("record-arming", "rack-patching-hardware", "voice-acting-booth",
                         "game-audio-forge", "live-soundboard"):
             self.assertIn("## " + keyword, bundle)
+
+    @staticmethod
+    def _write_tone_wav(path, seconds: float = 12.0) -> None:
+        import math
+        import wave
+
+        with wave.open(str(path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(44100)
+            frames = bytearray()
+            for i in range(int(44100 * seconds)):
+                value = int(12000 * math.sin(2 * math.pi * 220 * i / 44100))
+                frames += value.to_bytes(2, "little", signed=True)
+            wav.writeframes(frames)
+
+    def test_identify_clip_coarse_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "clip.wav"
+            self._write_tone_wav(wav, 2.0)
+            info = identify_clip(wav)
+            self.assertEqual(info["method"], "coarse")
+            self.assertGreater(len(info["instruments"]), 0)
+            self.assertEqual(len(info["fingerprint"]), 16)
+            self.assertIsNone(info["speaker"])
+
+    def test_voice_enrollment_requires_explicit_consent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "VoicePrints"
+            wav = Path(tmp) / "ref.wav"
+            self._write_tone_wav(wav)
+            with self.assertRaises(ValueError):
+                enroll_voice("ghost", "Ghost", wav, consent=False, voice_prints_dir=root)
+            meta = enroll_voice("ghost", "Ghost", wav, consent=True, voice_prints_dir=root)
+            self.assertEqual(meta["voice_id"], "ghost")
+            self.assertEqual(len(list_voices(root)), 1)
+            self.assertEqual(forget_voice("ghost", voice_prints_dir=root), 1)
+            self.assertEqual(list_voices(root), [])
+
+    def test_generate_voice_line_never_substitutes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "VoicePrints"
+            wav = Path(tmp) / "ref.wav"
+            self._write_tone_wav(wav)
+            with self.assertRaises(ValueError):
+                generate_voice_line("missing", "hello", Path(tmp) / "out.wav",
+                                    voice_prints_dir=root)
+            enroll_voice("ghost", "Ghost", wav, consent=True, voice_prints_dir=root)
+            result = generate_voice_line("ghost", "hello", Path(tmp) / "out.wav",
+                                         voice_prints_dir=root)
+            self.assertEqual(result["status"], "unavailable")
+
+    def test_generate_arrangement_stems_with_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ref = Path(tmp) / "ref.wav"
+            self._write_tone_wav(ref, 2.0)
+            out = Path(tmp) / "arrangement"
+            result = generate_arrangement(
+                "dark trap cue", out, stems=("drums", "bass", "lead"), reference_wav=ref)
+            self.assertEqual(len(result["stems"]), 3)
+            for item in result["stems"]:
+                self.assertGreater(Path(item["file_path"]).stat().st_size, 44)
+
+    def test_generate_arrangement_tool_forwards_import(self) -> None:
+        srv = _load_daw_mcp_server()
+        mock_rpc = AsyncMock(return_value={"clips_imported": 3})
+
+        with patch.object(srv, "send_daw_rpc", mock_rpc):
+            with tempfile.TemporaryDirectory() as tmp:
+                result = asyncio.run(srv.generate_arrangement(
+                    "cue", tmp, stems=("drums", "bass", "lead")))
+
+        self.assertEqual(result["imported"]["clips_imported"], 3)
+        method, params = mock_rpc.await_args.args
+        self.assertEqual(method, "audio.import_arrangement")
+        self.assertEqual([s["name"] for s in params["stems"]], ["drums", "bass", "lead"])
 
 
 if __name__ == "__main__":

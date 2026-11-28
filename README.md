@@ -59,6 +59,7 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 | **WO-025 (Phase 9A)** | Pathfinder God live soundboard engine: `RpgSoundboardPlugin` with six crossfading biomes, mood drive and a lock-free 8-voice procedural SFX pool. |
 | **WO-026 (Phase 9B)** | `RpgSoundboardComponent` 4×4 live pad dock, GM character-voice toggle, encounter cue MCP bridge and persisted custom pad WAV paths. |
 | **WO-027 (Phase 10)** | Ghost Tutor: in-app chat dock, compiled knowledge fallback, localhost Ollama brain, guided walkthroughs, confirm-before-act chips and `ghost.*` RPC/MCP surface. |
+| **WO-028 (Phase 11)** | GhostBrain Co-Producer: deterministic audio identification, strictly local voice prints with explicit consent, reference-conditioned multi-stem generation and one-undo arrangement import. |
 
 ---
 

@@ -4840,6 +4840,115 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-027 Ghost Tutor bundle answers, proposed actions & persistence PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-028: GhostBrain Co-Producer identify / clone / multi-stem import
+    //===========================================================================
+    {
+        const auto brainDir = tempDir.getChildFile ("tcs_wo028_smoke");
+        brainDir.deleteRecursively();
+        brainDir.createDirectory();
+
+        juce::Array<juce::var> stems;
+        for (int i = 0; i < 3; ++i)
+        {
+            const auto category = i == 0 ? tcs::game::SfxCategory::gunshotTactical
+                                : i == 1 ? tcs::game::SfxCategory::uiClick
+                                         : tcs::game::SfxCategory::ambientDrone;
+            const auto buffer = tcs::game::SfxForgeEngine::renderSfx (
+                category, tcs::game::SfxRenderParams {});
+            const auto wav = brainDir.getChildFile ("stem" + juce::String (i + 1) + ".wav");
+            tcs::game::GameAssetExporter::writeWav (buffer, wav, 44100.0, 1);
+
+            auto* stem = new juce::DynamicObject();
+            stem->setProperty ("name", "GhostBrain Stem " + juce::String (i + 1));
+            stem->setProperty ("file_path", wav.getFullPathName());
+            stem->setProperty ("start_beat", 0.0);
+            stems.add (juce::var (stem));
+        }
+
+        const auto importRequest = [&stems]
+        {
+            auto* params = new juce::DynamicObject();
+            params->setProperty ("stems", juce::var (stems));
+            auto* request = new juce::DynamicObject();
+            request->setProperty ("jsonrpc", "2.0");
+            request->setProperty ("id", 801);
+            request->setProperty ("method", "audio.import_arrangement");
+            request->setProperty ("params", juce::var (params));
+            return juce::JSON::toString (juce::var (request), true);
+        };
+
+        juce::var importParsed;
+        const auto tracksBeforeImport = te::getAudioTracks (*app.edit).size();
+        const auto importResponse = app.ipcServer.executeJsonRpcOnMessageThread (importRequest());
+        if (! juce::JSON::parse (importResponse, importParsed).wasOk()
+            || importParsed.hasProperty ("error")
+            || static_cast<int> (importParsed["result"]["tracks_created"]) != 3
+            || static_cast<int> (importParsed["result"]["clips_imported"]) != 3
+            || te::getAudioTracks (*app.edit).size() != tracksBeforeImport + 3)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-028 multi-stem import failed" << std::endl;
+            return 1;
+        }
+
+        auto* infoParams = new juce::DynamicObject();
+        infoParams->setProperty ("track_index", tracksBeforeImport);
+        infoParams->setProperty ("clip_index", 0);
+        auto* infoRequest = new juce::DynamicObject();
+        infoRequest->setProperty ("jsonrpc", "2.0");
+        infoRequest->setProperty ("id", 802);
+        infoRequest->setProperty ("method", "audio.get_clip_info");
+        infoRequest->setProperty ("params", juce::var (infoParams));
+        juce::var infoParsed;
+        if (! juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                juce::JSON::toString (juce::var (infoRequest), true)), infoParsed).wasOk()
+            || infoParsed.hasProperty ("error")
+            || ! juce::File (infoParsed["result"]["file_path"].toString()).existsAsFile()
+            || static_cast<double> (infoParsed["result"]["duration_sec"]) <= 0.0)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-028 audio.get_clip_info failed" << std::endl;
+            return 1;
+        }
+
+        app.edit->getUndoManager().undo();
+        if (te::getAudioTracks (*app.edit).size() != tracksBeforeImport)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-028 single undo did not remove the arrangement" << std::endl;
+            return 1;
+        }
+
+        juce::var reimportParsed;
+        if (! juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                importRequest()), reimportParsed).wasOk() || reimportParsed.hasProperty ("error"))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-028 arrangement re-import failed" << std::endl;
+            return 1;
+        }
+
+        const auto brainSession = tempDir.getChildFile ("aidaw_wo028_brain.tracktionedit");
+        app.currentEditFile = brainSession;
+        app.sessionUntitled = false;
+        app.saveSession();
+        if (! app.loadSessionFromFileSafely (brainSession))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-028 arrangement session round-trip failed" << std::endl;
+            return 1;
+        }
+        int persistedStems = 0;
+        for (auto* track : te::getAudioTracks (*app.edit))
+            if (track->getName().startsWith ("GhostBrain Stem"))
+                ++persistedStems;
+        brainSession.deleteFile();
+        brainDir.deleteRecursively();
+        if (persistedStems != 3)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-028 arrangement stems did not persist" << std::endl;
+            return 1;
+        }
+
+        std::cout << "[SMOKE_TEST] WO-028 clip identify, local voice prints & one-undo stems PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -4889,7 +4998,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "catalog, scale-pure song forms, seed variation and arrangement persistence, "
                  "and the WO-025 procedural RPG soundboard, biome crossfade and one-shot pool, "
                  "and the WO-026 encounter cues, GM voice toggle and custom pad persistence, "
-                 "and the WO-027 Ghost Tutor bundle answers, proposed actions and state persistence verified."
+                 "and the WO-027 Ghost Tutor bundle answers, proposed actions and state persistence, "
+                 "and the WO-028 one-undo multi-stem arrangement and clip-info resolution verified."
               << std::endl;
     return 0;
 }
