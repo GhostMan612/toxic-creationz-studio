@@ -112,6 +112,62 @@ void HardwareEditorBase::setSectionDividers (const std::vector<juce::Colour>& co
     dividerColours = colours;
 }
 
+int HardwareEditorBase::countUnboundSliders() const noexcept
+{
+    int unbound = 0;
+    for (const auto& knob : knobs)
+        if (knob.slider == nullptr || knob.parameter == nullptr)
+            ++unbound;
+    return unbound;
+}
+
+void HardwareEditorBase::drawSilkscreen (juce::Graphics& g, const juce::String& text,
+                                         juce::Rectangle<float> area, juce::Colour colour) const
+{
+    g.setColour (colour);
+    g.setFont (juce::Font (juce::FontOptions (10.0f).withStyle ("Bold")));
+    g.drawText (text.toUpperCase(), area, juce::Justification::centred, false);
+}
+
+void HardwareEditorBase::drawSectionBlock (juce::Graphics& g, juce::Rectangle<float> area,
+                                           juce::Colour colour) const
+{
+    g.setColour (colour.withAlpha (0.45f));
+    g.fillRoundedRectangle (area, 3.0f);
+}
+
+void HardwareEditorBase::drawRackEars (juce::Graphics& g) const
+{
+    for (float cx : { 12.0f, static_cast<float> (getWidth()) - 12.0f })
+    {
+        g.setColour (edge);
+        g.fillEllipse (cx - 5.0f, 10.0f, 10.0f, 10.0f);
+        g.setColour (chassis);
+        g.fillEllipse (cx - 3.0f, 12.0f, 6.0f, 6.0f);
+    }
+}
+
+void HardwareEditorBase::drawDummyCap (juce::Graphics& g, juce::Rectangle<float> area,
+                                       const juce::String& label) const
+{
+    g.setColour (bezel);
+    g.fillRoundedRectangle (area, 4.0f);
+    g.setColour (edge);
+    g.drawRoundedRectangle (area, 4.0f, 1.0f);
+    drawSilkscreen (g, label, area, muted);
+}
+
+void HardwareEditorBase::drawStepLed (juce::Graphics& g, juce::Rectangle<float> area, bool lit) const
+{
+    if (lit)
+    {
+        g.setColour (accentColour.withAlpha (0.30f));
+        g.fillEllipse (area.expanded (4.0f));
+    }
+    g.setColour (lit ? accentColour : edge);
+    g.fillEllipse (area);
+}
+
 void HardwareEditorBase::paint (juce::Graphics& g)
 {
     g.fillAll (chassis);
@@ -154,19 +210,27 @@ void HardwareEditorBase::timerCallback()
             knob.slider->setValue (current, juce::dontSendNotification);
     }
     updateMeters();
+    const auto& transport = plugin.edit.getTransport();
+    const double beats = plugin.edit.tempoSequence.toBeats (transport.getPosition()).inBeats();
+    syncPlayhead (beats, transport.isPlaying());
     repaint();
 }
 
 //------------------------------------------------------------------------------
 Tr808Editor::Tr808Editor (te::Plugin& p)
-    : HardwareEditorBase (p, "TR-808 DRUM SYNTH", crimson, 640, 320)
+    : HardwareEditorBase (p, "TR-808 DRUM SYNTH", crimson, 880, 360)
 {
-    setSectionDividers ({ crimson, juce::Colour (0xffff8000), amber, silkscreen });
-    addKnob ("kickDecay", "KICK DEC", 20, 52, 74);
-    addKnob ("kickTone", "KICK TONE", 112, 52, 74);
-    addKnob ("snareSnappy", "SNARE", 204, 52, 74);
-    addKnob ("hatDecay", "HAT DEC", 296, 52, 74);
-    addKnob ("accent", "ACCENT", 388, 52, 74);
+    setSectionDividers ({ crimson, juce::Colour (0xffff8000), amber, juce::Colour (0xffd4d4d4), silkscreen });
+    addKnob ("kickDecay", "KICK DEC", 20, 52, 66);
+    addKnob ("kickTone", "KICK TONE", 96, 52, 66);
+    addKnob ("snareSnappy", "SNARE", 172, 52, 66);
+    addKnob ("hatDecay", "HAT DEC", 248, 52, 66);
+    addKnob ("accent", "ACCENT", 324, 52, 66);
+    addKnob ("kickLevel", "BD LEVEL", 20, 122, 66);
+    addKnob ("snareLevel", "SD LEVEL", 96, 122, 66);
+    addKnob ("lowTomLevel", "LT LEVEL", 172, 122, 66);
+    addKnob ("midTomLevel", "MT LEVEL", 248, 122, 66);
+    addKnob ("hatLevel", "CH/OH LEVEL", 324, 122, 66);
 
     const int padNotes[6] = { 36, 38, 42, 46, 45, 48 };
     const char* names[6] = { "KICK", "SNARE", "CH", "OH", "LT", "MT" };
@@ -187,9 +251,57 @@ void Tr808Editor::updateMeters()
     // Trigger pads flash via their own button state; no meter telemetry needed.
 }
 
+void Tr808Editor::syncFromPlayheadBeats (double beats, bool isPlaying)
+{
+    syncPlayhead (beats, isPlaying);
+}
+
+void Tr808Editor::syncPlayhead (double beats, bool isPlaying)
+{
+    const int next = isPlaying ? (static_cast<int> (beats * 4.0) % 16 + 16) % 16 : -1;
+    if (next != activeStep)
+    {
+        activeStep = next;
+        repaint();
+    }
+}
+
+void Tr808Editor::paint (juce::Graphics& g)
+{
+    HardwareEditorBase::paint (g);
+    drawRackEars (g);
+    const char* columns[11] = {
+        "AC", "BD", "SD", "LT/LC", "MT/MC", "HT/HC",
+        "RS/CL", "CP/MA", "CB", "CY", "OH/CH"
+    };
+    const float columnWidth = static_cast<float> (getWidth() - 40) / 11.0f;
+    for (int i = 0; i < 11; ++i)
+    {
+        const auto area = juce::Rectangle<float> (20.0f + columnWidth * static_cast<float> (i),
+                                                  28.0f, columnWidth - 4.0f, 20.0f);
+        const bool active = i == 1 || i == 2 || i == 3 || i == 4 || i == 10;
+        if (active)
+            drawSectionBlock (g, area, i < 4 ? crimson : amber);
+        else
+            drawDummyCap (g, area, columns[i]);
+        drawSilkscreen (g, columns[i], area, active ? juce::Colour (0xffffffff) : muted);
+    }
+
+    const float stepWidth = static_cast<float> (getWidth() - 40) / 16.0f;
+    for (int step = 0; step < 16; ++step)
+    {
+        const auto colour = step < 4 ? crimson : step < 8 ? juce::Colour (0xffff8000)
+                          : step < 12 ? amber : juce::Colour (0xffd4d4d4);
+        const auto area = juce::Rectangle<float> (
+            20.0f + stepWidth * static_cast<float> (step), 252.0f, stepWidth - 3.0f, 18.0f);
+        drawSectionBlock (g, area, colour);
+        drawStepLed (g, area.withSizeKeepingCentre (10.0f, 10.0f), step == activeStep);
+    }
+}
+
 //------------------------------------------------------------------------------
 VintageSamplerEditor::VintageSamplerEditor (te::Plugin& p)
-    : HardwareEditorBase (p, "SP-1200 VINTAGE SAMPLER", amber, 640, 320)
+    : HardwareEditorBase (p, "SP-1200 VINTAGE SAMPLER", amber, 720, 400)
 {
     setSectionDividers ({ amber, silkscreen, muted });
     addKnob ("bitDepth", "BIT DEPTH", 20, 52, 68);
@@ -232,11 +344,14 @@ VintageSamplerEditor::VintageSamplerEditor (te::Plugin& p)
     sampleLabel.setFont (juce::Font (juce::FontOptions (10.0f)));
     sampleLabel.setColour (juce::Label::textColourId, silkscreen);
 
-    const char* names[8] = { "C3", "D3", "E3", "G3", "C4", "D4", "E4", "G4" };
-    const int padNotes[8] = { 48, 50, 52, 55, 60, 62, 64, 67 };
-    for (int i = 0; i < 8; ++i)
-        addPad (names[i], 20 + (i % 4) * 102, 172 + (i / 4) * 56, 92, 48,
-                amber.withAlpha (0.55f), [this, note = padNotes[i]]() { juce::ignoreUnused (note); });
+    for (int i = 0; i < 16; ++i)
+    {
+        const int note = 48 + i;
+        juce::String label = juce::String (note);
+        addPad (label, 20 + (i % 4) * 110, 172 + (i / 4) * 44, 100, 36,
+                amber.withAlpha (i % 5 == 0 ? 0.75f : 0.45f),
+                [note]() { juce::ignoreUnused (note); });
+    }
 }
 
 VintageSamplerEditor::~VintageSamplerEditor()
@@ -312,6 +427,38 @@ void AnalogTapeEditor::paint (juce::Graphics& g)
     };
     drawNeedle (juce::Rectangle<float> (470.0f, 96.0f, 150.0f, 84.0f), leftNeedle, "L");
     drawNeedle (juce::Rectangle<float> (470.0f, 190.0f, 150.0f, 84.0f), rightNeedle, "R");
+
+    for (float cx : { 90.0f, 280.0f })
+    {
+        const auto hub = juce::Rectangle<float> (cx - 52.0f, 150.0f, 104.0f, 104.0f);
+        g.setColour (bezel);
+        g.fillEllipse (hub);
+        g.setColour (edge);
+        g.drawEllipse (hub, 2.0f);
+        for (int spoke = 0; spoke < 3; ++spoke)
+        {
+            const float angle = reelAngle + static_cast<float> (spoke)
+                              * juce::MathConstants<float>::twoPi / 3.0f;
+            g.drawLine (hub.getCentreX(), hub.getCentreY(),
+                        hub.getCentreX() + std::cos (angle) * 44.0f,
+                        hub.getCentreY() + std::sin (angle) * 44.0f, 3.0f);
+        }
+    }
+}
+
+void AnalogTapeEditor::syncFromPlayheadBeats (double beats, bool isPlaying)
+{
+    syncPlayhead (beats, isPlaying);
+}
+
+void AnalogTapeEditor::syncPlayhead (double beats, bool isPlaying)
+{
+    if (isPlaying)
+    {
+        const float twoPi = juce::MathConstants<float>::twoPi;
+        reelAngle = std::fmod (static_cast<float> (beats) * 0.35f, twoPi);
+    }
+    repaint();
 }
 
 void AnalogTapeEditor::updateMeters()

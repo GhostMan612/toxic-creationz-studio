@@ -45,6 +45,11 @@
   local-only voice prints with explicit consent, deterministic audio identification,
   reference-conditioned multi-stem generation and one-undo arrangement import;
   Python 69/69.
+- Phase 12 True-to-Hardware Rack Faceplates (WO-029) is complete on
+  `dev/v1.5-faceplates`: 11-column TR-808 strip with 10 bound voice-level knobs
+  and a display-only 16-step LED row, SP-1200 4×4 pad grid and LCD, rotating tape
+  reels, hardware bus-comp and vocal channel strips, all vector-drawn and
+  image-free.
 - Full repo sweep / reconciliation (local on `fix/repo-sweep-reconciliation`): verified
   WO-001..WO-020 against source; restored the two unimplemented briefing CV modules
   (`CvEnvelopeFollowerPlugin`, `CvStepModulatorPlugin`), fixed the unreachable Android

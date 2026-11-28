@@ -28,6 +28,8 @@ public:
     bool allowWindowResizing() override { return true; }
     juce::ComponentBoundsConstrainer* getBoundsConstrainer() override { return nullptr; }
 
+    int countUnboundSliders() const noexcept;
+
 protected:
     struct KnobControl
     {
@@ -43,7 +45,15 @@ protected:
     void addMeterLabel (const juce::String& prefix, int x, int y, int w);
     void setSectionDividers (const std::vector<juce::Colour>& colours);
 
+    void drawSilkscreen (juce::Graphics& g, const juce::String& text,
+                         juce::Rectangle<float> area, juce::Colour colour) const;
+    void drawSectionBlock (juce::Graphics& g, juce::Rectangle<float> area, juce::Colour colour) const;
+    void drawRackEars (juce::Graphics& g) const;
+    void drawDummyCap (juce::Graphics& g, juce::Rectangle<float> area, const juce::String& label) const;
+    void drawStepLed (juce::Graphics& g, juce::Rectangle<float> area, bool lit) const;
+
     virtual void updateMeters() {}
+    virtual void syncPlayhead (double beats, bool isPlaying) { juce::ignoreUnused (beats, isPlaying); }
 
     te::Plugin& plugin;
     juce::String title;
@@ -63,8 +73,13 @@ class Tr808Editor : public HardwareEditorBase
 {
 public:
     explicit Tr808Editor (te::Plugin& p);
+    void syncFromPlayheadBeats (double beats, bool isPlaying);
+    int getActiveStep() const noexcept { return activeStep; }
 private:
     void updateMeters() override;
+    void syncPlayhead (double beats, bool isPlaying) override;
+    void paint (juce::Graphics& g) override;
+    int activeStep = -1;
 };
 
 class VintageSamplerEditor : public HardwareEditorBase
@@ -86,9 +101,13 @@ class AnalogTapeEditor : public HardwareEditorBase
 public:
     explicit AnalogTapeEditor (te::Plugin& p);
     void paint (juce::Graphics& g) override;
+    void syncFromPlayheadBeats (double beats, bool isPlaying);
+    float getReelAngle() const noexcept { return reelAngle; }
 private:
     void updateMeters() override;
+    void syncPlayhead (double beats, bool isPlaying) override;
     float leftNeedle = -60.0f, rightNeedle = -60.0f;
+    float reelAngle = 0.0f;
 };
 
 class SidechainCompEditor : public HardwareEditorBase
