@@ -7,6 +7,7 @@
 #include <tracktion_engine/tracktion_engine.h>
 
 #include "VocalChannelPlugin.h"
+#include "RpgSoundboardPlugin.h"
 
 #include <algorithm>
 #include <array>
@@ -924,4 +925,5 @@ inline void registerHardwareRackPlugins (te::Engine& engine)
     pm.createBuiltInType<VintageSamplerPlugin>();
     pm.createBuiltInType<AnalogTapePlugin>();
     pm.createBuiltInType<VocalChannelPlugin>();
+    pm.createBuiltInType<RpgSoundboardPlugin>();
 }

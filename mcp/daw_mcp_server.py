@@ -936,5 +936,36 @@ async def generate_song_arrangement(
     return await send_daw_rpc("midi.generate_song_arrangement", params, timeout=30.0)
 
 
+@mcp.tool()
+async def set_rpg_scene(
+    biome: str = "drowned_stars",
+    mood_intensity: float = 0.35,
+    crossfade_sec: float = 2.0,
+) -> dict[str, Any]:
+    """Crossfade the live RPG soundboard ambience and set encounter mood."""
+    params: dict[str, Any] = {
+        "biome": biome.strip().lower(),
+        "mood_intensity": min(1.0, max(0.0, float(mood_intensity))),
+        "crossfade_sec": min(5.0, max(0.5, float(crossfade_sec))),
+    }
+    return await send_daw_rpc("rpg.set_scene", params)
+
+
+@mcp.tool()
+async def trigger_rpg_sfx(sfx_name: str = "sword_clash", velocity: float = 0.9) -> dict[str, Any]:
+    """Fire a one-shot procedural tabletop SFX on the live soundboard."""
+    params: dict[str, Any] = {
+        "sfx_name": sfx_name.strip().lower(),
+        "velocity": min(1.0, max(0.0, float(velocity))),
+    }
+    return await send_daw_rpc("rpg.trigger_sfx", params)
+
+
+@mcp.tool()
+async def get_rpg_soundboard_state() -> dict[str, Any]:
+    """Read the active RPG biome, mood and available biomes/SFX."""
+    return await send_daw_rpc("rpg.get_state", {})
+
+
 if __name__ == "__main__":
     mcp.run()

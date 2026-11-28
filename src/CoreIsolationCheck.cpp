@@ -9,6 +9,7 @@
 #include "SidechainCompressorPlugin.h"
 #include "GameAssetExporter.h"
 #include "MusicTheoryEngine.h"
+#include "RpgSoundboardPlugin.h"
 #include "SfxForgeEngine.h"
 #include "VocalChannelPlugin.h"
 

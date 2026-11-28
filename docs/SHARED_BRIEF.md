@@ -31,6 +31,9 @@
   Euclidean rhythms, multi-section song-form/motif/counter-melody generator), wired
   into the BGM UI, IPC (`theory.get_catalog`, `midi.generate_song_arrangement`) and
   FastMCP; Python 52/52.
+- Phase 9 (`WO-025`) on `dev/v1.3-rpg-soundboard`: zero-allocation `RpgSoundboardPlugin`
+  with six crossfading procedural biomes, mood intensity, 8-voice lock-free SFX pool,
+  3 RPCs and 3 MCP tools; Python 56/56.
 - Full repo sweep / reconciliation (local on `fix/repo-sweep-reconciliation`): verified
   WO-001..WO-020 against source; restored the two unimplemented briefing CV modules
   (`CvEnvelopeFollowerPlugin`, `CvStepModulatorPlugin`), fixed the unreachable Android

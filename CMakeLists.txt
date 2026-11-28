@@ -67,6 +67,7 @@ add_library(tcs_core STATIC
     src/SfxForgeEngine.cpp
     src/GameAssetExporter.cpp
     src/MusicTheoryEngine.cpp
+    src/RpgSoundboardPlugin.cpp
 )
 target_include_directories(tcs_core PUBLIC src)
 target_compile_options(tcs_core PRIVATE ${TCS_PLATFORM_COMPILE_OPTIONS})
@@ -154,6 +155,7 @@ if(TCS_BUILD_DESKTOP_APP)
         src/GameForgeComponent.h
         src/GameForgeComponent.cpp
         src/MusicTheoryEngine.h
+        src/RpgSoundboardPlugin.h
         src/MidiKeyboardDock.h
         src/MidiKeyboardDock.cpp
         src/ScriptPrompterComponent.h
