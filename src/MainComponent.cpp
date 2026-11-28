@@ -159,6 +159,8 @@ MainComponent::MainComponent()
     gameForgeComponent.setVisible (false);
     addAndMakeVisible (rpgSoundboardComponent);
     rpgSoundboardComponent.setVisible (false);
+    addAndMakeVisible (ghostTutorComponent);
+    ghostTutorComponent.setVisible (false);
 
     mixerComponent.setRecordingManager (&recordingManager);
     arrangementView.setRecordingManager (&recordingManager);
@@ -579,6 +581,7 @@ MainComponent::MainComponent()
         if (edit != nullptr)
             scriptPrompter.setEdit (edit.get());
         rpgSoundboardComponent.setEdit (edit.get());
+        ghostTutorComponent.setEdit (edit.get());
         resized();
     };
 
@@ -645,6 +648,7 @@ MainComponent::MainComponent()
     {
         rpgSoundboardComponent.setVisible (rpgBoardPlaceholder.getToggleState());
         rpgSoundboardComponent.setEdit (edit.get());
+        ghostTutorComponent.setEdit (edit.get());
         resized();
     };
     rpgSoundboardComponent.onAction = [this] (const juce::String& method, const juce::String& paramsJson)
@@ -664,6 +668,32 @@ MainComponent::MainComponent()
     };
     addAndMakeVisible (gameForgePlaceholder);
     addAndMakeVisible (rpgBoardPlaceholder);
+
+    ghostToggleButton.setClickingTogglesState (true);
+    ghostToggleButton.setToggleState (false, juce::dontSendNotification);
+    ghostToggleButton.onClick = [this]
+    {
+        const bool open = ghostToggleButton.getToggleState();
+        ghostTutorComponent.setVisible (open);
+        ghostTutorComponent.setEdit (edit.get());
+        if (edit != nullptr)
+            edit->state.getOrCreateChildWithName ("GHOST_TUTOR", nullptr)
+                .setProperty ("panel_open", open, nullptr);
+        resized();
+    };
+    ghostTutorComponent.onAction = [this] (const juce::String& method, const juce::String& paramsJson)
+    {
+        juce::var parsedParams;
+        if (! juce::JSON::parse (paramsJson, parsedParams).wasOk())
+            return;
+        auto* request = new juce::DynamicObject();
+        request->setProperty ("jsonrpc", "2.0");
+        request->setProperty ("id", 145);
+        request->setProperty ("method", method);
+        request->setProperty ("params", parsedParams);
+        ipcServer.executeJsonRpcOnMessageThread (juce::JSON::toString (juce::var (request), true));
+    };
+    addAndMakeVisible (ghostToggleButton);
 
     studioWorkspaceButton.onClick = [this] { setWorkspaceMode (WorkspaceMode::studio); };
     rackWorkspaceButton.onClick   = [this] { setWorkspaceMode (WorkspaceMode::modularRack); };
@@ -718,6 +748,7 @@ void MainComponent::setWorkspaceMode (WorkspaceMode mode)
     if (vo && edit != nullptr)
         scriptPrompter.setEdit (edit.get());
         rpgSoundboardComponent.setEdit (edit.get());
+        ghostTutorComponent.setEdit (edit.get());
 
     saveWorkspaceMode();
     resized();
@@ -788,6 +819,7 @@ MainComponent::~MainComponent()
         midiKeyboardDock.setEdit (nullptr);
         scriptPrompter.setEdit (nullptr);
         rpgSoundboardComponent.setEdit (nullptr);
+        ghostTutorComponent.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         te::PluginWindowState::hideAllWindowsTemporarily (*edit);
@@ -1079,6 +1111,7 @@ void MainComponent::attachEdit (te::Edit& editToAttach)
     midiKeyboardDock.setEdit (&editToAttach);
     scriptPrompter.setEdit (&editToAttach);
     rpgSoundboardComponent.setEdit (&editToAttach);
+    ghostTutorComponent.setEdit (&editToAttach);
     bpmSlider.setValue (editToAttach.tempoSequence.getTempo (0)->getBpm(), juce::dontSendNotification);
     syncTransportControlsFromEdit();
 }
@@ -1269,6 +1302,7 @@ bool MainComponent::loadSessionFromFileSafely (const juce::File& fileToLoad, juc
         midiKeyboardDock.setEdit (nullptr);
         scriptPrompter.setEdit (nullptr);
         rpgSoundboardComponent.setEdit (nullptr);
+        ghostTutorComponent.setEdit (nullptr);
 
         edit->getTransport().stop (false, false);
         te::PluginWindowState::hideAllWindowsTemporarily (*edit);
@@ -1617,6 +1651,7 @@ void MainComponent::resized()
     addRowItem (workspaceRow, voWorkspaceButton, 112);
     addRowItem (workspaceRow, gameForgePlaceholder, 118);
     addRowItem (workspaceRow, rpgBoardPlaceholder, 104);
+    addRowItem (workspaceRow, ghostToggleButton, 52);
 
     // Row 2: Transport, Record, Loop/Click/Count-In, Edit actions, BPM, Bar:Beat & Status
     addRowItem (row2, playButton, 46);
@@ -1664,6 +1699,12 @@ void MainComponent::resized()
     if (rpgSoundboardComponent.isVisible())
     {
         rpgSoundboardComponent.setBounds (area.removeFromBottom (190));
+        area.removeFromBottom (4);
+    }
+
+    if (ghostTutorComponent.isVisible())
+    {
+        ghostTutorComponent.setBounds (area.removeFromBottom (220));
         area.removeFromBottom (4);
     }
 

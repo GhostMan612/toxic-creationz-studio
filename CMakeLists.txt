@@ -158,6 +158,13 @@ if(TCS_BUILD_DESKTOP_APP)
         src/RpgSoundboardPlugin.h
         src/RpgSoundboardComponent.h
         src/RpgSoundboardComponent.cpp
+        src/GhostKnowledge.h
+        src/GhostKnowledge.cpp
+        src/GhostBrain.h
+        src/GhostBrain.cpp
+        src/GhostWalkthroughs.h
+        src/GhostTutorComponent.h
+        src/GhostTutorComponent.cpp
         src/MidiKeyboardDock.h
         src/MidiKeyboardDock.cpp
         src/ScriptPrompterComponent.h

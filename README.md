@@ -58,6 +58,7 @@ A native Windows desktop DAW built with **C++20, JUCE 9, and Tracktion Engine**,
 | **WO-024B (Phase 8C)** | `MusicTheoryEngine`: 12 keys, 16 scales/modes, 14 genre DNA profiles, Euclidean rhythms, rich voicings and a seeded multi-section song-form/motif/counter-melody generator wired into the BGM UI, JSON-RPC and FastMCP. |
 | **WO-025 (Phase 9A)** | Pathfinder God live soundboard engine: `RpgSoundboardPlugin` with six crossfading biomes, mood drive and a lock-free 8-voice procedural SFX pool. |
 | **WO-026 (Phase 9B)** | `RpgSoundboardComponent` 4×4 live pad dock, GM character-voice toggle, encounter cue MCP bridge and persisted custom pad WAV paths. |
+| **WO-027 (Phase 10)** | Ghost Tutor: in-app chat dock, compiled knowledge fallback, localhost Ollama brain, guided walkthroughs, confirm-before-act chips and `ghost.*` RPC/MCP surface. |
 
 ---
 

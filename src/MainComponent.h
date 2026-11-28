@@ -16,6 +16,7 @@
 #include "RecordingManager.h"
 #include "GameForgeComponent.h"
 #include "RpgSoundboardComponent.h"
+#include "GhostTutorComponent.h"
 #include "ScriptPrompterComponent.h"
 #include "StudioLookAndFeel.h"
 #include "StudioPluginWindow.h"
@@ -120,6 +121,7 @@ private:
     ScriptPrompterComponent scriptPrompter;
     tcs::game::GameForgeComponent gameForgeComponent;
     RpgSoundboardComponent rpgSoundboardComponent;
+    GhostTutorComponent ghostTutorComponent;
 
     juce::File currentEditFile;
     bool sessionUntitled = false;
@@ -164,6 +166,7 @@ private:
     juce::TextButton voWorkspaceButton     { "VO Booth Suite" };
     juce::TextButton gameForgePlaceholder  { "Game Forge" };
     juce::TextButton rpgBoardPlaceholder   { "RPG Board" };
+    juce::TextButton ghostToggleButton     { "GHOST" };
     WorkspaceMode workspaceMode = WorkspaceMode::studio;
     juce::TextButton audioSettingsButton { "Audio Settings" };
     juce::Slider bpmSlider;

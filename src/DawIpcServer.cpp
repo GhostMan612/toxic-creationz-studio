@@ -10,6 +10,7 @@
 #include "SidechainCompressorPlugin.h"
 #include "GameAssetExporter.h"
 #include "MusicTheoryEngine.h"
+#include "GhostKnowledge.h"
 #include "RpgSoundboardPlugin.h"
 #include "SfxForgeEngine.h"
 #include "VocalChannelPlugin.h"
@@ -3147,6 +3148,65 @@ juce::String DawIpcServer::dispatchMethod (const juce::var& id,
         res->setProperty ("mood_intensity", mood);
         res->setProperty ("sfx_name", sfxName);
         res->setProperty ("gm_voice_preset", appliedVoice);
+        return makeResultResponse (id, juce::var (res));
+    }
+
+    // WO-027: ghost.ask / ghost.get_state / ghost.set_proactive
+    if (method == "ghost.ask" || method == "ghost.get_state" || method == "ghost.set_proactive")
+    {
+        if (edit == nullptr)
+            return makeErrorResponse (id, -32002, "No active Edit");
+        auto ghostState = edit->state.getOrCreateChildWithName ("GHOST_TUTOR", nullptr);
+
+        if (method == "ghost.set_proactive")
+        {
+            const bool enabled = static_cast<bool> (params.getProperty ("enabled", false));
+            ghostState.setProperty ("proactive", enabled, nullptr);
+            auto* res = new juce::DynamicObject();
+            res->setProperty ("proactive_enabled", enabled);
+            return makeResultResponse (id, juce::var (res));
+        }
+
+        if (method == "ghost.get_state")
+        {
+            auto* res = new juce::DynamicObject();
+            res->setProperty ("panel_open", static_cast<bool> (ghostState.getProperty ("panel_open", false)));
+            res->setProperty ("proactive_enabled", static_cast<bool> (ghostState.getProperty ("proactive", false)));
+            res->setProperty ("ollama_reachable", false);
+            res->setProperty ("model", "qwen2.5:3b");
+            const int walkthroughId = static_cast<int> (ghostState.getProperty ("walkthrough_id", -1));
+            if (walkthroughId >= 0)
+            {
+                auto* walk = new juce::DynamicObject();
+                walk->setProperty ("id", walkthroughId);
+                walk->setProperty ("step", static_cast<int> (ghostState.getProperty ("walkthrough_step", 0)));
+                res->setProperty ("walkthrough", juce::var (walk));
+            }
+            return makeResultResponse (id, juce::var (res));
+        }
+
+        const auto question = params.getProperty ("question", "").toString().trim();
+        if (question.isEmpty())
+            return makeErrorResponse (id, -32602, "Missing question");
+        const auto knowledge = GhostKnowledge::answer (question);
+
+        auto* res = new juce::DynamicObject();
+        res->setProperty ("answer", knowledge.text);
+        res->setProperty ("source", "bundle");
+        res->setProperty ("section", knowledge.sectionId);
+
+        if (knowledge.actionMethod.isNotEmpty())
+        {
+            auto* action = new juce::DynamicObject();
+            action->setProperty ("label", knowledge.actionLabel);
+            action->setProperty ("method", knowledge.actionMethod);
+            juce::var actionParams;
+            if (juce::JSON::parse (knowledge.actionParamsJson, actionParams).wasOk())
+                action->setProperty ("params", actionParams);
+            juce::Array<juce::var> actions;
+            actions.add (juce::var (action));
+            res->setProperty ("actions", juce::var (actions));
+        }
         return makeResultResponse (id, juce::var (res));
     }
 

@@ -11,6 +11,7 @@
 #include "GameAssetExporter.h"
 #include "MusicTheoryEngine.h"
 #include "RpgSoundboardPlugin.h"
+#include "GhostTutorComponent.h"
 #include "SfxForgeEngine.h"
 #include "StudioPluginWindow.h"
 #include "VocalChannelPlugin.h"
@@ -27,6 +28,7 @@
 //==============================================================================
 int MainComponent::runHeadlessSmokeTest()
 {
+    GhostBrain::setHeadless (true);
     std::cout << "[SMOKE_TEST] Initializing Tracktion Engine..." << std::endl;
 
     // MainComponent owns the Engine and exercises the real session/scanner code.
@@ -4751,6 +4753,93 @@ int MainComponent::runHeadlessSmokeTest()
         std::cout << "[SMOKE_TEST] WO-026 live encounter cues, GM voice toggle & custom pad persistence PASS" << std::endl;
     }
 
+    //===========================================================================
+    // WO-027: Ghost Tutor local knowledge, proposed actions & persistence
+    //===========================================================================
+    {
+        const auto askGhost = [] (const char* question)
+        {
+            auto* params = new juce::DynamicObject();
+            params->setProperty ("question", question);
+            params->setProperty ("use_llm", false);
+            auto* request = new juce::DynamicObject();
+            request->setProperty ("jsonrpc", "2.0");
+            request->setProperty ("id", 701);
+            request->setProperty ("method", "ghost.ask");
+            request->setProperty ("params", juce::var (params));
+            return juce::String (juce::JSON::toString (juce::var (request), true));
+        };
+
+        const int tracksBeforeAsk = te::getAudioTracks (*app.edit).size();
+        juce::var askParsed;
+        const auto askResponse = app.ipcServer.executeJsonRpcOnMessageThread (
+            askGhost ("How do I forge game sound effects?"));
+        if (! juce::JSON::parse (askResponse, askParsed).wasOk() || askParsed.hasProperty ("error")
+            || askParsed["result"]["source"].toString() != "bundle"
+            || askParsed["result"]["answer"].toString().isEmpty()
+            || ! askParsed["result"]["actions"].isArray()
+            || askParsed["result"]["actions"].getArray()->size() < 1
+            || te::getAudioTracks (*app.edit).size() != tracksBeforeAsk)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-027 ghost.ask was not bundle-grounded or mutated the edit" << std::endl;
+            return 1;
+        }
+
+        const auto action = askParsed["result"]["actions"].getArray()->getFirst();
+        if (! action.hasProperty ("method") || ! action.hasProperty ("params")
+            || action["method"].toString().isEmpty())
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-027 proposed action was malformed" << std::endl;
+            return 1;
+        }
+
+        auto* actionReq = new juce::DynamicObject();
+        actionReq->setProperty ("jsonrpc", "2.0");
+        actionReq->setProperty ("id", 702);
+        actionReq->setProperty ("method", action["method"].toString());
+        actionReq->setProperty ("params", action["params"]);
+        juce::var actionParsed;
+        if (! juce::JSON::parse (app.ipcServer.executeJsonRpcOnMessageThread (
+                juce::JSON::toString (juce::var (actionReq), true)), actionParsed).wasOk()
+            || actionParsed.hasProperty ("error"))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-027 proposed action could not be executed" << std::endl;
+            return 1;
+        }
+
+        auto ghostState = app.edit->state.getOrCreateChildWithName ("GHOST_TUTOR", nullptr);
+        const bool defaultProactive = static_cast<bool> (ghostState.getProperty ("proactive", false));
+        ghostState.setProperty ("panel_open", true, nullptr);
+        ghostState.setProperty ("walkthrough_id", 1, nullptr);
+        ghostState.setProperty ("walkthrough_step", 2, nullptr);
+        ghostState.setProperty ("proactive", true, nullptr);
+
+        const auto ghostSession = tempDir.getChildFile ("aidaw_wo027_ghost.tracktionedit");
+        app.currentEditFile = ghostSession;
+        app.sessionUntitled = false;
+        app.saveSession();
+        if (! app.loadSessionFromFileSafely (ghostSession))
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-027 Ghost session round-trip failed" << std::endl;
+            return 1;
+        }
+        auto reloaded = app.edit->state.getChildWithName ("GHOST_TUTOR");
+        bool ghostPersisted = reloaded.isValid()
+            && static_cast<bool> (reloaded.getProperty ("panel_open", false))
+            && static_cast<int> (reloaded.getProperty ("walkthrough_id", -1)) == 1
+            && static_cast<int> (reloaded.getProperty ("walkthrough_step", 0)) == 2
+            && static_cast<bool> (reloaded.getProperty ("proactive", false));
+        ghostSession.deleteFile();
+        if (defaultProactive || ! ghostPersisted)
+        {
+            std::cerr << "[SMOKE_TEST] FAIL: WO-027 Ghost state did not persist (default proactive="
+                      << defaultProactive << ")" << std::endl;
+            return 1;
+        }
+
+        std::cout << "[SMOKE_TEST] WO-027 Ghost Tutor bundle answers, proposed actions & persistence PASS" << std::endl;
+    }
+
     //--- WO-002 (3): cooperative VST3 scanner shutdown -------------------------
     app.startVst3Scan();
     app.stopVst3Scan (10000);
@@ -4799,7 +4888,8 @@ int MainComponent::runHeadlessSmokeTest()
                  "stems, VOX bark batching and the Godot 4 audio manifest, and the WO-024B music theory "
                  "catalog, scale-pure song forms, seed variation and arrangement persistence, "
                  "and the WO-025 procedural RPG soundboard, biome crossfade and one-shot pool, "
-                 "and the WO-026 encounter cues, GM voice toggle and custom pad persistence verified."
+                 "and the WO-026 encounter cues, GM voice toggle and custom pad persistence, "
+                 "and the WO-027 Ghost Tutor bundle answers, proposed actions and state persistence verified."
               << std::endl;
     return 0;
 }
